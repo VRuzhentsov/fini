@@ -37,7 +37,7 @@ pub const DISCOVERY_PORT: u16 = 45_454;
 pub const PAIR_REQUEST_TTL_SECS: i64 = 60;
 
 /// How long the identify step waits for the answer once the link is open.
-#[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
+#[cfg(all(feature = "ui-plane", any(target_os = "linux", target_os = "android", target_os = "windows")))]
 const IDENTIFY_ANSWER_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A pair request that arrived, with what answering it needs.
@@ -212,13 +212,13 @@ impl DeviceService {
     /// can offer "Pair again".
     pub fn available_devices(&self) -> Vec<DiscoveredDevice> {
         let mut devices = self.network.available_devices();
-        #[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
+        #[cfg(all(feature = "ui-plane", any(target_os = "linux", target_os = "android", target_os = "windows")))]
         devices.extend(self.bluetooth_available_devices());
         devices.sort_by(|a, b| b.last_seen_at.cmp(&a.last_seen_at).then_with(|| a.device_id.cmp(&b.device_id)));
         devices
     }
 
-    #[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
+    #[cfg(all(feature = "ui-plane", any(target_os = "linux", target_os = "android", target_os = "windows")))]
     fn bluetooth_available_devices(&self) -> Vec<DiscoveredDevice> {
         use crate::services::bluetooth_channel_service::fingerprint_of;
         let mine = fingerprint_of(&self.identity.device_id);
@@ -259,12 +259,12 @@ impl DeviceService {
     /// and its `DeviceIdentified` answer -- device id, name and iroh key.
     /// `device_id` is a `bt:<fingerprint>` row, or a device id.
     pub async fn identify_bluetooth_device(&self, device_id: &str) -> Result<DiscoveredDevice, String> {
-        #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "windows")))]
+        #[cfg(not(all(feature = "ui-plane", any(target_os = "linux", target_os = "android", target_os = "windows"))))]
         {
             let _ = device_id;
             Err("Bluetooth is not available on this platform".to_string())
         }
-        #[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
+        #[cfg(all(feature = "ui-plane", any(target_os = "linux", target_os = "android", target_os = "windows")))]
         {
             #[cfg(target_os = "android")]
             if !crate::services::ble_plugin::permission_granted() {
@@ -294,7 +294,7 @@ impl DeviceService {
         }
     }
 
-    #[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
+    #[cfg(all(feature = "ui-plane", any(target_os = "linux", target_os = "android", target_os = "windows")))]
     async fn identify_heard_device(
         &self,
         fingerprint: [u8; crate::services::bluetooth_channel_service::FINGERPRINT_LEN],
@@ -333,7 +333,7 @@ impl DeviceService {
     /// `fingerprint`, and its BLE link. While one is held, BlueZ rejects a
     /// second LE connection to the same device, so the identify step for
     /// adding it again could never connect.
-    #[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
+    #[cfg(all(feature = "ui-plane", any(target_os = "linux", target_os = "android", target_os = "windows")))]
     async fn close_held_bluetooth_session_to(&self, fingerprint: [u8; crate::services::bluetooth_channel_service::FINGERPRINT_LEN]) {
         use crate::services::bluetooth_channel_service::fingerprint_of;
         let paired = self.with_conn(|conn| DeviceRepository::new(conn).ids());
@@ -412,12 +412,12 @@ impl DeviceService {
     /// accept and the complete. Nothing connects back to this device:
     /// Android connects out from a private address it never advertises on.
     pub fn send_pair_request_bluetooth(&self, input: DevicePairRequestBluetoothInput) -> Result<(), String> {
-        #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "windows")))]
+        #[cfg(not(all(feature = "ui-plane", any(target_os = "linux", target_os = "android", target_os = "windows"))))]
         {
             let _ = input;
             Err("Bluetooth is not available on this platform".to_string())
         }
-        #[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
+        #[cfg(all(feature = "ui-plane", any(target_os = "linux", target_os = "android", target_os = "windows")))]
         {
             let payload = self.pair_request_payload(input.request_id, input.to_device_id);
             let to_device_id = payload.to_device_id.clone();
@@ -443,7 +443,7 @@ impl DeviceService {
 
     /// Reads the accept and the complete that come back on a Bluetooth
     /// request's link.
-    #[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
+    #[cfg(all(feature = "ui-plane", any(target_os = "linux", target_os = "android", target_os = "windows")))]
     fn listen_for_answers(&self, mut link: Box<dyn DataLink>, to_device_id: String, address: String) {
         let service = self.arc();
         tauri::async_runtime::spawn(async move {
@@ -572,7 +572,7 @@ impl DeviceService {
             }
             None => log::warn!("[pairing][ble] no parked link for {request_id}; connecting instead"),
         }
-        #[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
+        #[cfg(all(feature = "ui-plane", any(target_os = "linux", target_os = "android", target_os = "windows")))]
         {
             let peer_key = stored.from_endpoint_id.as_deref().ok_or_else(|| "the requester's key is unknown".to_string())?;
             tauri::async_runtime::block_on(async {
@@ -580,7 +580,7 @@ impl DeviceService {
                 send_pair_frame(link.as_mut(), &frame).await
             })
         }
-        #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "windows")))]
+        #[cfg(not(all(feature = "ui-plane", any(target_os = "linux", target_os = "android", target_os = "windows"))))]
         Err("Bluetooth is not available on this platform".to_string())
     }
 
@@ -804,11 +804,11 @@ impl DeviceService {
         // Failed attempts with the old pair must not delay a new one.
         self.network.forget_failures(peer_device_id);
         self.bluetooth.forget_failures(peer_device_id);
-        #[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
+        #[cfg(all(feature = "ui-plane", any(target_os = "linux", target_os = "android", target_os = "windows")))]
         if let Some(peer_key) = peer_key.and_then(|key| key.parse::<iroh::EndpointId>().ok()) {
             self.bluetooth.close_links_to(peer_key);
         }
-        #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "windows")))]
+        #[cfg(not(all(feature = "ui-plane", any(target_os = "linux", target_os = "android", target_os = "windows"))))]
         let _ = peer_key;
         self.refresh_network_lookup(conn);
         self.bluetooth.refresh_advertising(conn);
@@ -950,7 +950,7 @@ impl PeerLinkHandler for DeviceService {
                     // Hold here until the request is answered or expired:
                     // the channel counts this central as live until then.
                     // The Add Device scan stays off the adapter meanwhile.
-                    #[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
+                    #[cfg(all(feature = "ui-plane", any(target_os = "linux", target_os = "android", target_os = "windows")))]
                     let _step = self.bluetooth.scanner.begin_pairing_step();
                     let hold_until = tokio::time::Instant::now() + Duration::from_secs(PAIR_REQUEST_TTL_SECS as u64 + 5);
                     while tokio::time::Instant::now() < hold_until {
@@ -999,7 +999,7 @@ impl PeerLinkHandler for DeviceService {
 
 /// Writes one pairing frame in `PAIR_FRAME_SEND_TIMEOUT`: a stalled write
 /// must not freeze the command that waits for it.
-#[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
+#[cfg(all(feature = "ui-plane", any(target_os = "linux", target_os = "android", target_os = "windows")))]
 async fn send_pair_frame(link: &mut dyn DataLink, frame: &PeerFrame) -> Result<(), String> {
     tokio::time::timeout(Duration::from_secs(10), send_frame(link, frame))
         .await

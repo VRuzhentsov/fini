@@ -252,7 +252,7 @@ impl LinkAcceptor {
         let path = paths.iter().find(|path| path.is_selected())?;
         match path.remote_addr() {
             iroh::TransportAddr::Ip(addr) => Some(addr.ip().to_string()),
-            #[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
+            #[cfg(all(feature = "ui-plane", any(target_os = "linux", target_os = "android", target_os = "windows")))]
             iroh::TransportAddr::Custom(addr) => ble_gatt_iroh::peer_address(addr).map(|peer| peer.0),
             _ => None,
         }
