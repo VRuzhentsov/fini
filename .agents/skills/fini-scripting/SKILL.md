@@ -19,6 +19,22 @@ Keep automation predictable and discoverable:
 - CI calls `npm run ...` (or `cargo xtask ...`) directly. CI never calls `make`.
 - One workflow has one implementation: the npm script. The Make target calls the same script.
 
+## Make is local only
+
+`make` is a shortcut for a developer at their own computer. It is never the
+entry point of these:
+
+- CI jobs and workflows;
+- release steps (releases run only in CI: `fini-release`);
+- commands in a container: the Containerfiles, `containers/run.sh`, and all
+  that runs in a container;
+- e2e runners and Playwright;
+- the evidence of an agent for CI parity.
+
+For these, use the npm script, `cargo xtask`, the workflow job, or
+`containers/run.sh`. A Make target calls one of them; it holds no logic of
+its own that CI needs.
+
 ## Command Surface
 
 Use this default hierarchy:

@@ -1,0 +1,46 @@
+# Deletes old tags of the GHCR layer cache (docs/container.md, "How CI and a
+# developer get an image"). `podman build --cache-to` writes one tag for each
+# cache layer to ghcr.io/<owner>/<repo>-cache/<image>. `--cache-ttl=168h`
+# makes a build ignore a cache layer that is older than 7 days, so a tag that
+# is older than 7 days has no use, and this job deletes it.
+#
+# It starts on a push to main or by hand. It has no schedule.
+#
+# The cache packages are public, so that all runs read them with no login.
+# Set each one public by hand one time, after its first push (GitHub, the
+# package, "Package settings", "Change visibility", Public).
+name: GHCR Cache Cleanup
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Show what the job would delete, and delete nothing.
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: ghcr-cache-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    name: Delete old cache tags
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Delete cache tags older than 7 days
+        uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          packages: >-
+            ${{ github.event.repository.name }}-cache/linux,${{ github.event.repository.name }}-cache/android
+          delete-tags: "*"
+          older-than: 7 days
+          delete-untagged: true
+          dry-run: ${{ inputs.dry_run || false }}

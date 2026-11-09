@@ -16,6 +16,10 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  # The container engine of the CI jobs (docs/container.md, "Container engine").
+  CONTAINER_ENGINE: podman
+
 jobs:
   changes:
     name: Detect App Changes
@@ -40,7 +44,8 @@ jobs:
               # pull request that changes only the gate reads as "no app
               # change" and skips every check -- including the gate it edits.
               - '.github/workflows/quality-gates.yml'
-              - 'Dockerfile'
+              - '.github/actions/**'
+              - 'containers/**'
               - 'Makefile'
               - 'com.fini.app.yml'
               - 'index.html'
@@ -60,15 +65,24 @@ jobs:
     name: FE Unit Tests
     needs: changes
     if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.app == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
       - name: Run frontend unit tests
-        env:
-          CONTAINER: docker
-        run: npm run gate:fe-unit
+        uses: ./.github/actions/container-stage
+        with:
+          engine: ${{ env.CONTAINER_ENGINE }}
+          image: linux
+          stage: build
+          # Only a pull request from a branch of this repository writes the
+          # cache; dispatch and fork runs only read it.
+          push-cache: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+          run: npm ci && npm run test:unit
 
   # The release's own gate, run here so a green pull request means a green
   # release rather than something close to it.
@@ -89,54 +103,22 @@ jobs:
       packages: write
     uses: ./.github/workflows/quality-gates.yml
     with:
-      # A fork's token cannot write packages, so it reads the cache without
-      # pushing to it.
-      push_cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+      # Only a pull request from a branch of this repository writes the
+      # cache; dispatch and fork runs only read it.
+      push_cache: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
       run_id_prefix: ci
 
   desktop-bundle-linux:
     name: Desktop Bundle (Linux x64)
     needs: changes
     if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.app == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-
-      - name: Install Linux system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libasound2-dev \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            xdg-utils \
-            patchelf
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: "24"
-          cache: npm
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-gnu
-
-      - name: Restore Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            src-tauri -> target
-          shared-key: pr-desktop-bundle-linux
-
-      - name: Install npm dependencies
-        run: npm ci
-
-      - name: Prepare AppImage GTK bundler
-        run: scripts/prepare-tauri-linuxdeploy-gtk-plugin.sh
 
       # `createUpdaterArtifacts: true` in tauri.conf.json means `tauri build`
       # requires *some* signing key to be present or it refuses to bundle at
@@ -150,19 +132,14 @@ jobs:
       # checked-out code (via beforeBuildCommand) executes before a human
       # reviews it, so wiring the real key in here would let a PR exfiltrate
       # it.
-      - name: Generate ephemeral signing key (PR bundle check only)
-        # `tauri build`'s own updater-artifact auto-signing step only reads
-        # TAURI_SIGNING_PRIVATE_KEY as literal key content (confirmed: the
-        # _PATH variant is accepted by the standalone `tauri signer sign`
-        # command but not by this step -- "A public key has been found, but
-        # no private key" even with _PATH set to a valid file). No exposure
-        # concern threading this one through $GITHUB_ENV: it's regenerated
-        # every run and never used for anything but this job.
-        run: |
-          set -euo pipefail
-          CI=1 npx tauri signer generate --ci -w "$RUNNER_TEMP/pr-bundle-verify.key" -p ""
-          { echo "TAURI_SIGNING_PRIVATE_KEY<<KEYEOF"; cat "$RUNNER_TEMP/pr-bundle-verify.key"; echo; echo "KEYEOF"; } >> "$GITHUB_ENV"
-
+      #
+      # `tauri build`'s own updater-artifact auto-signing step only reads
+      # TAURI_SIGNING_PRIVATE_KEY as literal key content (confirmed: the
+      # _PATH variant is accepted by the standalone `tauri signer sign`
+      # command but not by this step -- "A public key has been found, but
+      # no private key" even with _PATH set to a valid file). The key is
+      # generated in the container, for this command only.
+      #
       # Same command release-tag.yml/release-dry-run.yml use to build the
       # real Linux desktop bundle, so any binary this crate declares (see
       # src-tauri/Cargo.toml's `[[bin]]` list) that can't actually be
@@ -175,9 +152,24 @@ jobs:
       # its own crate (see ble-mock-broker/Cargo.toml); this job exists so
       # the next binary like it fails a PR instead of a release.
       - name: Build Linux bundles
+        uses: ./.github/actions/container-stage
         env:
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
-        run: npm run tauri build -- --features ui-plane,desktop-updater --target x86_64-unknown-linux-gnu --bundles appimage,deb,rpm -- --bin fini-app
+          # The container has no FUSE; linuxdeploy extracts itself instead.
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        with:
+          engine: ${{ env.CONTAINER_ENGINE }}
+          image: linux
+          stage: build
+          # Only a pull request from a branch of this repository writes the
+          # cache; dispatch and fork runs only read it.
+          push-cache: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+          pass-env: APPIMAGE_EXTRACT_AND_RUN
+          run: |
+            npm ci
+            scripts/prepare-tauri-linuxdeploy-gtk-plugin.sh
+            CI=1 npx tauri signer generate --ci -w /tmp/pr-bundle-verify.key -p ""
+            TAURI_SIGNING_PRIVATE_KEY="$(cat /tmp/pr-bundle-verify.key)" TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" \
+              npm run tauri build -- --features ui-plane,desktop-updater --target x86_64-unknown-linux-gnu --bundles appimage,deb,rpm -- --bin fini-app
 
       - name: Verify AppImage host runtime boundary
         run: |
@@ -251,11 +243,54 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: npm run tauri build -- --features ui-plane,desktop-updater --target x86_64-pc-windows-msvc --bundles nsis -- --bin fini-app
 
+      # Install the setup.exe as a user does, then start the desktop app.
+      # A console program, or an app that stops at once, is the CLI in the
+      # installer: the desktop window does not open on Windows.
+      - name: Verify Windows desktop app
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem -Path "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis" -Filter "*-setup.exe" | Select-Object -First 1
+          if (-not $setup) { throw "Expected Windows installer was not produced" }
+          ./scripts/verify-windows-desktop-installer.ps1 -Installer $setup.FullName
+
+      # Keep the installer, so that a person can install it on a Windows
+      # computer and examine the result of the PR.
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-windows-x64-setup
+          path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+          retention-days: 7
+
       # A separate `[[bin]]` target (`cli-plane` feature, not `ui-plane`) --
       # a distinct compilation unit from the bundle above, so it needs its
       # own check to catch a Windows-only break specific to the CLI binary.
       - name: Build Windows CLI
         run: cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin fini --features cli-plane --target x86_64-pc-windows-msvc
+
+      # device-support (ADR-0013): this job runs the whole project. On a
+      # virtual Windows test device, the harness starts the debug app with
+      # devtools, and the app must show its window and answer a command. A
+      # spec that needs a platform which this host cannot start skips with
+      # the reason.
+      - name: Build Windows e2e app
+        run: npm run build:windows:e2e
+
+      - name: Run device-support
+        env:
+          FINI_E2E_KEEP: "1"
+        run: npm run test:e2e:device-support
+
+      - name: Upload Windows e2e results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-e2e-results
+          path: |
+            tmp/fini-e2e-multi-device/
+            specs/e2e/test-results/
+          if-no-files-found: ignore
 
   # Two virtual phones on one virtual Bluetooth medium (ADR-0013); the job is
   # in android-e2e.yml, which the release calls too.
@@ -268,6 +303,6 @@ jobs:
       packages: write
     uses: ./.github/workflows/android-e2e.yml
     with:
-      # A fork's token cannot write packages, so it reads the cache without
-      # pushing to it.
-      push_cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+      # Only a pull request from a branch of this repository writes the
+      # cache; dispatch and fork runs only read it.
+      push_cache: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}

@@ -31,8 +31,11 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use async_trait::async_trait;
+// The driver of a desktop system: BlueZ on Linux, WinRT on Windows.
 #[cfg(target_os = "linux")]
-use ble_gatt::drivers::linux::LinuxDriver;
+use ble_gatt::drivers::linux::LinuxDriver as DesktopDriver;
+#[cfg(target_os = "windows")]
+use ble_gatt::drivers::windows::WindowsDriver as DesktopDriver;
 use ble_gatt::datagram::{self, DatagramChannel, DatagramConfig};
 use ble_gatt::{Adapter, CharacteristicUuid, PeerAddress, ServiceUuid};
 use uuid::Uuid;
@@ -380,10 +383,11 @@ impl ChannelService for BluetoothChannelService {
     }
 
     fn start_serving(self: Arc<Self>) {
-        // Linux only, deliberately. Android starts the same loop from
-        // `keep_serving`, once its Activity context exists -- starting it
-        // here as well gave Android two accept loops racing each other.
-        #[cfg(target_os = "linux")]
+        // Desktop only (Linux and Windows), deliberately. Android starts the
+        // same loop from `keep_serving`, once its Activity context exists --
+        // starting it here as well gave Android two accept loops racing each
+        // other.
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         tauri::async_runtime::spawn(async move { self.run_server().await });
     }
 
@@ -1006,10 +1010,11 @@ impl BluetoothAdapter {
 
     /// The ble-gatt adapter, made at the first use.
     ///
-    /// The Linux driver opens a BlueZ D-Bus session and needs a powered
-    /// adapter. Fini makes it at the first use, not at startup, so a
-    /// computer without a usable adapter still starts the app.
-    #[cfg(target_os = "linux")]
+    /// The desktop driver needs a powered adapter: on Linux it opens a
+    /// BlueZ D-Bus session, on Windows it opens the WinRT radio. Fini makes
+    /// it at the first use, not at startup, so a computer without a usable
+    /// adapter still starts the app.
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     pub(super) async fn adapter(&self) -> Result<Adapter, String> {
     // `get_or_try_init`, not `get_or_init` over a cached `Result`: the
     // latter permanently bakes in whatever the *first* call returned,
@@ -1032,11 +1037,11 @@ impl BluetoothAdapter {
 
         self.adapter
             .get_or_try_init(|| async {
-                #[cfg(feature = "devtools")]
+                #[cfg(all(target_os = "linux", feature = "devtools"))]
                 if let Ok(endpoint) = std::env::var("FINI_BLE_MOCK_BROKER") {
                     return Ok(Adapter::new(self.switched(mock_driver(&endpoint).await?)).await);
                 }
-                match tokio::time::timeout(ADAPTER_INIT_TIMEOUT, LinuxDriver::new()).await {
+                match tokio::time::timeout(ADAPTER_INIT_TIMEOUT, DesktopDriver::new()).await {
                     Ok(Ok(driver)) => Ok(Adapter::new(self.switched(Arc::new(driver))).await),
                     Ok(Err(err)) => Err(err.to_string()),
                     Err(_) => Err(format!(
@@ -1070,7 +1075,7 @@ impl BluetoothAdapter {
 
     /// The driver as the adapter gets it. In a build without `devtools` this
     /// is the platform driver itself.
-    #[cfg(all(target_os = "linux", not(feature = "devtools")))]
+    #[cfg(all(any(target_os = "linux", target_os = "windows"), not(feature = "devtools")))]
     fn switched(&self, driver: Arc<dyn ble_gatt::Driver>) -> Arc<dyn ble_gatt::Driver> {
         driver
     }
@@ -1410,6 +1415,14 @@ mod test_switch {
                 return Err(switched_off());
             }
             self.0.driver.notify(characteristic, value).await
+        }
+
+        async fn set_characteristic_value(
+            &self,
+            characteristic: CharacteristicUuid,
+            value: Vec<u8>,
+        ) -> ble_gatt::Result<()> {
+            self.0.driver.set_characteristic_value(characteristic, value).await
         }
 
         async fn notify_peer(
@@ -2849,7 +2862,15 @@ impl Scanner {
             let scan = self.scan_lock().await;
             self.note_scan_started();
             let mut discovered = match adapter.central().scan(datagram_config().service).await {
-                Ok(discovered) => discovered,
+                // A peer that sends only the service UUID (Windows) has no
+                // fingerprint in its advertisement: read it from the GATT
+                // advertisement characteristic (ble-gatt ADR-0012).
+                Ok(stream) => ble_gatt::advertisement::complete(
+                    adapter.driver(),
+                    datagram_config().service,
+                    stream,
+                    ble_gatt::advertisement::GattAdvertisementPolicy::default(),
+                ),
                 Err(err) => {
                     log::warn!("[transport][ble] search scan refused: {err}");
                     bluetooth.note_scan_refused(&err);

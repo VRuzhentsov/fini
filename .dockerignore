@@ -6,3 +6,4 @@ src-tauri/target
 src-tauri/gen/android/.gradle
 src-tauri/gen/android/app/build
 ble-mock-broker/target
+.worktrees

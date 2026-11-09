@@ -69,6 +69,35 @@ is used through an interface.
 - When you find two copies of the same behavior, merge them into one, on the
   object or the interface that owns the behavior.
 
+## Code structure
+
+- Put a long condition in a local variable with a name that tells what the
+  condition means. Then use the variable in the `if` or the `match`.
+  ([rust-analyzer style, "Helper Variables"](https://github.com/rust-lang/rust-analyzer/blob/master/docs/book/src/contributing/style.md#helper-variables))
+
+- Do the check of a precondition in the caller, and give the function a type
+  that shows the result of the check. Keep the `if` and `match` statements in
+  the parent function, and keep the helper functions without branches. A
+  branch on the state of an object stays in the method of that object (see
+  "Objects own their state and their behavior").
+  ([rust-analyzer style, "Function Preconditions"](https://github.com/rust-lang/rust-analyzer/blob/master/docs/book/src/contributing/style.md#function-preconditions);
+  [matklad, "Push Ifs Up"](https://matklad.github.io/2023/11/15/push-ifs-up-and-fors-down.html#Push-Ifs-Up);
+  [TigerStyle, "Safety"](https://github.com/tigerbeetle/tigerbeetle/blob/main/docs/TIGER_STYLE.md#safety))
+
+- When a function checks a value, it returns what it found, and the caller
+  uses that value. Do not check in one function and calculate the same value
+  again in a different function. This is a value in one call, not stored
+  state.
+  ([rust-analyzer style, "Function Preconditions"](https://github.com/rust-lang/rust-analyzer/blob/master/docs/book/src/contributing/style.md#function-preconditions);
+  [Alexis King, "The power of parsing"](https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/#the-power-of-parsing))
+
+- Put each new module in a new file, and write only the `mod` declaration in
+  the parent file. Only the `tests` module of a file stays inline in that
+  file. Give the new file a name as [`docs/naming.md`](../naming.md) tells
+  ("Names in code", "Case").
+  ([The Rust Book, "Separating Modules into Different Files"](https://doc.rust-lang.org/book/ch07-05-separating-modules-into-different-files.html);
+  [The Rust Book, "Unit Tests"](https://doc.rust-lang.org/book/ch11-03-test-organization.html#unit-tests))
+
 ## Remove what your change makes unused
 
 - When your change makes a function, a method, a field, an import, or a

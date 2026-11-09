@@ -3,8 +3,10 @@
 //! one UDP port. One QUIC connection carries one session or one frame
 //! before a session.
 //!
-//! iroh's own mDNS lookup (`iroh-mdns-address-lookup`) finds the other Fini
-//! devices and gives their addresses. The key to connect to is the one
+//! Fini's own iroh address lookup over mDNS (`mdns_lookup`, on the
+//! `mdns-sd` crate) finds the other Fini devices and gives their
+//! addresses. It uses every IPv4 interface, not only the one of the
+//! default route. The key to connect to is the one
 //! pinned for the pair, or for a pair request the one the other device
 //! publishes; TLS proves it either way.
 
@@ -38,10 +40,6 @@ const REBIND_INTERVAL: Duration = Duration::from_secs(5);
 /// before the next, so that a peer that cannot take a session does not turn
 /// every tick into another connection.
 pub const FAILURE_COOLDOWN: Duration = Duration::from_secs(30);
-
-/// The mDNS service name for Fini's Network channel. Only Fini endpoints
-/// use it, so other iroh apps on the network are not heard.
-const MDNS_SERVICE_NAME: &str = "fini";
 
 /// How long a device's last mDNS record keeps it on the network.
 const HEARD_TIMEOUT: Duration = Duration::from_secs(150);
@@ -268,7 +266,7 @@ impl NetworkChannelService {
     #[cfg(test)]
     pub(crate) async fn spawn_server_on_free_port(self: Arc<Self>) -> u16 {
         let endpoint = self.bind(0).await.expect("bind the network endpoint");
-        let port = bound_port(&endpoint);
+        let port = bound_port(&endpoint).expect("the network endpoint has an IPv4 socket");
         tokio::spawn(async move { self.serve(endpoint).await });
         port
     }
@@ -284,12 +282,11 @@ impl NetworkChannelService {
             .await;
     }
 
-    /// Finds other Fini devices on the network with iroh's own mDNS lookup,
+    /// Finds other Fini devices on the network with Fini's mDNS lookup,
     /// and announces this one. The test switch (debug builds) stops the
     /// lookup while the network is off, and starts a new one when it is on.
     async fn run_discovery(self: Arc<Self>) {
-        use futures_util::StreamExt;
-        use iroh_mdns_address_lookup::{DiscoveryEvent, MdnsAddressLookup};
+        use mdns_lookup::{MdnsEvent, MdnsLookup};
 
         let endpoint = loop {
             match self.endpoint().await {
@@ -310,8 +307,14 @@ impl NetworkChannelService {
             while self.switched_off() || !self.wants_lookup() {
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
-            let mdns = match MdnsAddressLookup::builder().service_name(MDNS_SERVICE_NAME).build(endpoint.id()) {
-                Ok(mdns) => mdns,
+            let Some(port) = bound_port(&endpoint) else {
+                log::warn!("[transport][network] mDNS lookup waits: the endpoint has no IPv4 socket");
+                self.discovery_stopped.store(true, Ordering::SeqCst);
+                tokio::time::sleep(REBIND_INTERVAL).await;
+                continue;
+            };
+            let (mdns, mut events) = match MdnsLookup::new(endpoint.id(), port, self.user_data()) {
+                Ok((mdns, events)) => (Arc::new(mdns), events),
                 Err(err) => {
                     log::warn!("[transport][network] mDNS lookup failed to start: {err}");
                     self.discovery_stopped.store(true, Ordering::SeqCst);
@@ -330,14 +333,13 @@ impl NetworkChannelService {
             self.discovery_stopped.store(false, Ordering::SeqCst);
             log::info!("[transport][network] mDNS lookup started");
 
-            let mut events = mdns.subscribe().await;
             // Which device each endpoint is, to forget it when it expires.
             let mut devices: HashMap<EndpointId, String> = HashMap::new();
             let mut tick = tokio::time::interval(Duration::from_millis(500));
             loop {
                 tokio::select! {
-                    event = events.next() => match event {
-                        Some(DiscoveryEvent::Discovered { endpoint_info, .. }) => {
+                    event = events.recv() => match event {
+                        Some(MdnsEvent::Discovered(endpoint_info)) => {
                             let endpoint_id = endpoint_info.endpoint_id;
                             let Some((add_device, device_id, name)) = endpoint_info
                                 .data
@@ -355,12 +357,11 @@ impl NetworkChannelService {
                             devices.insert(endpoint_id, device_id.clone());
                             self.record_heard(&device_id, &name, addr, &endpoint_id.to_string(), add_device);
                         }
-                        Some(DiscoveryEvent::Expired { endpoint_id }) => {
+                        Some(MdnsEvent::Expired(endpoint_id)) => {
                             if let Some(device_id) = devices.remove(&endpoint_id) {
                                 self.remove_heard(&device_id);
                             }
                         }
-                        Some(_) => {}
                         None => break,
                     },
                     _ = tick.tick() => {
@@ -370,6 +371,7 @@ impl NetworkChannelService {
                         // Add Device opened or closed: publish the new flag.
                         let wanted = self.user_data();
                         if wanted != published {
+                            mdns.set_user_data(wanted.clone());
                             endpoint.set_user_data_for_address_lookup(wanted.clone());
                             published = wanted;
                         }
@@ -563,7 +565,7 @@ impl NetworkChannelService {
         tokio::task::block_in_place(|| DeviceRepository::new(&mut *self.pool.connection()).pinned_key(peer_id))
     }
 
-    /// The user data this device publishes with its iroh mDNS record: a
+    /// The user data this device publishes with its mDNS record: a
     /// version, the Add Device flag, the device id and the name, as
     /// `fini1;a=<0|1>;d=<device id>;n=<name>`. iroh limits it to 245 bytes,
     /// so the name is cut to fit.
@@ -676,10 +678,9 @@ impl ChannelService for NetworkChannelService {
     }
 }
 
-/// The UDP port the Network endpoint is bound to.
-#[cfg(test)]
-pub(crate) fn bound_port(endpoint: &Endpoint) -> u16 {
-    endpoint.bound_sockets().first().map(|addr| addr.port()).expect("the network endpoint has a socket")
+/// The UDP port of the endpoint's IPv4 socket; the endpoint binds only 0.0.0.0:port.
+pub(crate) fn bound_port(endpoint: &Endpoint) -> Option<u16> {
+    endpoint.bound_sockets().into_iter().find(|addr| addr.is_ipv4()).map(|addr| addr.port())
 }
 
 /// What another device's user data says: Add Device flag, device id, name.
@@ -693,6 +694,9 @@ fn parse_user_data(data: &str) -> Option<(bool, String, String)> {
 fn is_cooling_down(cooldown: &HashMap<String, Instant>, peer_id: &str, now: Instant) -> bool {
     cooldown.get(peer_id).is_some_and(|until| now < *until)
 }
+
+#[path = "mdns_lookup.rs"]
+mod mdns_lookup;
 
 #[cfg(test)]
 mod tests {

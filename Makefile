@@ -1,12 +1,16 @@
 -include .env
 export
 
-CONTAINER ?= auto
-CONTAINER_ENGINE := $(shell if [ "$(CONTAINER)" = "auto" ]; then if command -v docker >/dev/null 2>&1; then printf docker; elif command -v podman >/dev/null 2>&1; then printf podman; else printf missing; fi; else printf '%s' "$(CONTAINER)"; fi)
-FINI_BE_COMPILE_IMAGE ?= fini-be-compile-ci
-FINI_BE_UNIT_IMAGE ?= fini-be-unit-test
-FINI_BE_CACHE_IMAGE_PREFIX ?=
-FINI_BE_CACHE_PUSH ?= 0
+# The images are containers/<platform>/Containerfile (docs/container.md);
+# scripts/ci-gate.mts, scripts/e2e-android.mts and containers/run.sh build
+# them with the container engine (docs/container.md, "Container engine");
+# override it with `make <target> CONTAINER_ENGINE=docker|podman`.
+# Detected once (`:=`), not for each use, and exported so that run.sh and the
+# npm scripts use the same engine.
+ifeq ($(origin CONTAINER_ENGINE),undefined)
+CONTAINER_ENGINE := $(shell if command -v podman >/dev/null 2>&1; then printf podman; elif command -v docker >/dev/null 2>&1; then printf docker; else printf missing; fi)
+endif
+export CONTAINER_ENGINE
 FINI_E2E_CI_RUN_ID ?= pr-gate
 FINI_SCRATCH_DIR ?= $(CURDIR)/tmp
 FINI_E2E_CI_RUN_DIR ?= $(FINI_SCRATCH_DIR)/fini-e2e-$(FINI_E2E_CI_RUN_ID)
@@ -15,9 +19,8 @@ FINI_E2E_CI_RESULTS_DIR ?= $(FINI_E2E_CI_RUN_DIR)/test-results
 # for example `a=linux,b=android@tcp:9223`.
 FINI_E2E_CI_TEST_DEVICES ?=
 FINI_E2E_CI_TEST_DEVICE_WAIT_SECS ?= 180
-FINI_DEV_RUNNER_IMAGE ?= fini-dev-runner-ci
-FINI_E2E_CACHE_IMAGE_PREFIX ?=
-FINI_E2E_CACHE_PUSH ?= 0
+# The local name of the CLI image (containers/linux/Containerfile, stage runtime).
+FINI_RUNTIME_IMAGE ?= fini-runtime
 RELEASE_BUNDLES ?= deb,rpm
 # linuxdeploy vendors an older `strip` that cannot parse `.relr.dyn` sections
 # emitted by newer host toolchains (e.g. Fedora 44+), which aborts local Linux
@@ -27,7 +30,7 @@ RELEASE_BUNDLES ?= deb,rpm
 # this default has no effect on published release artifacts.
 NO_STRIP ?= true
 
-.PHONY: help require-container dev build play-store-screenshots pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-dev-runner pr-gate-e2e-run pr-gate-e2e-artifacts pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed e2e-phone e2e-devices e2e-devices-ble desktop-debug desktop-debug-dev desktop-debug-build runtime-image runtime-smoke pre-release-check release android-connect android-dev android-build android-build-emulator-e2e android-sign-debug android-sign-release-local android-launch android-launch-debug android-devices android-release-deploy-debugsigned android-debug-deploy android-release-deploy-local android-build-image android-require-build-image flatpak-install-local
+.PHONY: help require-container dev build play-store-screenshots pr-gate-fe-unit pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-build-dev-runner pr-gate-e2e-run pr-gate-e2e-artifacts pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed e2e-phone e2e-devices e2e-devices-ble desktop-debug desktop-debug-dev desktop-debug-build runtime-image runtime-smoke pre-release-check release android-connect android-dev android-build android-build-emulator-e2e android-sign-debug android-sign-release-local android-launch android-launch-debug android-devices android-release-deploy-debugsigned android-debug-deploy android-release-deploy-local android-build-image flatpak-install-local
 
 help:
 	@echo ""
@@ -36,30 +39,30 @@ help:
 	@echo "  make desktop-debug-dev  Hot-reload the debug app (separate data dir + ports)"
 	@echo "  make desktop-debug    Run the debug app from its built binary"
 	@echo "  make build            Release build"
-	@echo "  make pr-gate-fe-unit  Run frontend unit tests in Dockerfile stage"
-	@echo "  make pr-gate-be-compile  Compile backend tests in Dockerfile stage"
-	@echo "  make pr-gate-be-unit  Run backend unit tests in Dockerfile stage"
-	@echo "  make pr-gate-e2e      Run npm run test:e2e:ci with Dockerfile stages"
-	@echo "  make pr-gate-e2e-cache-key  Print the E2E image input cache key"
+	@echo "  make pr-gate-fe-unit  Run frontend unit tests in the linux build image"
+	@echo "  make pr-gate-be-compile  Compile backend tests in the linux build image"
+	@echo "  make pr-gate-be-unit  Run backend unit tests in the linux build image"
+	@echo "  make pr-gate-e2e      Run the desktop E2E suite in the linux e2e image"
 	@echo "  make pr-gate-e2e-*    Run one named CI E2E phase for easier failure diagnosis"
 	@echo "  make e2e              Run visible local E2E (UI + multi-actor) alongside make dev"
 	@echo "  make e2e-ci           Run containerized headless E2E in CI mode"
-	@echo "  make e2e-image        Build/update the dev-runner E2E image"
-	@echo "  make e2e-build        Build dev-runner image and run E2E inside it"
+	@echo "  make e2e-image        Build/update the linux e2e image"
+	@echo "  make e2e-build        Same as make pr-gate-e2e"
 	@echo "  make e2e-headed       Run visible local E2E (UI + multi-actor) alongside make dev"
-	@echo "  make pr-gate-e2e      Run containerized full E2E suite in dev-runner"
-	@echo "  FINI_E2E_REBUILD=1 npm run test:e2e  Force E2E image rebuild before running"
-	@echo "  make runtime-image    Build/update the runtime container image"
-	@echo "  make runtime-smoke    Run a runtime container smoke check"
+	@echo "  npm run test:e2e     The npm script that make e2e-headed calls"
+	@echo "  CONTAINER_ENGINE=docker|podman  Engine for the image targets (default: podman, else docker; now $(CONTAINER_ENGINE))"
+	@echo "  make runtime-image    Build/update the CLI runtime image (linux runtime stage)"
+	@echo "  make runtime-smoke    Run a CLI runtime image smoke check"
 	@echo "  make play-store-screenshots  Validate Play Store screenshots and write manifest"
 	@echo "  make flatpak-install-local  Build release binary and reinstall local Flatpak"
-	@echo "  make pre-release-check  Run pre-release checks locally with trace log"
-	@echo "  make release VERSION=x.y.z  Run pre-release check, bump versions, push main, and push signed tag vX.Y.Z"
+	@echo "  make pre-release-check  Run the Quality Gates commands locally, with a log (a local check, not a release step)"
+	@echo "  Releases run only in CI: the Release Button GitHub Action (see fini-release)"
 	@echo ""
 	@echo "Android"
 	@echo "  make android-connect  Auto-discover and connect to device via adb mdns"
-	@echo "  make android-dev      Hot-reload on device via Wi-Fi (auto-connects)"
-	@echo "  make android-build    Build Android APK"
+	@echo "  make android-dev      Hot-reload on device via Wi-Fi (auto-connects), in the android build image"
+	@echo "  make android-build-image  Build/update the android build image"
+	@echo "  make android-build    Build Android APK in the android build image"
 	@echo "  make android-build-emulator-e2e  Build x86_64 debug APK for emulator E2E gate"
 	@echo "  make android-sign-debug   Sign APK to bin/fini.apk using debug keystore"
 	@echo "  make android-sign-release-local  Sign APK with local release keystore env vars"
@@ -75,7 +78,7 @@ help:
 # ── Linux ─────────────────────────────────────────────────────────────────────
 
 require-container:
-	@test "$(CONTAINER_ENGINE)" != "missing" || (echo "No container engine found. Install Docker or Podman, or set CONTAINER=docker|podman." && exit 1)
+	@command -v "$(CONTAINER_ENGINE)" >/dev/null 2>&1 || (echo "Container engine '$(CONTAINER_ENGINE)' not found. Install podman or docker, or set CONTAINER_ENGINE=docker|podman." && exit 1)
 
 # Swap the devtools capability in for the duration of one command and put the
 # committed one back however that command exits -- including Ctrl-C, which is
@@ -112,24 +115,20 @@ play-store-screenshots:
 pr-gate-fe-unit:
 	npm run gate:fe-unit
 
-pr-gate-be-cache-key:
-	@node scripts/ci-gate.mts be-cache-key
-
 pr-gate-be-compile:
 	npm run gate:be-compile
 
 pr-gate-be-unit:
 	npm run gate:be-unit
 
+# The same npm scripts as the host branch of `npm run test:e2e:ci`, with a
+# cleanup of the runner container at the end.
 pr-gate-e2e:
 	@set -eu; \
-	cleanup() { $(MAKE) pr-gate-e2e-cleanup >/dev/null 2>&1 || true; }; \
+	cleanup() { npm run gate:e2e:cleanup >/dev/null 2>&1 || true; }; \
 	trap cleanup EXIT INT TERM; \
-	$(MAKE) pr-gate-e2e-build-dev-runner; \
-	$(MAKE) pr-gate-e2e-run
-
-pr-gate-e2e-cache-key:
-	@node scripts/ci-gate.mts e2e-cache-key
+	npm run gate:e2e:build-image; \
+	npm run gate:e2e:run
 
 pr-gate-e2e-build-dev-runner:
 	npm run gate:e2e:build-image
@@ -151,39 +150,21 @@ e2e:
 e2e-ci:
 	CI=1 $(MAKE) pr-gate-e2e
 
-# Build/update the container image used for CI-style local e2e runs.
+# Build/update the linux `e2e` image used for CI-style local e2e runs.
 e2e-image:
 	$(MAKE) require-container
-	$(CONTAINER_ENGINE) build --target dev-runner -t fini-dev-runner .
+	npm run gate:e2e:build-image
 
-# Run the headless e2e tier inside the cached Podman image.
+# Run the headless e2e tier in the linux `e2e` image. The layer cache makes the image build fast when containers/linux/Containerfile is unchanged.
 e2e-build:
-	$(MAKE) require-container
-	$(CONTAINER_ENGINE) image inspect fini-dev-runner >/dev/null 2>&1 || $(CONTAINER_ENGINE) build --target dev-runner -t fini-dev-runner .
-	$(CONTAINER_ENGINE) run --rm fini-dev-runner
+	$(MAKE) pr-gate-e2e
 
-# Run the visible local E2E suite (UI single-actor + multi-actor) against the host desktop display.
-# Builds the local binaries, then lets the Playwright fixtures spawn the real app processes.
+# Run the visible local E2E suite (projects ui and multi-device) against the
+# host desktop display. `npm run test:e2e` builds the local binaries
+# (`npm run build:desktop:e2e`), then the Playwright fixtures start the real
+# app processes.
 e2e-headed:
-	@set -eu; \
-	run_root="$${FINI_E2E_ROOT:-$(FINI_SCRATCH_DIR)/fini-e2e-headed}"; \
-	e2e_target_dir="$$(pwd)/src-tauri/target/debug-e2e"; \
-	app_bin_path="$$e2e_target_dir/debug/fini-app"; \
-	cli_bin_path="$$e2e_target_dir/debug/fini"; \
-	ble_broker_bin_path="$$e2e_target_dir/debug/ble-mock-broker"; \
-	mkdir -p "$(FINI_SCRATCH_DIR)"; \
-	capability_backup="$$(mktemp "$(FINI_SCRATCH_DIR)/fini-default-capability.XXXXXX")"; \
-	cp src-tauri/capabilities/default.json "$$capability_backup"; \
-	restore_capability() { cp "$$capability_backup" src-tauri/capabilities/default.json; rm -f "$$capability_backup"; }; \
-	trap restore_capability EXIT INT TERM; \
-	mkdir -p "$$run_root"; \
-	cp src-tauri/devtools-capabilities/default.json src-tauri/capabilities/default.json; \
-	CARGO_TARGET_DIR="$$e2e_target_dir" npm run tauri -- build --debug --features ui-plane,desktop-updater,devtools --no-bundle -- --bin fini-app; \
-	restore_capability; \
-	trap - EXIT INT TERM; \
-	CARGO_TARGET_DIR="$$e2e_target_dir" cargo build --manifest-path src-tauri/Cargo.toml --bin fini --features cli-plane; \
-	CARGO_TARGET_DIR="$$e2e_target_dir" cargo build --manifest-path ble-mock-broker/Cargo.toml; \
-	FINI_E2E_ROOT="$$run_root" FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" FINI_BLE_MOCK_BROKER_BINARY="$$ble_broker_bin_path" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project ui --project multi-device
+	npm run test:e2e
 
 # "Fini Debug": a genuinely separate desktop application that lives beside the
 # production "Fini" install instead of replacing it -- the desktop counterpart
@@ -409,16 +390,18 @@ e2e-phone:
 	FINI_APP_BINARY="$$app_bin_path" TZ=UTC \
 	npx playwright test --config specs/e2e/playwright.config.ts --project multi-device -g "$(E2E_PHONE_SPEC)"
 
-# Build/update the published headless runtime image locally.
+# Build/update the published CLI runtime image locally: the same
+# Containerfile and stage that CI builds with .github/actions/container-stage.
+# `--layers` and `--cache-ttl` are podman flags; docker caches layers by default.
 runtime-image:
 	$(MAKE) require-container
-	$(CONTAINER_ENGINE) build --target runtime -t fini-runtime .
+	$(CONTAINER_ENGINE) build $(if $(filter podman,$(CONTAINER_ENGINE)),--layers --cache-ttl=168h )-f containers/linux/Containerfile --target runtime -t "$(FINI_RUNTIME_IMAGE)" .
 
 # Verify the runtime container executes the CLI surface.
 runtime-smoke:
 	$(MAKE) require-container
-	$(CONTAINER_ENGINE) image inspect fini-runtime >/dev/null 2>&1 || $(CONTAINER_ENGINE) build --target runtime -t fini-runtime .
-	$(CONTAINER_ENGINE) run --rm fini-runtime --help
+	$(CONTAINER_ENGINE) image inspect "$(FINI_RUNTIME_IMAGE)" >/dev/null 2>&1 || $(MAKE) runtime-image
+	$(CONTAINER_ENGINE) run --rm "$(FINI_RUNTIME_IMAGE)" --help
 
 # Real-Bluetooth transport verification: local/manual only, never CI (no
 # radio on GitHub-hosted runners). Lands with the real Bluetooth adapter —
@@ -429,6 +412,8 @@ e2e-bt-local:
 	echo "This target will pair over real Bluetooth with LAN disabled once it lands." >&2; \
 	exit 1
 
+# A local check for a developer: the Quality Gates commands of CI. It is not
+# a release step. Releases run only in CI (fini-release).
 pre-release-check:
 	@set -eu; \
 	log_dir="$${PRE_RELEASE_LOG_DIR:-$(FINI_SCRATCH_DIR)/fini-pre-release}"; \
@@ -439,19 +424,21 @@ pre-release-check:
 	  cleanup() { $(MAKE) pr-gate-e2e-cleanup >/dev/null 2>&1 || true; }; \
 	  step() { printf "\n[%s] pre-release-check: %s\n" "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$1"; }; \
 	  trap cleanup EXIT INT TERM; \
-	  step "require container engine"; \
+	  step "require container engine ($(CONTAINER_ENGINE))"; \
 	  $(MAKE) require-container; \
 	  step "backend unit tests"; \
 	  $(MAKE) pr-gate-be-unit; \
-	  step "runtime image"; \
+	  step "CLI runtime image"; \
 	  $(MAKE) runtime-image; \
-	  step "runtime smoke"; \
+	  step "CLI runtime smoke"; \
 	  $(MAKE) runtime-smoke; \
-	  step "E2E dev-runner image"; \
+	  step "E2E image (linux e2e)"; \
 	  $(MAKE) pr-gate-e2e-build-dev-runner; \
 	  step "E2E run"; \
 	  $(MAKE) pr-gate-e2e-run' 2>&1 | tee "$$log_file"
 
+# Not the release path. Releases run only in CI, through the Release Button
+# GitHub Action that the project owner starts (fini-release).
 release:
 	@test -n "$(VERSION)" || (echo "VERSION is required. Use: make release VERSION=x.y.z" && exit 1)
 	@printf '%s\n' "$(VERSION)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$$' || (echo "VERSION must match x.y.z" && exit 1)
@@ -511,104 +498,62 @@ ANDROID_DEBUG_VERSION_NAME := $(patsubst v%,%,$(LATEST_TAG))+dev.$(GIT_SHA)
 ANDROID_UNSIGNED_APK = src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk
 ANDROID_SIGNED_APK = bin/fini.apk
 ANDROID_RELEASE_SIGNED_APK = bin/fini-release.apk
-APKSIGNER = $(lastword $(sort $(wildcard $(ANDROID_HOME)/build-tools/*/apksigner)))
 ADB_CONNECT_TIMEOUT ?= 15
 
-# Gradle half of the Android build runs in a JDK 17 container (see
-# android-build.Containerfile for why). Only the build is containerised: adb
-# stays on the host, where the USB device and adb server are.
+# The Android builds, the signing (apksigner) and `android-dev` run in the
+# `build` stage of containers/android/Containerfile (docs/container.md): it
+# gives JDK 21, the Android SDK and NDK, Rust with the Android targets and
+# Node, so the host needs no Android SDK and a different host JDK does not
+# stop Gradle. containers/run.sh builds the image (the layer cache makes that
+# fast), mounts the repo at /work, keeps the cargo, Gradle and npm caches in
+# named volumes, and passes the CI, FINI_*, TAURI_*, ANDROID_KEY_* and
+# ANDROID_KEYSTORE_* variables.
 #
-# The repo, SDK/NDK and the cargo/gradle/android caches are bind-mounted at
-# their host paths rather than copied, so cached state is shared with host
-# builds and the image holds no project state. Mounting at the *same* absolute
-# path matters: cargo and gradle both record absolute paths in their caches, so
-# relocating the tree would invalidate them on every switch. `--userns=keep-id`
-# keeps written files owned by the invoking user, and mounting ~/.android keeps
-# one stable debug keystore -- without it the container generates a fresh one
-# per run and every install fails on a signature mismatch.
+# adb stays on the host, where the USB device and the adb server are: only
+# `adb connect`, `adb install` and `adb shell am start` run there. The
+# container uses the host network, so its adb client talks to the host adb
+# server and the phone reaches the dev server of `tauri android dev`.
 #
-# GRADLE_OPTS pins `user.home` because mounting ~/.android is not on its own
-# enough: the Android Gradle Plugin locates the default debug keystore through
-# the JVM's `user.home` system property, which the JVM derives from /etc/passwd
-# for the running uid -- not from $HOME. Under --userns=keep-id that uid has no
-# passwd entry, so `user.home` resolved somewhere else entirely and Gradle
-# generated a brand-new debug keystore on every run, next to a perfectly good
-# mounted one it never looked at. Symptom: INSTALL_FAILED_UPDATE_INCOMPATIBLE
-# on the second and every subsequent deploy.
-#
-# JAVA_TOOL_OPTIONS rather than GRADLE_OPTS, and --passwd-entry alongside it:
-# the build runs in a long-lived Gradle *daemon* JVM, and GRADLE_OPTS reaches
-# only the client, so the daemon kept resolving user.home its own way and kept
-# minting a fresh keystore inside the container. JAVA_TOOL_OPTIONS is read by
-# every JVM that starts in the container, daemon included; the passwd entry
-# fixes the same thing at the OS level for anything that consults getpwuid.
-#
-# To check this is still working, compare the signer of a freshly built APK
-# against the keystore it is supposed to come from -- they must match:
-#   keytool -list -v -keystore ~/.android/debug.keystore -storepass android
-#   $ANDROID_HOME/build-tools/*/apksigner verify --print-certs <apk>
-# Resolved rather than used as-is: on this class of host (Fedora Silverblue and
-# friends) $(HOME) is /home/<user>, a symlink to the real /var/home/<user>.
-# Cargo canonicalises paths it reads back, so a cache mounted only at the
-# symlinked path is looked up at the real one and appears missing inside the
-# container ("failed to read plugin permissions ... No such file or directory").
-# Mounting at the resolved path makes both spellings agree with $(CURDIR),
-# which is already resolved. On hosts without that symlink this is a no-op.
-ANDROID_BUILD_HOME := $(shell readlink -f "$(HOME)")
-ANDROID_BUILD_IMAGE ?= fini-android-build
-ANDROID_BUILD_RUN = podman run --rm -t \
-	--userns=keep-id \
-	--passwd-entry "builder:x:$(shell id -u):$(shell id -g):builder:$(ANDROID_BUILD_HOME):/bin/bash" \
-	-e HOME="$(ANDROID_BUILD_HOME)" \
-	-e JAVA_TOOL_OPTIONS="-Duser.home=$(ANDROID_BUILD_HOME)" \
-	-e PATH="$(ANDROID_BUILD_HOME)/.cargo/bin:/opt/java/openjdk/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-	-e ANDROID_HOME="$(shell readlink -f "$(ANDROID_HOME)")" \
-	-e NDK_HOME="$(shell readlink -f "$(NDK_HOME)")" \
-	-e FINI_ANDROID_VERSION_NAME \
-	-v "$(CURDIR)":"$(CURDIR)":Z \
-	-v "$(ANDROID_BUILD_HOME)/Android":"$(ANDROID_BUILD_HOME)/Android" \
-	-v "$(ANDROID_BUILD_HOME)/.cargo":"$(ANDROID_BUILD_HOME)/.cargo" \
-	-v "$(ANDROID_BUILD_HOME)/.rustup":"$(ANDROID_BUILD_HOME)/.rustup" \
-	-v "$(ANDROID_BUILD_HOME)/.gradle":"$(ANDROID_BUILD_HOME)/.gradle" \
-	-v "$(ANDROID_BUILD_HOME)/.android":"$(ANDROID_BUILD_HOME)/.android" \
-	-w "$(CURDIR)" \
-	"$(ANDROID_BUILD_IMAGE)"
+# run.sh mounts the host ~/.android at /cache/home/.android, so all builds and
+# android-sign-debug use one debug keystore; without it every install fails
+# on a signature mismatch (INSTALL_FAILED_UPDATE_INCOMPATIBLE). To check it,
+# compare the signer of a freshly built APK with the keystore -- they must
+# match:
+#   containers/run.sh android keytool -list -v -keystore /cache/home/.android/debug.keystore -storepass android
+#   containers/run.sh android apksigner verify --print-certs <apk>
+ANDROID_BUILD_RUN = containers/run.sh android
 
-android-build-image:
-	podman build -f Dockerfile --target android-build -t "$(ANDROID_BUILD_IMAGE)" .
-
-# Fails loudly rather than silently falling back to the host JDK, which would
-# reintroduce exactly the Gradle failure this indirection exists to avoid.
-android-require-build-image:
-	@podman image exists "$(ANDROID_BUILD_IMAGE)" \
-		|| (echo "Missing image $(ANDROID_BUILD_IMAGE). Run 'make android-build-image' first." && exit 1)
+# Builds the android `build` image without a build of the app, so the first
+# Android build or `android-dev` does not wait for it.
+android-build-image: require-container
+	$(ANDROID_BUILD_RUN) true
 
 android-connect:
 	@test -n "$(DEVICE_ADDRESS)" || (echo "No device found via adb mdns. Enable wireless debugging on the phone." && exit 1)
 	@timeout "$(ADB_CONNECT_TIMEOUT)s" adb connect $(DEVICE_ADDRESS) || (echo "ADB connect timed out for $(DEVICE_ADDRESS). Re-authorize wireless debugging, reconnect USB, or start an emulator." && exit 1)
 
-android-dev: android-connect
-	npm run tauri android dev -- --features $(ANDROID_DEV_FEATURES) --host $(HOST_IP)
+android-dev: require-container android-connect
+	$(ANDROID_BUILD_RUN) npm run tauri android dev -- --features $(ANDROID_DEV_FEATURES) --host $(HOST_IP)
 
-android-build: android-require-build-image
+android-build: require-container
 	$(ANDROID_BUILD_RUN) npm run tauri android build -- --features ui-plane --target "$(ANDROID_TARGET)"
 
-# Local shortcut for the npm script that CI calls directly. Locally it runs in
-# the JDK 17 build container; CI gets the JDK from setup-java.
-android-build-emulator-e2e: android-require-build-image
+# Local shortcut for the npm script that CI calls directly. Both run it in the
+# android `build` image: locally through containers/run.sh, in CI through
+# .github/actions/container-stage.
+android-build-emulator-e2e: require-container
 	$(ANDROID_BUILD_RUN) npm run build:android:e2e
 
-android-sign-debug:
-	@test -n "$(ANDROID_HOME)" || (echo "ANDROID_HOME is not set" && exit 1)
-	@test -n "$(APKSIGNER)" || (echo "apksigner not found under $$ANDROID_HOME/build-tools" && exit 1)
+android-sign-debug: require-container
 	@test -f "$(ANDROID_UNSIGNED_APK)" || (echo "Unsigned APK not found: $(ANDROID_UNSIGNED_APK)" && exit 1)
 	mkdir -p bin
-	"$(APKSIGNER)" sign --ks "$$HOME/.android/debug.keystore" --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android --out "$(ANDROID_SIGNED_APK)" "$(ANDROID_UNSIGNED_APK)"
-	"$(APKSIGNER)" verify "$(ANDROID_SIGNED_APK)"
+	$(ANDROID_BUILD_RUN) sh -euc 'apksigner sign --ks "$$HOME/.android/debug.keystore" --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android --out "$$1" "$$2"; apksigner verify "$$1"' sh "$(ANDROID_SIGNED_APK)" "$(ANDROID_UNSIGNED_APK)"
 
-android-sign-release-local:
-	@test -n "$(ANDROID_HOME)" || (echo "ANDROID_HOME is not set" && exit 1)
-	@test -n "$(APKSIGNER)" || (echo "apksigner not found under $$ANDROID_HOME/build-tools" && exit 1)
+# The keystore can be anywhere on the host: run.sh maps ANDROID_KEYSTORE_PATH
+# to /work when it is in the repo, and mounts it read-only at the same path
+# when it is not. The passwords go to apksigner as `env:` names, so they are
+# not on a command line.
+android-sign-release-local: require-container
 	@test -f "$(ANDROID_UNSIGNED_APK)" || (echo "Unsigned APK not found: $(ANDROID_UNSIGNED_APK)" && exit 1)
 	@test -n "$$ANDROID_KEYSTORE_PASSWORD" || (echo "ANDROID_KEYSTORE_PASSWORD is not set" && exit 1)
 	@test -n "$$ANDROID_KEY_ALIAS" || (echo "ANDROID_KEY_ALIAS is not set" && exit 1)
@@ -625,8 +570,7 @@ android-sign-release-local:
 	fi; \
 	test -f "$$keystore_path" || (echo "Release keystore not found: $$keystore_path" && exit 1); \
 	mkdir -p bin; \
-	"$(APKSIGNER)" sign --ks "$$keystore_path" --ks-key-alias "$$ANDROID_KEY_ALIAS" --ks-pass "pass:$$ANDROID_KEYSTORE_PASSWORD" --key-pass "pass:$$ANDROID_KEY_PASSWORD" --out "$(ANDROID_RELEASE_SIGNED_APK)" "$(ANDROID_UNSIGNED_APK)"; \
-	"$(APKSIGNER)" verify "$(ANDROID_RELEASE_SIGNED_APK)"
+	ANDROID_KEYSTORE_PATH="$$keystore_path" $(ANDROID_BUILD_RUN) sh -euc 'apksigner sign --ks "$$ANDROID_KEYSTORE_PATH" --ks-key-alias "$$ANDROID_KEY_ALIAS" --ks-pass env:ANDROID_KEYSTORE_PASSWORD --key-pass env:ANDROID_KEY_PASSWORD --out "$$1" "$$2"; apksigner verify "$$1"' sh "$(ANDROID_RELEASE_SIGNED_APK)" "$(ANDROID_UNSIGNED_APK)"
 
 android-install-debug:
 	@test -f "$(ANDROID_SIGNED_APK)" || (echo "Signed APK not found: $(ANDROID_SIGNED_APK). Run make android-sign-debug first." && exit 1)
@@ -661,9 +605,9 @@ android-launch-debug:
 # certificate conflict described on android-debug-deploy's own comment.
 # Prefer that target instead when a Play Store install already exists on
 # the device.
-android-release-deploy-debugsigned:
+android-release-deploy-debugsigned: require-container
 	@printf 'Android debug-signed release version: %s\n' "$(ANDROID_DEBUG_VERSION_NAME)"
-	FINI_ANDROID_VERSION_NAME="$(ANDROID_DEBUG_VERSION_NAME)" npm run tauri android build -- --features ui-plane --target "$(ANDROID_TARGET)"
+	FINI_ANDROID_VERSION_NAME="$(ANDROID_DEBUG_VERSION_NAME)" $(ANDROID_BUILD_RUN) npm run tauri android build -- --features ui-plane --target "$(ANDROID_TARGET)"
 	$(MAKE) android-sign-debug
 	$(MAKE) android-install-debug
 	$(MAKE) android-launch
@@ -683,7 +627,7 @@ android-release-deploy-debugsigned:
 # debug build worth installing in the first place. Safe here precisely
 # because this variant ships under its own `.debug` application id and never
 # replaces the Play Store install.
-android-debug-deploy: android-require-build-image
+android-debug-deploy: require-container
 	@set -eu; \
 	printf 'Android debug (debug profile) version: %s\n' "$(ANDROID_DEBUG_VERSION_NAME)"; \
 	mkdir -p "$(FINI_SCRATCH_DIR)"; \
@@ -696,7 +640,7 @@ android-debug-deploy: android-require-build-image
 	adb install -r "src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk"
 	$(MAKE) android-launch-debug
 
-android-release-deploy-local: android-require-build-image
+android-release-deploy-local: require-container
 	@printf 'Android local release version: %s\n' "$(ANDROID_DEBUG_VERSION_NAME)"
 	FINI_ANDROID_VERSION_NAME="$(ANDROID_DEBUG_VERSION_NAME)" $(ANDROID_BUILD_RUN) npm run tauri android build -- --features ui-plane --target "$(ANDROID_TARGET)"
 	$(MAKE) android-sign-release-local

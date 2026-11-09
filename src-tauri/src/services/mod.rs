@@ -5,7 +5,7 @@ pub mod android_context;
 pub mod backup;
 #[cfg(all(target_os = "android", feature = "ui-plane"))]
 pub mod ble_plugin;
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(all(feature = "ui-plane", any(target_os = "linux", target_os = "android", target_os = "windows")))]
 #[path = "bluetooth-channel.service.rs"]
 pub mod bluetooth_channel_service;
 #[path = "channel.service.rs"]
@@ -39,17 +39,18 @@ pub mod settings;
 pub mod space;
 pub mod update_recovery;
 
-/// The Bluetooth channel on a system without `ble-gatt` (Windows, macOS):
-/// the same name as the real one, so that the other services need no
-/// platform branches. It reports that Bluetooth is not supported.
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+/// The Bluetooth channel when `ble-gatt` is not compiled in (on macOS, and
+/// without `ui-plane`, for example in the CLI): the same name as the real
+/// one, so that the other services need no platform branches. It reports
+/// that Bluetooth is not supported.
+#[cfg(not(all(feature = "ui-plane", any(target_os = "linux", target_os = "android", target_os = "windows"))))]
 pub mod bluetooth_channel_service {
     use std::sync::Arc;
 
     use diesel::SqliteConnection;
 
     use crate::models::Identity;
-    use crate::services::channel_service::{ChannelKind, ChannelProblem, ChannelService, DataLink, LinkHandlers};
+    use crate::services::channel_service::{ChannelKind, ChannelProblem, ChannelService, LinkHandlers};
     use crate::services::db::DbPool;
     use crate::services::event_bus_service::EventBus;
 
@@ -62,14 +63,6 @@ pub mod bluetooth_channel_service {
             Arc::new(Self { pool })
         }
 
-        pub fn has_session(&self, _peer_id: &str) -> bool {
-            false
-        }
-
-        pub fn close_session(&self, _peer_id: &str) -> bool {
-            false
-        }
-
         pub fn refresh_advertising(&self, _conn: &mut SqliteConnection) {}
 
         pub fn connect_once_after_switch_on(&self, _peer_id: &str) {}
@@ -77,8 +70,6 @@ pub mod bluetooth_channel_service {
         pub fn note_refused(&self, _peer_id: &str) {}
 
         pub fn close_rejected_link(&self, _address: String, _device_id: Option<&str>) {}
-
-        pub fn close_links_after_session(&self, _peer_id: &str) {}
     }
 
     #[async_trait::async_trait]

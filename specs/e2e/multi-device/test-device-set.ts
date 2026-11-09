@@ -12,6 +12,7 @@ import { BleMockBroker } from './providers/ble-mock-broker.ts';
 import { LinuxProvider, LinuxRun } from './providers/linux.ts';
 import { AndroidProvider } from './providers/android.ts';
 import { TcpProvider } from './providers/tcp.ts';
+import { WindowsProvider } from './providers/windows.ts';
 import { PhoneGroup } from './phones/phone-group.ts';
 import { RUN_ROOT } from './run-root.ts';
 import { TestDevicePlatform, TestDeviceSource } from './test-device-platform.ts';
@@ -43,7 +44,11 @@ interface StartableTestDevice {
   stop(keepFiles: boolean): Promise<void>;
 }
 
-const DEFAULT_VIRTUAL_PLATFORMS: TestDevicePlatform[] = [TestDevicePlatform.Linux];
+// Without FINI_E2E_VIRTUAL_PLATFORMS a job starts the desktop platform of its
+// host: a fini-app process runs only on its own platform.
+const DEFAULT_VIRTUAL_PLATFORMS: TestDevicePlatform[] = [
+  process.platform === 'win32' ? TestDevicePlatform.Windows : TestDevicePlatform.Linux,
+];
 const PLATFORMS = Object.values(TestDevicePlatform);
 
 export class TestDeviceSet {
@@ -67,7 +72,9 @@ export class TestDeviceSet {
     const entries = fromEnv
       ? fromEnv.split(',').map((item) => item.trim()).filter(Boolean).map(parseEntry)
       : Object.entries(platforms).map(([slug, platform]) => ({ slug, platform, source: TestDeviceSource.Virtual }));
-    if (entries.length < 2) throw new Error(`a multi-device test needs at least two test devices, got ${entries.length}`);
+    // One is enough for a device-support check of a platform (for example the
+    // app start); the multi-device specs use two or more.
+    if (entries.length < 1) throw new Error('a test needs at least one test device, got 0');
     const runId = process.env.FINI_E2E_RUN_ID ?? `${new Date().toISOString().replace(/[:.]/g, '-')}-${process.pid}`;
     return new TestDeviceSet(entries, channel, join(RUN_ROOT, runId));
   }
@@ -151,6 +158,8 @@ export class TestDeviceSet {
           const phoneIndex = phones.indexOf(entry);
           return new AndroidProvider(entry.slug, phoneSerials[phoneIndex], phoneIndex, this.runDir);
         }
+        case TestDevicePlatform.Windows:
+          return new WindowsProvider(entry.slug, index, this.runDir);
       }
     });
   }
