@@ -1,9 +1,9 @@
 // The pull-request and release gate steps (ADR-0013 D9), for a developer's
 // computer: the `make pr-gate-*` targets call them as `npm run gate:<step>`.
-// Each step builds a stage of containers/linux/Containerfile with docker or
-// podman (see `engine()`) and runs its command in it, with the repo mounted at
-// /work. CI does the same with podman in .github/actions/podman-stage, and
-// runs the same commands.
+// Each step builds a stage of containers/linux/Containerfile with the
+// container engine (see `engine()`; docs/container.md, "Container engine") and
+// runs its command in it, with the repo mounted at /work. CI does the same in
+// .github/actions/container-stage, and runs the same commands.
 //
 //   node scripts/ci-gate.mts <fe-unit|be-compile|be-unit|e2e-build-image|
 //                             e2e-run|e2e-artifacts|e2e-cleanup>
@@ -69,14 +69,14 @@ const isDocker = () => basename(engine()).startsWith('docker');
 const isPodman = () => !isDocker();
 
 /**
- * Local name of a stage, the same name that .github/actions/podman-stage gives.
+ * Local name of a stage, the same name that .github/actions/container-stage gives.
  * A plain name, so that docker and podman both find it.
  */
 const imageName = (stage: string) => `fini-linux-${stage}`;
 
 /**
  * Builds a stage of containers/linux/Containerfile. With podman it uses the
- * flags of .github/actions/podman-stage, and the GHCR layer cache when
+ * flags of .github/actions/container-stage, and the GHCR layer cache when
  * FINI_CONTAINER_CACHE is set. With docker it is a plain `docker build` with
  * the local cache of docker.
  */

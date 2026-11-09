@@ -27,7 +27,7 @@ Make every test claim defensible:
 | E2E CLI-only | Playwright + `createCliClient()` | project `cli` in `specs/e2e/playwright.config.ts` | `specs/e2e/*.spec.ts` (e.g. `reminder-bridge.spec.ts`) |
 | Android on a physical phone | manual device automation | route to `fini-android-testing` | covered by that skill |
 
-CI parity: the workflows build the same `containers/` stages with podman (`.github/actions/podman-stage`) and run the same commands in them: `npm run test:unit`, `cargo test`, `npm run gate:e2e:run` and `npm run test:e2e:android`. On a developer's computer, `npm run gate:*` and `npm run test:e2e:android` (`scripts/ci-gate.mts`, `scripts/e2e-android.mts`) build and run the same stages with podman or docker; the `make pr-gate-*` targets are local shortcuts to them.
+CI parity: the workflows build the same `containers/` stages with the container engine of CI (`.github/actions/container-stage`; `docs/container.md`, "Container engine") and run the same commands in them: `npm run test:unit`, `cargo test`, `npm run gate:e2e:run` and `npm run test:e2e:android`. On a developer's computer, `npm run gate:*` and `npm run test:e2e:android` (`scripts/ci-gate.mts`, `scripts/e2e-android.mts`) build and run the same stages with the local container engine; the `make pr-gate-*` targets are local shortcuts to them.
 
 ## Choose the right test category
 

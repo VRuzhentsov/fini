@@ -8,16 +8,34 @@ developer's computer. Which CI job uses which image is in
 
 - Use one container image for each platform where possible.
 - Use one base version for all images: `debian:bookworm-slim`. The Linux and
-  the Android images, and the CLI runtime stage, all start from it. Bookworm gives glibc 2.36, the
-  oldest glibc that the Linux desktop app needs.
-- CI uses podman as the container engine. Local development uses docker or
-  podman: the scripts find the engine (podman first, then docker), and
-  `CONTAINER_ENGINE=podman|docker` sets it. Each image is in a file with the
-  name `Containerfile`.
+  the Android images, and the CLI runtime stage, all start from it. Bookworm
+  gives glibc 2.36, the oldest glibc that the Linux desktop app needs.
+- Each image is in a file with the name `Containerfile`. All images build and
+  run with each container engine (see "Container engine").
 - Build Windows and macOS/iOS on native runners, not in a container. Tauri
   builds them only on their own operating system: Windows on
   `windows-latest`, macOS on `macos-latest`.
 - Keep Gradle and Kotlin versions in the repo, not in an image.
+
+## Container engine
+
+Fini is container-engine agnostic. Every image builds and runs with podman or
+docker. CI uses podman (selected with `CONTAINER_ENGINE`). Local development
+auto-detects the engine, podman first, and `CONTAINER_ENGINE` overrides it.
+
+- CI: each workflow that builds an image sets `CONTAINER_ENGINE: podman` one
+  time, in its top-level `env`, and gives it to
+  `.github/actions/container-stage` as the input `engine`. The action calls
+  that engine for each command.
+- Local: `containers/run.sh`, `scripts/ci-gate.mts`, `scripts/e2e-android.mts`
+  and the `Makefile` find the engine in the same way. A `CONTAINER_ENGINE`
+  that is empty, `missing` or not installed stops them with one message.
+- Only podman uses the GHCR layer cache and its flags (`--layers`,
+  `--cache-from`, `--cache-to`, `--cache-ttl`, `--retry`) and the `:z` mount
+  option (a shared SELinux label). Docker builds with its local cache only.
+- With docker, the local commands run with the uid and gid of the user
+  (`--user`), so that the files in the repo do not belong to root. With
+  rootless podman, root in the container is the user on the host.
 
 ## Images and stages
 
@@ -84,8 +102,8 @@ Examine this pin again when a stable emulator newer than 37.2.13 is released.
 ## How CI and a developer get an image
 
 No file holds an image reference. CI and a developer always build the image
-from its `Containerfile`. CI uses `podman build` (`.github/actions/podman-stage`), and a layer cache
-in GHCR makes the build fast. The cache repositories are
+from its `Containerfile`, with `.github/actions/container-stage` in CI. With
+podman, the engine of CI, a layer cache in GHCR makes the build fast. The cache repositories are
 `ghcr.io/<owner>/fini-cache/linux` and `ghcr.io/<owner>/fini-cache/android`:
 
 ```
@@ -147,17 +165,12 @@ The results:
   not stop the Gradle build.
 - **`containers/run.sh linux|android <command>`**: the local wrapper. It
   builds the `build` stage of the platform (local name
-  `fini-<platform>-build`), and then does `podman run` or `docker run` (the
-  engine rule in "Rules") with the repo mounted at `/work`. It keeps named
+  `fini-<platform>-build`), and then runs the command with the container
+  engine ("Container engine"), with the repo mounted at `/work`. It keeps named
   volumes for the cargo registry, the cargo target directory, Gradle, npm and
   `$HOME` (below `/cache`). It passes the host variables `CI`, `FINI_*`,
-  `TAURI_*`, `ANDROID_KEY_*` and `ANDROID_KEYSTORE_*`. With docker, the
-  command runs with the uid and gid of the user (`--user`), so that the
-  files in the repo do not belong to root. `scripts/ci-gate.mts` and
-  `scripts/e2e-android.mts` start their containers in the same way.
-- A `CONTAINER_ENGINE` that is empty, `missing` or not installed stops
-  `containers/run.sh`, `scripts/ci-gate.mts`, `scripts/e2e-android.mts` and
-  `make require-container` with one message.
+  `TAURI_*`, `ANDROID_KEY_*` and `ANDROID_KEYSTORE_*`. `scripts/ci-gate.mts`
+  and `scripts/e2e-android.mts` start their containers in the same way.
 
 ## CLI
 

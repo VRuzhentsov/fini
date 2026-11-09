@@ -93,7 +93,7 @@ this skill's physical phone:
 
 ```bash
 npm run build:android:e2e          # x86_64 debug APK with devtools (make android-build-emulator-e2e)
-npm run test:e2e:android           # podman image, two emulators on one netsim radio
+npm run test:e2e:android           # android e2e image, two emulators on one netsim radio
 ```
 
 `docs/e2e-android.md` has the details. The bridge above also works on such a phone:

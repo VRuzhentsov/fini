@@ -172,8 +172,8 @@ updater key and `latest.json` desktop manifest.
 - Rust (via rustup)
 - Node.js + npm
 - Linux: webkit2gtk4.1-devel and related packages
-- Android: podman or docker (the android build image has the JDK, the SDK and the NDK), and adb on the host to deploy (see `src-tauri/gen/android/README.md`)
-- Container gates and e2e: podman or docker
+- Android: a container engine (the android build image has the JDK, the SDK and the NDK), and adb on the host to deploy (see `src-tauri/gen/android/README.md`)
+- Container gates and e2e: a container engine, podman or docker (see `docs/container.md`, "Container engine")
 
 ### Run (desktop)
 
@@ -225,7 +225,7 @@ unset RELEASE_TAG_GPG_PASSPHRASE
 
 The Android builds run in the `build` stage of `containers/android/Containerfile`
 (JDK 21, the Android SDK and NDK, Rust and Node), through `containers/run.sh`
-with podman or docker. The host needs only the container engine, and adb for
+with the container engine. The host needs only the container engine, and adb for
 the deploy targets.
 
 ```bash
@@ -282,19 +282,19 @@ flatpak run com.fini.app
 
 Use the CLI runtime image when you want to run the CLI inside a container. It
 is the `runtime` stage of `containers/linux/Containerfile`: `debian:bookworm-slim`
-with the static musl CLI only. The Make targets use podman when it is
-installed, else docker; `CONTAINER_ENGINE=podman|docker` sets the engine.
+with the static musl CLI only. The Make targets use the container engine
+(`docs/container.md`, "Container engine").
 
 ```bash
 make runtime-image
 make runtime-smoke
 
 # default CLI behavior
-podman run --rm fini-runtime
+${CONTAINER_ENGINE:-podman} run --rm fini-runtime
 
 # explicit CLI commands (the data is in /data)
-podman run --rm fini-runtime --help
-podman run --rm -v fini-data:/data fini-runtime --json space list
+${CONTAINER_ENGINE:-podman} run --rm fini-runtime --help
+${CONTAINER_ENGINE:-podman} run --rm -v fini-data:/data fini-runtime --json space list
 ```
 
 The published container image has only the release CLI binary. The images for

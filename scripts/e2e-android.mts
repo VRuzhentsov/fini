@@ -7,7 +7,7 @@
 // /dev/kvm and the repo mounted. The container has its own network, so its
 // adb server does not touch the adb server of the host. In the container
 // (FINI_E2E_CONTAINER_RUNNER=1) it runs Playwright; CI starts it there with
-// .github/actions/podman-stage. Phones start only when a test needs them
+// .github/actions/container-stage. Phones start only when a test needs them
 // (ADR-0013 D7).
 
 import { spawnSync } from 'node:child_process';
@@ -17,7 +17,7 @@ import { E2eEnv, E2eProject } from '../specs/e2e/e2e-project.ts';
 import { TestDevicePlatform } from '../specs/e2e/multi-device/test-device-platform.ts';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-// The local name that .github/actions/podman-stage gives the same stage. A
+// The local name that .github/actions/container-stage gives the same stage. A
 // plain name, so that docker and podman both find it.
 const IMAGE = process.env.FINI_ANDROID_PHONES_IMAGE ?? 'fini-android-e2e';
 // By default this runner starts only virtual Android test devices: the job
@@ -65,7 +65,7 @@ if (ENGINE === '' || ENGINE === 'missing' || !installed(ENGINE)) {
 const isDocker = basename(ENGINE).startsWith('docker');
 const isPodman = !isDocker;
 
-// With podman: the flags of .github/actions/podman-stage. FINI_CONTAINER_CACHE
+// With podman: the flags of .github/actions/container-stage. FINI_CONTAINER_CACHE
 // gives the GHCR layer cache, for example `ghcr.io/vruzhentsov/fini-cache`;
 // without it the local layer cache only. FINI_CONTAINER_CACHE_PUSH=1 writes to
 // it too. With docker: a plain `docker build` with the local cache of docker.

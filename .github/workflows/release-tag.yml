@@ -18,6 +18,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  # The container engine of the CI jobs (docs/container.md, "Container engine").
+  CONTAINER_ENGINE: podman
   NODE_VERSION: "24"
 
 jobs:
@@ -215,7 +217,7 @@ jobs:
           grep -q "\"version\": \"$version\"" src-tauri/tauri.conf.json
 
       - name: Build Linux bundles
-        uses: ./.github/actions/podman-stage
+        uses: ./.github/actions/container-stage
         env:
           FINI_TAURI_UPDATER_PUBKEY: ${{ secrets.FINI_TAURI_UPDATER_PUBKEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -223,6 +225,7 @@ jobs:
           # The container has no FUSE; linuxdeploy extracts itself instead.
           APPIMAGE_EXTRACT_AND_RUN: "1"
         with:
+          engine: ${{ env.CONTAINER_ENGINE }}
           image: linux
           stage: build
           # False on a tag push: a release run only reads the cache.
@@ -267,11 +270,12 @@ jobs:
 
       - name: Build Linux CLI (static musl)
         if: matrix.cli_target != ''
-        uses: ./.github/actions/podman-stage
+        uses: ./.github/actions/container-stage
         env:
           FINI_TAURI_UPDATER_PUBKEY: ${{ secrets.FINI_TAURI_UPDATER_PUBKEY }}
           FINI_CLI_UPDATE_REPOSITORY: ${{ github.repository }}
         with:
+          engine: ${{ env.CONTAINER_ENGINE }}
           image: linux
           stage: build
           pass-env: FINI_TAURI_UPDATER_PUBKEY FINI_CLI_UPDATE_REPOSITORY
@@ -541,8 +545,9 @@ jobs:
           grep -q "\"version\": \"$version\"" src-tauri/tauri.conf.json
 
       - name: Build Android APK and AAB (arm64)
-        uses: ./.github/actions/podman-stage
+        uses: ./.github/actions/container-stage
         with:
+          engine: ${{ env.CONTAINER_ENGINE }}
           image: android
           stage: build
           # False on a tag push: a release run only reads the cache.
@@ -552,13 +557,14 @@ jobs:
       # apksigner and jarsigner come from the same image. The keystore is
       # written in the container only, and goes away with it.
       - name: Sign Android artifacts
-        uses: ./.github/actions/podman-stage
+        uses: ./.github/actions/container-stage
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         with:
+          engine: ${{ env.CONTAINER_ENGINE }}
           image: android
           stage: build
           pass-env: ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD
@@ -656,7 +662,7 @@ jobs:
           retention-days: 14
 
   # The CLI runtime image (containers/linux/Containerfile, stage `runtime`),
-  # built with podman and pushed to GHCR as ghcr.io/<owner>/fini.
+  # built with the container engine and pushed to GHCR as ghcr.io/<owner>/fini.
   build-docker-image:
     name: Build and Publish Docker Image
     runs-on: ubuntu-26.04
@@ -686,8 +692,8 @@ jobs:
           grep -q "^version = \"$version\"" src-tauri/Cargo.lock
           grep -q "\"version\": \"$version\"" src-tauri/tauri.conf.json
 
-      # Podman, cosign and the attestation read the credentials that this
-      # action writes for Docker.
+      # The container engine, cosign and the attestation read the credentials
+      # that this action writes for Docker.
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
@@ -728,8 +734,9 @@ jobs:
 
       - name: Build CLI image
         id: cli_image
-        uses: ./.github/actions/podman-stage
+        uses: ./.github/actions/container-stage
         with:
+          engine: ${{ env.CONTAINER_ENGINE }}
           image: linux
           stage: runtime
           # False on a tag push: a release run only reads the cache.
@@ -740,10 +747,12 @@ jobs:
       - name: Run CLI image smoke check
         env:
           IMAGE: ${{ steps.cli_image.outputs.image }}
-        run: podman run --rm "$IMAGE" --help
+        run: |
+          "$CONTAINER_ENGINE" run --rm "$IMAGE" --help
 
       # Pushes each tag of steps.meta; they all name the one image built
-      # above, so they share one digest.
+      # above, so they share one digest. push-to-registry pushes from the
+      # podman image store: it is correct while CONTAINER_ENGINE is podman.
       - name: Push CLI image
         id: docker_build
         uses: redhat-actions/push-to-registry@v3

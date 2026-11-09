@@ -1,10 +1,11 @@
-name: Podman stage
+name: Container stage
 description: >-
-  Builds one stage of containers/<image>/Containerfile with podman and the
-  GHCR layer cache (docs/container.md, "How CI and a developer get an
-  image"), and then runs one command in it, with the repo mounted at /work.
-  A second call for the same image and stage in the same job does not build
-  again: it only runs its command.
+  Builds one stage of containers/<image>/Containerfile with the container
+  engine that the caller selects, and then runs one command in it, with the
+  repo mounted at /work (docs/container.md, "Container engine"). With podman,
+  the build uses the GHCR layer cache (docs/container.md, "How CI and a
+  developer get an image"). A second call for the same image and stage in the
+  same job does not build again: it only runs its command.
 
 # The cache is read with no login. For this, the cache packages
 # ghcr.io/<owner>/<repo>-cache/linux and /android must be public: after
@@ -12,6 +13,12 @@ description: >-
 # the package, "Package settings", "Change visibility", Public).
 
 inputs:
+  engine:
+    description: >-
+      The container engine: podman or docker. The workflows set it from their
+      `CONTAINER_ENGINE` (podman in CI). Only podman uses the GHCR layer cache
+      and the `:z` mount option; docker builds with its local cache only.
+    required: true
   image:
     description: >-
       The directory under containers/: linux or android. The CLI runtime image
@@ -29,9 +36,9 @@ inputs:
   push-cache:
     description: >-
       'true' writes the layer cache to GHCR (--cache-to), and logs in to GHCR
-      for it. Only a pull request from a branch of this repository gives
-      'true' (and `packages: write`); release, dispatch and fork runs only
-      read the cache.
+      for it. Podman only. Only a pull request from a branch of this
+      repository gives 'true' (and `packages: write`); release, dispatch and
+      fork runs only read the cache.
     required: false
     default: "false"
   pass-env:
@@ -41,8 +48,8 @@ inputs:
       are always given.
     required: false
     default: ""
-  podman-args:
-    description: More arguments for `podman run`, for example `--device /dev/kvm --shm-size=2g`.
+  engine-args:
+    description: More arguments for `<engine> run`, for example `--device /dev/kvm --shm-size=2g`.
     required: false
     default: ""
   tags:
@@ -70,10 +77,15 @@ runs:
       id: names
       shell: bash
       env:
+        ENGINE: ${{ inputs.engine }}
         IMAGE: ${{ inputs.image }}
         STAGE: ${{ inputs.stage }}
       run: |
         set -euo pipefail
+        case "$ENGINE" in
+          podman | docker) ;;
+          *) echo "engine must be podman or docker, not '$ENGINE'" >&2; exit 1 ;;
+        esac
         # An image name must be lowercase; GitHub gives the owner as `VRuzhentsov`.
         owner="${GITHUB_REPOSITORY_OWNER,,}"
         repo="${GITHUB_REPOSITORY#*/}"
@@ -84,7 +96,7 @@ runs:
 
     # Podman reads the credentials that this action writes for Docker.
     - name: Login to GHCR
-      if: inputs.push-cache == 'true'
+      if: inputs.push-cache == 'true' && inputs.engine == 'podman'
       uses: docker/login-action@v3
       with:
         registry: ghcr.io
@@ -94,6 +106,7 @@ runs:
     - name: Build ${{ inputs.image }} stage ${{ inputs.stage }}
       shell: bash
       env:
+        ENGINE: ${{ inputs.engine }}
         IMAGE: ${{ inputs.image }}
         STAGE: ${{ inputs.stage }}
         CACHE: ${{ steps.names.outputs.cache }}
@@ -103,13 +116,18 @@ runs:
         LABELS: ${{ inputs.labels }}
       run: |
         set -euo pipefail
-        if podman image exists "$LOCAL"; then
+        if "$ENGINE" image inspect "$LOCAL" > /dev/null 2>&1; then
           echo "$LOCAL is already built in this job."
           exit 0
         fi
-        args=(--layers --cache-from "$CACHE")
-        if [ "$PUSH_CACHE" = "true" ]; then
-          args+=(--cache-to "$CACHE")
+        args=()
+        # The layer cache in GHCR and these flags are for podman (buildah)
+        # only. Docker builds with its local cache.
+        if [ "$ENGINE" = podman ]; then
+          args+=(--layers --cache-from "$CACHE" --cache-ttl=168h --retry 5 --retry-delay 5s)
+          if [ "$PUSH_CACHE" = "true" ]; then
+            args+=(--cache-to "$CACHE")
+          fi
         fi
         while IFS= read -r tag; do
           if [ -n "$tag" ]; then args+=(-t "$tag"); fi
@@ -117,9 +135,7 @@ runs:
         while IFS= read -r label; do
           if [ -n "$label" ]; then args+=(--label "$label"); fi
         done <<< "$LABELS"
-        podman build "${args[@]}" \
-          --cache-ttl=168h \
-          --retry 5 --retry-delay 5s \
+        "$ENGINE" build "${args[@]}" \
           -f "containers/${IMAGE}/Containerfile" --target "$STAGE" \
           -t "$LOCAL" \
           .
@@ -128,10 +144,11 @@ runs:
       if: inputs.run != ''
       shell: bash
       env:
+        ENGINE: ${{ inputs.engine }}
         LOCAL: ${{ steps.names.outputs.local }}
         RUN_COMMAND: ${{ inputs.run }}
         PASS_ENV: ${{ inputs.pass-env }}
-        PODMAN_ARGS: ${{ inputs.podman-args }}
+        ENGINE_ARGS: ${{ inputs.engine-args }}
       run: |
         set -euo pipefail
         env_args=()
@@ -139,12 +156,14 @@ runs:
         for name in CI GITHUB_ACTIONS GITHUB_REF GITHUB_REF_NAME GITHUB_SHA GITHUB_REPOSITORY GITHUB_RUN_ID GITHUB_RUN_ATTEMPT $PASS_ENV; do
           env_args+=(-e "$name")
         done
-        # shellcheck disable=SC2206 # PODMAN_ARGS is a list of arguments.
-        extra_args=($PODMAN_ARGS)
-        # Rootless podman: root in the container is the runner user on the
-        # host, so the files that the command writes in /work belong to it.
-        # `:z` gives the mount a shared SELinux label.
-        podman run --rm \
-          -v "${GITHUB_WORKSPACE}:/work:z" -w /work \
+        # shellcheck disable=SC2206 # ENGINE_ARGS is a list of arguments.
+        extra_args=($ENGINE_ARGS)
+        # With rootless podman, root in the container is the runner user on
+        # the host, so the files that the command writes in /work belong to
+        # it. `:z` gives the mount a shared SELinux label (podman only).
+        mount_option=
+        if [ "$ENGINE" = podman ]; then mount_option=:z; fi
+        "$ENGINE" run --rm \
+          -v "${GITHUB_WORKSPACE}:/work${mount_option}" -w /work \
           "${env_args[@]}" "${extra_args[@]}" \
           "$LOCAL" bash -euo pipefail -c "$RUN_COMMAND"

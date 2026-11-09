@@ -16,6 +16,10 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  # The container engine of the CI jobs (docs/container.md, "Container engine").
+  CONTAINER_ENGINE: podman
+
 jobs:
   changes:
     name: Detect App Changes
@@ -70,8 +74,9 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Run frontend unit tests
-        uses: ./.github/actions/podman-stage
+        uses: ./.github/actions/container-stage
         with:
+          engine: ${{ env.CONTAINER_ENGINE }}
           image: linux
           stage: build
           # Only a pull request from a branch of this repository writes the
@@ -147,11 +152,12 @@ jobs:
       # its own crate (see ble-mock-broker/Cargo.toml); this job exists so
       # the next binary like it fails a PR instead of a release.
       - name: Build Linux bundles
-        uses: ./.github/actions/podman-stage
+        uses: ./.github/actions/container-stage
         env:
           # The container has no FUSE; linuxdeploy extracts itself instead.
           APPIMAGE_EXTRACT_AND_RUN: "1"
         with:
+          engine: ${{ env.CONTAINER_ENGINE }}
           image: linux
           stage: build
           # Only a pull request from a branch of this repository writes the

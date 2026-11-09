@@ -25,9 +25,9 @@ a virtual Android test device has it.
 ```
 npm run test:e2e:android [-- <playwright args>]
 └── scripts/e2e-android.mts
-    ├── on the host: podman or docker build -f containers/android/Containerfile --target e2e
-    │               podman or docker run --device /dev/kvm --shm-size=2g -v <repo>:/work:z
-    │               (CI: .github/actions/podman-stage builds the stage and runs the script in it)
+    ├── on the host: <engine> build -f containers/android/Containerfile --target e2e
+    │               <engine> run --device /dev/kvm --shm-size=2g -v <repo>:/work (:z with podman)
+    │               (CI: .github/actions/container-stage builds the stage and runs the script in it)
     └── in the container (FINI_E2E_CONTAINER_RUNNER=1, FINI_E2E_VIRTUAL_PLATFORMS=android):
         npx playwright test --project=device-support
         └── fixture testDevices: the spec's testDevicePlatforms (a: Android, b: Android)
@@ -39,6 +39,9 @@ npm run test:e2e:android [-- <playwright args>]
             │   └── devtools bridge: app TCP 9223 → adb forward → host port 9223, 9225
             └── global-teardown.ts → PhoneGroup.stopRunning()
 ```
+
+`<engine>` is the container engine ([`container.md`](container.md), "Container
+engine").
 
 ## The image
 

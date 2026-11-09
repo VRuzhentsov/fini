@@ -3,8 +3,8 @@ export
 
 # The images are containers/<platform>/Containerfile (docs/container.md);
 # scripts/ci-gate.mts, scripts/e2e-android.mts and containers/run.sh build
-# them. CI uses podman. Locally the engine is podman when it is installed,
-# else docker; override with `make <target> CONTAINER_ENGINE=docker|podman`.
+# them with the container engine (docs/container.md, "Container engine");
+# override it with `make <target> CONTAINER_ENGINE=docker|podman`.
 # Detected once (`:=`), not for each use, and exported so that run.sh and the
 # npm scripts use the same engine.
 ifeq ($(origin CONTAINER_ENGINE),undefined)
@@ -405,7 +405,7 @@ e2e-phone:
 	npx playwright test --config specs/e2e/playwright.config.ts --project multi-device -g "$(E2E_PHONE_SPEC)"
 
 # Build/update the published CLI runtime image locally: the same
-# Containerfile and stage that CI builds with .github/actions/podman-stage.
+# Containerfile and stage that CI builds with .github/actions/container-stage.
 # `--layers` and `--cache-ttl` are podman flags; docker caches layers by default.
 runtime-image:
 	$(MAKE) require-container
@@ -554,7 +554,7 @@ android-build: require-container
 
 # Local shortcut for the npm script that CI calls directly. Both run it in the
 # android `build` image: locally through containers/run.sh, in CI through
-# .github/actions/podman-stage.
+# .github/actions/container-stage.
 android-build-emulator-e2e: require-container
 	$(ANDROID_BUILD_RUN) npm run build:android:e2e
 

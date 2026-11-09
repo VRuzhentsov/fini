@@ -22,6 +22,10 @@ on:
         type: boolean
         default: false
 
+env:
+  # The container engine of the CI jobs (docs/container.md, "Container engine").
+  CONTAINER_ENGINE: podman
+
 jobs:
   android-e2e:
     name: Android E2E
@@ -56,8 +60,9 @@ jobs:
             android-e2e-${{ runner.os }}-
 
       - name: Build x86_64 debug APK with devtools
-        uses: ./.github/actions/podman-stage
+        uses: ./.github/actions/container-stage
         with:
+          engine: ${{ env.CONTAINER_ENGINE }}
           image: android
           stage: build
           push-cache: ${{ inputs.push_cache }}
@@ -74,18 +79,19 @@ jobs:
         # `android` `e2e` stage. FINI_E2E_CONTAINER_RUNNER=1 makes
         # scripts/e2e-android.mts run Playwright at once, as it does in the
         # container that it starts on a developer's computer.
-        uses: ./.github/actions/podman-stage
+        uses: ./.github/actions/container-stage
         env:
           FINI_E2E_KEEP: "1"
           FINI_E2E_CONTAINER_RUNNER: "1"
         with:
+          engine: ${{ env.CONTAINER_ENGINE }}
           image: android
           stage: e2e
           push-cache: ${{ inputs.push_cache }}
           pass-env: FINI_E2E_KEEP FINI_E2E_CONTAINER_RUNNER
           # --shm-size: with the default 64 MB of /dev/shm the emulator crashes
           # (SIGSEGV) at start.
-          podman-args: --device /dev/kvm --shm-size=2g
+          engine-args: --device /dev/kvm --shm-size=2g
           run: npm run test:e2e:android
 
       - name: Show the free disk space

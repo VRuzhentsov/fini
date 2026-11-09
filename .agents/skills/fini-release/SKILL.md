@@ -72,7 +72,7 @@ Before the user starts the Release Button, an agent can report the state:
 ## Quality Gates
 
 `release-tag.yml` calls `quality-gates.yml`. CI runs these steps in the
-`containers/` images with podman (`.github/actions/podman-stage`):
+`containers/` images with the container engine of CI (`.github/actions/container-stage`; `docs/container.md`, "Container engine"):
 
 - backend unit tests in the `linux` `build` image: `cargo test --features cli-plane,ui-plane,desktop-updater`; it compiles the tests first
 - CLI runtime image: `containers/linux/Containerfile`, stage `runtime`, and its smoke check (`--help`)

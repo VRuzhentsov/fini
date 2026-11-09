@@ -17,7 +17,7 @@ wrapper of the same npm script.
 | BE unit tests | `linux` image, stage `build`: `cargo test` with the features `cli-plane,ui-plane,desktop-updater` | `make backend-test` on the host; `make pr-gate-be-unit` in the `linux` `build` image | ✅ | As in the CI column |
 | Linux desktop app (glibc) | `linux` image, stage `build`: `npm run tauri build` with the bundles `appimage,deb,rpm` | `make desktop-debug-dev` or `make dev` on the host | ✅ | As in the CI column; the release also builds arm64 in the arm64 `linux` image on `ubuntu-26.04-arm` |
 | Linux CLI (static musl) | `linux` image, stage `build`: `cargo build --bin fini --features cli-plane --target x86_64-unknown-linux-musl`, with no Bluetooth ([`container.md`](container.md), "CLI"). x86_64 only: the release has no arm64 Linux CLI | `cargo build` on the host | ✅ | As in the CI column |
-| CLI container image | `podman build -f containers/linux/Containerfile --target runtime`; the release publishes it to GHCR | `make runtime-image`, `make runtime-smoke` | ✅ | As in the CI column |
+| CLI container image | `<engine> build -f containers/linux/Containerfile --target runtime`; the release publishes it to GHCR | `make runtime-image`, `make runtime-smoke` | ✅ | As in the CI column |
 | Desktop e2e | `linux` image, stage `e2e` ([`e2e.md`](e2e.md)) | `make e2e` on the host, on the real screen; `make pr-gate-e2e` in the `linux` `e2e` image | ✅ | As in the CI column |
 | Android app | `android` image, stage `build`: `npm run tauri android build` | `make android-dev`, `make android-debug-deploy` in the `android` image; adb connects to the phone | ✅ | As in the CI column |
 | Android e2e (emulator) | `android` image, stage `e2e`: `npm run test:e2e:android` (needs /dev/kvm); the APK is built in the `android` `build` image | `npm run test:e2e:android` | ✅ | As in the CI column |
@@ -33,8 +33,9 @@ The runner of the Linux and Android container jobs is `ubuntu-26.04`
 and Buildah 1.42.1. These jobs do not use `ubuntu-24.04`: its Podman 4.9.3
 has bugs in the layer cache. The images stay on `debian:bookworm-slim`. The
 runner gives only the Podman version. Each Linux and Android job calls
-`.github/actions/podman-stage`: it does `podman build` of its stage with the
-GHCR layer cache (the cache rules are in [`container.md`](container.md), "How
+`.github/actions/container-stage` with the container engine of the workflow
+(`CONTAINER_ENGINE: podman`; see [`container.md`](container.md), "Container
+engine"). It builds the stage with the GHCR layer cache (the cache rules are in [`container.md`](container.md), "How
 CI and a developer get an image"), and then runs its command in the stage,
 with the repo mounted at `/work`.
 
@@ -49,10 +50,6 @@ release job that publishes the CLI image gets it too. Release runs
 requests from a fork read the cache only. The cache packages are public, so a
 read needs no GHCR login.
 
-CI uses podman. Local development uses docker or podman: the scripts find
-the engine (podman first, then docker), and `CONTAINER_ENGINE=podman|docker`
-sets it. Only podman uses the GHCR layer cache; docker uses its local cache.
-
 | File | Job or step | What it does |
 |---|---|---|
 | `ci.yml` | `changes` | The filter `app` has `containers/**` and `.github/actions/**` |
@@ -64,7 +61,7 @@ sets it. Only podman uses the GHCR layer cache; docker uses its local cache.
 | `android-e2e.yml` | Android E2E | `npm run build:android:e2e` in the `android` `build` image; `npm run test:e2e:android` in the `android` `e2e` image; no setup-java, setup-android or Rust steps |
 | `release-tag.yml` | `build-linux` | The `linux` `build` image; a static musl CLI for x86_64 only, with the asset name `fini-<tag>-linux-x86_64-unknown-linux-musl-cli.tar.gz`. The arm64 matrix entry builds the arm64 desktop app only, and the release has no arm64 Linux CLI |
 | `release-tag.yml` | `build-android` | `npm run tauri android build` and the signing in the `android` `build` image |
-| `release-tag.yml` | `build-docker-image` | `podman build` of the `linux` `runtime` stage, then push to GHCR (`redhat-actions/push-to-registry`) |
+| `release-tag.yml` | `build-docker-image` | The build of the `linux` `runtime` stage, then push to GHCR (`redhat-actions/push-to-registry`, which pushes from the podman image store) |
 | `release-tag.yml` | `build-windows` | `windows-latest` and `windows-11-arm`; no container |
 | `release-dry-run.yml` | all | The same jobs as `release-tag.yml`, with no publish |
 | `ghcr-cleanup.yml` | cleanup | Deletes the cache tags that are older than 7 days, on a push to `main` or by hand |
@@ -75,7 +72,7 @@ The scripts that build the same stages on a developer's computer:
 
 | Script | What it does |
 |---|---|
-| `scripts/ci-gate.mts` | `npm run gate:*`: builds a `linux` stage (`build` or `e2e`) and runs the command of the step in it. With podman, it uses the flags of `podman-stage`, and the GHCR layer cache when `FINI_CONTAINER_CACHE` is set. In the `e2e` container (`FINI_E2E_CONTAINER_RUNNER=1`), `gate:e2e:run` builds the e2e binaries and runs `scripts/e2e-runner.sh`; CI calls it there |
+| `scripts/ci-gate.mts` | `npm run gate:*`: builds a `linux` stage (`build` or `e2e`) and runs the command of the step in it. With podman, it uses the podman flags of `container-stage`, and the GHCR layer cache when `FINI_CONTAINER_CACHE` is set. In the `e2e` container (`FINI_E2E_CONTAINER_RUNNER=1`), `gate:e2e:run` builds the e2e binaries and runs `scripts/e2e-runner.sh`; CI calls it there |
 | `scripts/e2e-android.mts` | `npm run test:e2e:android`: builds the `android` `e2e` stage and runs Playwright in it, with `/dev/kvm`. In the container (`FINI_E2E_CONTAINER_RUNNER=1`), it runs Playwright at once; CI calls it there |
 | `containers/run.sh` | Runs a command in the `build` stage of `linux` or `android`. The Makefile uses it for the Android targets |
 

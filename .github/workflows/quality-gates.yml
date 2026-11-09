@@ -35,8 +35,10 @@ on:
 # The Node, Rust and system packages of the gate come from the `linux` image
 # (containers/linux/Containerfile), not from the runner, so a runner image
 # bump does not move the gate off the release's toolchain. The runner gives
-# only podman, and the Node for `npm version` below.
+# only the container engine, and the Node for `npm version` below.
 env:
+  # The container engine of the CI jobs (docs/container.md, "Container engine").
+  CONTAINER_ENGINE: podman
   # A build from scratch gains nothing from incremental files, and line tables
   # are enough for test panics; both keep the build inside the runner's disk.
   CARGO_INCREMENTAL: "0"
@@ -83,8 +85,9 @@ jobs:
           large-packages: false
 
       - name: Compile backend tests
-        uses: ./.github/actions/podman-stage
+        uses: ./.github/actions/container-stage
         with:
+          engine: ${{ env.CONTAINER_ENGINE }}
           image: linux
           stage: build
           push-cache: ${{ inputs.push_cache }}
@@ -92,8 +95,9 @@ jobs:
           run: cargo test --manifest-path src-tauri/Cargo.toml --no-run --features cli-plane,ui-plane,desktop-updater
 
       - name: Run backend tests
-        uses: ./.github/actions/podman-stage
+        uses: ./.github/actions/container-stage
         with:
+          engine: ${{ env.CONTAINER_ENGINE }}
           image: linux
           stage: build
           pass-env: CARGO_INCREMENTAL CARGO_PROFILE_DEV_DEBUG
@@ -101,8 +105,9 @@ jobs:
 
       - name: Build CLI container image
         id: cli_image
-        uses: ./.github/actions/podman-stage
+        uses: ./.github/actions/container-stage
         with:
+          engine: ${{ env.CONTAINER_ENGINE }}
           image: linux
           stage: runtime
           push-cache: ${{ inputs.push_cache }}
@@ -110,17 +115,19 @@ jobs:
       - name: Run CLI image smoke check
         env:
           IMAGE: ${{ steps.cli_image.outputs.image }}
-        run: podman run --rm "$IMAGE" --help
+        run: |
+          "$CONTAINER_ENGINE" run --rm "$IMAGE" --help
 
       # The `linux` `e2e` stage gives the toolchain, Playwright, Xvfb and the
       # GUI libraries. `gate:e2e:run` builds the e2e binaries in it and runs
       # scripts/e2e-runner.sh (FINI_E2E_CONTAINER_RUNNER=1).
       - name: Run desktop e2e flow
-        uses: ./.github/actions/podman-stage
+        uses: ./.github/actions/container-stage
         env:
           FINI_E2E_CONTAINER_RUNNER: "1"
           FINI_E2E_CI_RUN_ID: ${{ inputs.run_id_prefix }}-${{ github.run_id }}-${{ github.run_attempt }}
         with:
+          engine: ${{ env.CONTAINER_ENGINE }}
           image: linux
           stage: e2e
           push-cache: ${{ inputs.push_cache }}
@@ -129,10 +136,11 @@ jobs:
 
       - name: Print E2E artifacts on failure
         if: failure()
-        uses: ./.github/actions/podman-stage
+        uses: ./.github/actions/container-stage
         env:
           FINI_E2E_CI_RUN_ID: ${{ inputs.run_id_prefix }}-${{ github.run_id }}-${{ github.run_attempt }}
         with:
+          engine: ${{ env.CONTAINER_ENGINE }}
           image: linux
           stage: e2e
           pass-env: FINI_E2E_CI_RUN_ID
