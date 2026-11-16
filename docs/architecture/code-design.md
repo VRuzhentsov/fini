@@ -9,14 +9,22 @@ has a defect.
 
 ## Objects own their state and their behavior
 
+- Use object-oriented programming (OOP) as the default. In Rust, use structs
+  or enums with `impl` methods. In TypeScript, use classes for domain behavior.
 - Each part of the app is an object: a service, a channel, a repository, a
   scanner. The object owns its state, and its methods are the only code that
   changes that state.
 - Write behavior as a method on the object that owns the data that the
   behavior uses.
-- Do not write a free function for behavior that reads or changes the state of
-  an object. A free function is only for a pure conversion of values that no
-  object owns.
+- Put state access on its owner, rather than passing an `inner` or context
+  object to a free function.
+- Put domain parsing, validation and conversion on the value type or its
+  codec, using methods or associated functions. Purity alone is not an exception.
+- Keep framework entry points, commands and callbacks as thin calls to objects.
+  Keep a generic free helper only when no domain type owns its operation;
+  explain that exception in review.
+- Reuse an existing owner first. A new class needs a real responsibility,
+  rather than serving as a wrapper for one function.
 - Give an object the things that it needs by DI (see Patterns). An object
   that the state owns gets the state as an argument, and does not keep a
   copy of it.
@@ -116,6 +124,7 @@ is used through an interface.
 6. Else, put it on the object that owns the data.
 7. Do the name check in `docs/naming.md` for each new name.
 8. Remove the code that your change makes unused.
+9. Check each free function against the OOP rule, including pure conversions.
 
 A new file, a new object, or a new interface needs the approval of the project
 owner before you make it.

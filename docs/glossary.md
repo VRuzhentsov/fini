@@ -33,6 +33,14 @@ who knows the other design then knows where the term fits.
 
 The roles from [`code-design.md`](architecture/code-design.md).
 
+### Object-oriented programming (OOP)
+
+**Code organized around objects that own state and behavior.** A class defines
+such objects. Rust uses structs or enums with `impl` blocks for this purpose.
+
+*Elsewhere:* OOP in TypeScript and other object-oriented languages; methods
+and associated functions on Rust types.
+
 ### Service
 
 **An object that does one job and owns the state of that job**, for example
