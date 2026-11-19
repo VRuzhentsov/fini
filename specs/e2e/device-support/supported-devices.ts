@@ -46,9 +46,9 @@ export const SUPPORTED_DEVICES: SupportedDevice[] = [
     appStartTestDevices: { a: TestDevicePlatform.Android, b: TestDevicePlatform.Android },
     appStart: androidAppStart,
   },
-  // Only the app start for now. Add a channel when a device-support check
-  // proves it on Windows.
-  { platform: TestDevicePlatform.Windows, channels: [] },
+  // Only Bluetooth for now. Add Network when a device-support check proves it
+  // on Windows.
+  { platform: TestDevicePlatform.Windows, channels: [ChannelKind.Bluetooth] },
 ];
 
 /** True when the platform of each test device supports `channel`. */
