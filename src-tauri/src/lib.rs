@@ -563,8 +563,21 @@ pub fn run() {
             #[cfg(feature = "devtools")]
             channel_set_test_switch,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Android Activity and page lifetime do not own the process-wide channel.
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            if matches!(event, tauri::RunEvent::Exit) {
+                if let Some(bluetooth) = app.try_state::<std::sync::Arc<BluetoothChannelService>>() {
+                    if let Err(err) = tauri::async_runtime::block_on(bluetooth.shutdown()) {
+                        log::error!("[transport][ble] shutdown failed: {err}");
+                    }
+                }
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+            let _ = (app, event);
+        });
 }
 
 #[cfg(all(test, feature = "ui-plane"))]

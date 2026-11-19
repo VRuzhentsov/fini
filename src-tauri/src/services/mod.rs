@@ -68,8 +68,6 @@ pub mod bluetooth_channel_service {
         pub fn connect_once_after_switch_on(&self, _peer_id: &str) {}
 
         pub fn note_refused(&self, _peer_id: &str) {}
-
-        pub fn close_rejected_link(&self, _address: String, _device_id: Option<&str>) {}
     }
 
     #[async_trait::async_trait]

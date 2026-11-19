@@ -1,30 +1,10 @@
-//! The Bluetooth channel (`BluetoothChannel`): BLE GATT `DataLink`s over
-//! `ble-gatt`'s datagram tier (github.com/VRuzhentsov/ble-gatt).
+//! The Bluetooth channel uses one shared managed `PeerLink`.
+//! Plain identify frames and iroh share that owner and its scoped channels.
+//! Independent incoming attempts reach Fini's existing pairing and session checks.
+//! The iroh endpoint has no IP transports or relay.
 //!
-//! Two kinds of link share one GATT service (ADR-0009 D2, D3, D8):
-//!
-//! - **Sessions** (`SYNC_ALPN`) and `AddChannel` (`PEER_ALPN`) are iroh connections over
-//!   `ble-gatt-iroh`, to the key pinned for the pair, which TLS proves
-//!   (`BluetoothChannel::connect_session`, `BluetoothChannel::iroh_endpoint`).
-//! - **Pre-pairing frames** (discovery, pair request/accept/complete) go over
-//!   a plain `BleDataLink`: there is no pinned key to dial yet, so each frame
-//!   carries the sender's key itself.
-//!
-//! An accepted channel is routed by its first datagram (`route_inbound`): a
-//! QUIC Initial goes to the iroh transport, Fini's JSON to the gate.
-//!
-//! Linux (BlueZ via `ble_gatt::drivers::linux`) and Android (the driver
-//! `tauri-plugin-ble-gatt` builds; Fini uses it from Rust, not through Tauri
-//! IPC). See `adapter` for why construction is deferred, and
-//! `start_peripheral_once`/its caller in `sync::commands` for why the
-//! peripheral role isn't spawned from `.setup()` on Android the way it is on
-//! Linux.
-//!
-//! ADR-0003 revision: dials/accepts unconditionally, independent of
-//! Network's own state -- both transports stay connected to a paired peer
-//! at once, with `preferred_transport` only deciding which one is primary
-//! (see `pairing::DeviceConnectionState::recompute_primary_locked`),
-//! not whether Bluetooth connects at all.
+//! Native lifecycle and crossed BLE attempts belong to the core;
+//! application eligibility, trust, channel switches and delivery belong to Fini.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Weak};
@@ -36,8 +16,8 @@ use async_trait::async_trait;
 use ble_gatt::drivers::linux::LinuxDriver as DesktopDriver;
 #[cfg(target_os = "windows")]
 use ble_gatt::drivers::windows::WindowsDriver as DesktopDriver;
-use ble_gatt::datagram::{self, DatagramChannel, DatagramConfig};
-use ble_gatt::{Adapter, CharacteristicUuid, PeerAddress, ServiceUuid};
+use ble_gatt::datagram::DatagramConfig;
+use ble_gatt::{Adapter, CharacteristicUuid, PeerAddress, PeerChannel, PeerLink, PeerLinkConfig, ServiceUuid};
 use uuid::Uuid;
 
 use crate::models::{Event, Identity};
@@ -81,13 +61,16 @@ pub struct BluetoothChannelService {
     /// The iroh endpoint and its `ble-gatt-iroh` transport, built on first
     /// use (`iroh_endpoint`).
     endpoint: tokio::sync::OnceCell<(iroh::Endpoint, ble_gatt_iroh::BleGattTransport)>,
-    /// Per paired device, the address of the BLE link a pairing just used and
-    /// left up: the first session goes over it (`keep_pairing_link`).
-    pairing_links: std::sync::Mutex<std::collections::HashMap<String, String>>,
-    /// Paired devices this device connects to once, though its id is the
-    /// bigger one (`connect_once_after_switch_on`).
-    connect_once: std::sync::Mutex<std::collections::HashSet<String>>,
-    /// When this device last refused each paired device's session because
+    /// One managed BLE owner for plain frames and iroh.
+    peer_link: tokio::sync::OnceCell<Arc<PeerLink>>,
+    /// Stop work before draining the owners that already exist.
+    stopping: tokio::sync::watch::Sender<bool>,
+    initialization: tokio::sync::RwLock<()>,
+    admission: std::sync::Mutex<()>,
+    shutdown_result: tokio::sync::OnceCell<Result<(), String>>,
+    /// Scoped pairing uses until each first session acquires the channel.
+    pairing_links: std::sync::Mutex<std::collections::HashMap<String, (Uuid, iroh::EndpointId, PeerChannel)>>,
+    /// When this device last rejected each paired device's session because
     /// the channel was off here (`note_refused`).
     refused_at: std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
 }
@@ -96,12 +79,17 @@ impl BluetoothChannelService {
     pub fn new(identity: Identity, pool: DbPool, bus: Arc<EventBus>) -> Arc<Self> {
         BluetoothAdapter::this_device().set_bus(bus.clone());
         Arc::new_cyclic(|me| Self {
-            scanner: Arc::new(Scanner::new(bus.clone())),
+            scanner: Arc::new(Scanner::new(bus.clone(), me.clone())),
             advertiser: Arc::new(Advertiser::new(&identity)),
             delivery: DeliverySchedule::new(bus.clone()),
             endpoint: tokio::sync::OnceCell::new(),
+            peer_link: tokio::sync::OnceCell::new(),
+            stopping: tokio::sync::watch::channel(false).0,
+            initialization: tokio::sync::RwLock::new(()),
+            admission: std::sync::Mutex::new(()),
+            shutdown_result: tokio::sync::OnceCell::new(),
             pairing_links: std::sync::Mutex::default(),
-            connect_once: std::sync::Mutex::default(),
+
             refused_at: std::sync::Mutex::default(),
             identity,
             pool,
@@ -116,15 +104,76 @@ impl BluetoothChannelService {
         self.me.upgrade().expect("the Bluetooth channel lives as long as its tasks")
     }
 
+    fn stopping(&self) -> bool {
+        *self.stopping.borrow()
+    }
+
+    async fn wait_until_stopping(&self) {
+        let mut stopping = self.stopping.subscribe();
+        let _ = stopping.wait_for(|stopping| *stopping).await;
+    }
+
+    /// True owner shutdown only. Each drain has a bound; errors remain in the result.
+    pub async fn shutdown(&self) -> Result<(), String> {
+        {
+            let _admission = self.admission.lock().unwrap_or_else(|err| err.into_inner());
+            self.stopping.send_replace(true);
+        }
+        self.scanner.stop();
+        self.shutdown_result.get_or_init(|| async {
+            let mut errors = Vec::new();
+            let initialization = match tokio::time::timeout(Duration::from_secs(2), self.initialization.write()).await {
+                Ok(guard) => Some(guard),
+                Err(err) => {
+                    errors.push(format!("Bluetooth initialization drain timed out: {err}"));
+                    None
+                }
+            };
+            if let Some((endpoint, _)) = self.endpoint.get() {
+                if let Err(err) = tokio::time::timeout(Duration::from_secs(2), endpoint.close()).await {
+                    errors.push(format!("Bluetooth endpoint close timed out: {err}"));
+                }
+            }
+            let held = self.pairing_links.lock().map(|mut links| links.drain().map(|(_, (_, _, channel))| channel).collect::<Vec<_>>())
+                .map_err(|err| err.to_string());
+            match held {
+                Ok(held) => {
+                    let drain = async {
+                        let mut releases = futures_util::stream::FuturesUnordered::new();
+                        for channel in held {
+                            releases.push(async move { channel.release().await });
+                        }
+                        use futures_util::StreamExt;
+                        while let Some(result) = releases.next().await {
+                            if let Err(err) = result {
+                                errors.push(format!("Bluetooth held use release failed: {err}"));
+                            }
+                        }
+                    };
+                    if let Err(err) = tokio::time::timeout(Duration::from_secs(2), drain).await {
+                        errors.push(format!("Bluetooth held use drain timed out: {err}"));
+                    }
+                }
+                Err(err) => errors.push(format!("Bluetooth held use lock failed: {err}")),
+            }
+            // Always attempt managed close, even when an earlier drain failed.
+            if let Some(link) = self.peer_link.get() {
+                match tokio::time::timeout(Duration::from_secs(6), link.close()).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => errors.push(format!("Bluetooth owner close failed: {err}")),
+                    Err(err) => errors.push(format!("Bluetooth owner close timed out: {err}")),
+                }
+            }
+            drop(initialization);
+            if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
+        }).await.clone()
+    }
+
     /// Whether a session with the peer runs on Bluetooth now.
     pub fn has_session(&self, peer_id: &str) -> bool {
         self.handlers.has_session(peer_id, ChannelKind::Bluetooth)
     }
 
-    /// Ends the Bluetooth session with the peer, if one runs.
-    pub fn close_session(&self, peer_id: &str) -> bool {
-        self.handlers.close_session(peer_id, ChannelKind::Bluetooth)
-    }
 
     /// The iroh key pinned for the pair, if any.
     fn pinned_key(&self, peer_id: &str) -> Option<String> {
@@ -364,6 +413,7 @@ impl ChannelService for BluetoothChannelService {
     }
 
     fn set_add_device_mode(&self, on: bool) {
+        if self.stopping() { return; }
         self.advertiser.set_add_mode(on);
         self.scanner.set_add_device_mode(on);
         tokio::task::block_in_place(|| self.refresh_advertising(&mut self.pool.connection()));
@@ -375,11 +425,15 @@ impl ChannelService for BluetoothChannelService {
     }
 
     fn usable(&self) -> bool {
-        !BluetoothAdapter::this_device().is_unavailable()
+        !self.stopping() && !BluetoothAdapter::this_device().is_unavailable()
     }
 
     async fn probe(&self) -> bool {
-        BluetoothAdapter::this_device().probe(&self.scanner).await
+        tokio::select! {
+            biased;
+            () = self.wait_until_stopping() => false,
+            usable = BluetoothAdapter::this_device().probe(&self.scanner) => usable,
+        }
     }
 
     fn start_serving(self: Arc<Self>) {
@@ -392,6 +446,7 @@ impl ChannelService for BluetoothChannelService {
     }
 
     fn keep_serving(self: Arc<Self>) {
+        if self.stopping() { return; }
         // Android starts its peripheral lazily, from the first real tick:
         // the Activity context it needs does not exist when the app boots
         // (see `start_peripheral_once`). Gated on the Nearby Devices
@@ -430,6 +485,60 @@ impl ChannelService for BluetoothChannelService {
 }
 
 impl BluetoothChannelService {
+    /// Follow advertisement state. Incoming requests have their own task.
+    async fn run_server(&self) {
+        if self.stopping() || !self.advertiser.claim_peripheral_role() { return; }
+        let mut wanted = self.advertiser.watch_wanted();
+        let mut add_mode = self.advertiser.watch_add_mode();
+        let mut events = self.bus.subscribe();
+        let mut link = None;
+        let mut uncertain = false;
+        loop {
+            let visible = *wanted.borrow_and_update();
+            let _ = *add_mode.borrow_and_update();
+            if self.stopping() { return; }
+            if visible || link.is_some() {
+                let apply = async {
+                    if link.is_none() { link = Some(self.peer_link().await?); }
+                    let shared = link.as_ref().expect("the managed owner exists");
+                    self.advertiser.update(shared, visible, &mut uncertain).await
+                };
+                tokio::select! {
+                    biased;
+                    () = self.wait_until_stopping() => return,
+                    result = apply => if let Err(err) = result {
+                        log::warn!("[transport][ble] advertisement update failed: {err}");
+                    },
+                }
+            }
+            loop {
+                tokio::select! {
+                    biased;
+                    () = self.wait_until_stopping() => return,
+                    result = wanted.changed() => {
+                        if result.is_err() { return; }
+                        break;
+                    },
+                    result = add_mode.changed() => {
+                        if result.is_err() { return; }
+                        break;
+                    },
+                    event = events.recv(), if visible && link.is_none() => {
+                        match event {
+                            Ok(Event::AdapterChanged) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                if self.peer_link.get().is_some() || !BluetoothAdapter::this_device().is_unavailable() {
+                                    break;
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                            _ => {}
+                        }
+                    },
+                }
+            }
+        }
+    }
+
     /// Starts the Bluetooth peripheral acceptor loop once. Android only: on
     /// Linux `start_serving` starts it at app start. On Android the Activity
     /// context it needs exists only after the webview loads, so the first
@@ -443,226 +552,72 @@ impl BluetoothChannelService {
         }
     }
 
-    /// Peripheral role: advertise Fini's BLE service and gate every
-    /// accepted central through the same transport-neutral session gate
-    /// every other adapter uses. No-op (logs and returns) when the local
-    /// adapter can't do peripheral mode, or isn't available at all —
-    /// Bluetooth is always a fallback, never a hard requirement to start the
-    /// app. `ui-plane`/`test` only — `cli-plane` dials out but does not run
-    /// an inbound acceptor.
-    pub async fn run_server(&self) {
-        use futures_util::StreamExt;
+    /// The shared managed owner. Claim incoming requests before any advertisement.
+    fn peer_link(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Arc<PeerLink>, String>> + Send + '_>> {
+        Box::pin(async move {
+        let _initialization = self.initialization.write().await;
+        if self.stopping() { return Err("Bluetooth is stopping".to_string()); }
+        if let Some(link) = self.peer_link.get() { return Ok(link.clone()); }
+                use futures_util::StreamExt;
 
-        let advertiser = self.advertiser.clone();
-        if !advertiser.claim_peripheral_role() {
-            log::warn!("[transport][ble] peripheral acceptor already running; ignoring a second start");
-            return;
-        }
-
-        // Retried with backoff, not returned-from-once: this is spawned
-        // exactly once at startup, so an early failure here (adapter off,
-        // BlueZ restarting, briefly unavailable) used to end the peripheral
-        // role for the rest of the process's life even after the adapter
-        // itself became able to retry. If this device also has the higher
-        // device id, the deterministic dial rule means it never dials out
-        // either — Bluetooth would be unusable until restart. Looping means
-        // enabling Bluetooth later (or the adapter coming back) can still
-        // stand up the acceptor.
-        let mut delay = Duration::from_secs(2);
-        let max_delay = Duration::from_secs(60);
-
-        let mut advertising_wanted = advertiser.watch_wanted();
-        loop {
-            // ADR-0008 D8: advertise only while there is someone this device
-            // should be reachable by.
-            while !*advertising_wanted.borrow_and_update() {
-                if advertising_wanted.changed().await.is_err() {
-                    return;
-                }
-            }
-            let bluetooth = BluetoothAdapter::this_device();
-            let adapter = match bluetooth.adapter().await {
-                Ok(adapter) => adapter,
-                Err(err) => {
-                    bluetooth.note_unreachable();
-                    log::warn!("[transport][ble] adapter unavailable, retrying in {delay:?}: {err}");
-                    tokio::time::sleep(delay).await;
-                    delay = (delay * 2).min(max_delay);
-                    continue;
-                }
-            };
-            if !adapter.capabilities().await.peripheral {
-                log::warn!(
-                    "[transport][ble] adapter has no peripheral support; retrying in {delay:?} \
-                     in case a different adapter becomes available"
+                let adapter = tokio::select! {
+                    biased;
+                    () = self.wait_until_stopping() => return Err("Bluetooth is stopping".to_string()),
+                    adapter = BluetoothAdapter::this_device().adapter() => adapter?,
+                };
+                let _admission = self.admission.lock().map_err(|err| err.to_string())?;
+                if self.stopping() { return Err("Bluetooth is stopping".to_string()); }
+                let link = PeerLink::with_driver(
+                    adapter.driver(),
+                    PeerLinkConfig::new(self.advertiser.advertised_config()),
                 );
-                tokio::time::sleep(delay).await;
-                delay = (delay * 2).min(max_delay);
-                continue;
-            }
-            // Subscribed *before* the config snapshot/`serve` call below,
-            // not after: a `watch::Receiver` only misses changes that happen
-            // strictly before it subscribes, so subscribing here closes the
-            // window where a toggle lands while the advertisement (built
-            // from the config snapshot `serve` takes) is still starting up
-            // -- a real async operation, not instant. Subscribing afterward
-            // would let that specific toggle go unseen (the receiver's
-            // baseline already reflects the new value at subscribe time),
-            // leaving the device advertising without the add-mode flag,
-            // undiscoverable, until some *later* toggle happens to fire
-            // `changed()` again. Watched (not merely read) so a toggle
-            // mid-serve interrupts the accept loop below immediately, rather
-            // than only taking effect on whatever later triggers a natural
-            // re-advertise -- see `Advertiser::add_mode`'s doc comment for
-            // why this is a signal to the running loop rather than a full
-            // task restart.
-            let mut add_mode_rx = advertiser.watch_add_mode();
-            let mut incoming = match datagram::serve(&adapter, &advertiser.advertised_config()).await {
-                Ok(stream) => {
-                    // Advertising is a real use of the radio, so it clears a
-                    // previously-recorded failure just as a scan does.
-                    bluetooth.note_reachable();
-                    stream
-                }
-                Err(err) => {
-                    bluetooth.note_unreachable();
-                    log::warn!("[transport][ble] advertise failed, retrying in {delay:?}: {err}");
-                    tokio::time::sleep(delay).await;
-                    delay = (delay * 2).min(max_delay);
-                    continue;
-                }
-            };
-            log::info!("[transport][ble] advertising, awaiting centrals");
-            delay = Duration::from_secs(2);
-
-            let mut restarting_for_add_mode_change = false;
-            // BlueZ stops transmitting the advertisement once a central that
-            // connected to it has gone, while still reporting the instance
-            // as active (`ActiveInstances: 1`). Measured: the phone heard the
-            // desktop's advertisement three times right after it was
-            // registered, a phone-initiated hello then connected and left,
-            // and the phone heard nothing for 4.5 minutes -- until the
-            // advertisement was registered again. So the advertisement is
-            // re-registered when the last accepted central is gone; doing it
-            // earlier would tear down the live link.
-            let live_centrals = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let (central_gone_tx, mut central_gone_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
-            // Not wanted any more, but a link is still live: its session
-            // ends with CLOSE_CHANNEL_OFF first, and ble-gatt-iroh closes the
-            // link once that close went out. Stopping the server before that
-            // cut the link, and the other device went grey only at its idle
-            // timeout.
-            let mut stopping = false;
-            loop {
-                tokio::select! {
-                    Some(()) = central_gone_rx.recv() => {
-                        if stopping && live_centrals.load(Ordering::SeqCst) == 0 {
-                            log::info!("[transport][ble] last link closed; stopping advertising");
-                            restarting_for_add_mode_change = true;
-                            break;
-                        }
-                        // Linux only. Android keeps advertising, and
-                        // registering the advertisement again gives the phone
-                        // a new private address: the address the other device
-                        // had just heard goes stale, and its dial hangs for
-                        // 15 s before the search hears the new one.
-                        if cfg!(target_os = "linux") && live_centrals.load(Ordering::SeqCst) == 0 {
-                            log::info!("[transport][ble] last central gone; re-advertising");
-                            restarting_for_add_mode_change = true;
-                            break;
-                        }
-                    }
-                    channel = incoming.next() => {
-                        let Some(channel) = channel else { break; };
-                        // Without this, a link that dies before it sends
-                        // anything (lost at the GATT layer before the first
-                        // read) would leave no trace that anything was
-                        // accepted.
-                        log::info!("[transport][ble] central connected: {}", channel.peer().0);
-                        live_centrals.fetch_add(1, Ordering::SeqCst);
-                        let live_centrals = live_centrals.clone();
-                        let central_gone_tx = central_gone_tx.clone();
-                        let bluetooth = self.arc();
-                        // The central counts as live until its channel
-                        // closes: the handler finishing on a plain link, or
-                        // the iroh transport closing the channel of a session.
+                let mut incoming = link.incoming().map_err(|err| err.to_string())?;
+                self.peer_link.set(link.clone()).map_err(|_| "Bluetooth owner already initialized".to_string())?;
+                let owner = self.me.clone();
+                tokio::spawn(async move {
+                    loop {
+                        let Some(owner) = owner.upgrade() else { return };
+                        let request = tokio::select! {
+                            biased;
+                            () = owner.wait_until_stopping() => return,
+                            request = incoming.next() => match request { Some(request) => request, None => return },
+                        };
+                        // Admission is independent of any outgoing attempt.
                         tokio::spawn(async move {
-                            // The device connected to us is the one dialling:
-                            // the add-mode scan must not dial back while it
-                            // is here. A second, crossing connection to the
-                            // same device is what kept dropping both
-                            // (initiator = central).
-                            let _step = bluetooth.scanner.begin_pairing_step();
-                            if let Some(handled) = bluetooth.route_inbound(channel).await {
-                                let _ = handled.await;
+                            if owner.stopping() || (!owner.advertiser.in_add_mode() && !owner.advertiser.wanted()) {
+                                if let Err(err) = request.reject().await {
+                                    log::warn!("[transport][ble] request rejection failed: {err}");
+                                }
+                                return;
                             }
-                            live_centrals.fetch_sub(1, Ordering::SeqCst);
-                            let _ = central_gone_tx.send(());
+                            let accepted = tokio::select! {
+                                biased;
+                                () = owner.wait_until_stopping() => return,
+                                accepted = request.accept() => accepted,
+                            };
+                            match accepted {
+                                Ok(channel) => {
+                                    let _step = owner.scanner.begin_pairing_step();
+                                    if let Some(handled) = owner.route_inbound(channel).await {
+                                        let _ = handled.await;
+                                    }
+                                }
+                                Err(err) => log::info!("[transport][ble] incoming attempt ended: {err}"),
+                            }
                         });
                     }
-                    _ = add_mode_rx.changed() => {
-                        // Only the advertisement changes: the GATT server, and
-                        // with it the links of connected centrals, stays. A
-                        // new server dropped the link the first session after
-                        // a pairing runs on.
-                        match datagram::update_advertisement(&adapter, &advertiser.advertised_config()).await {
-                            Ok(()) => log::info!("[transport][ble] add-mode changed; advertisement updated"),
-                            Err(err) => {
-                                log::info!("[transport][ble] add-mode changed; re-advertising ({err})");
-                                restarting_for_add_mode_change = true;
-                                break;
-                            }
-                        }
-                    }
-                    _ = advertising_wanted.changed() => {
-                        let wanted = *advertising_wanted.borrow();
-                        stopping = !wanted;
-                        if !wanted {
-                            let live = live_centrals.load(Ordering::SeqCst);
-                            if live == 0 {
-                                log::info!("[transport][ble] nothing to be reachable for; stopping advertising");
-                                restarting_for_add_mode_change = true;
-                                break;
-                            }
-                            log::info!("[transport][ble] nothing to be reachable for; stopping advertising once {live} live links close");
-                        }
-                    }
-                }
-            }
-            if !*advertising_wanted.borrow() {
-                // Dropping `incoming` only stops new channels: the GATT
-                // server went on advertising and accepting centrals, and
-                // nothing served them, so their connects timed out.
-                drop(incoming);
-                if let Err(err) = datagram::stop_serving(&adapter).await {
-                    log::error!("[transport][ble] stopping the GATT server failed: {err}");
-                }
-            }
-            if restarting_for_add_mode_change {
-                // Ending `incoming` here (by falling through to the outer
-                // loop's next `datagram::serve` call) is what actually stops
-                // the old advertisement -- ble-gatt's drivers tear down the
-                // previous generation's GATT server/advertisement as part of
-                // starting a new one (see BleGattBridge.startAdvertising's
-                // own doc comment: "tear down any predecessor first").
-                delay = Duration::from_secs(2);
-                continue;
-            }
-            // The serve stream itself ended (e.g. the adapter dropped out
-            // from under it) rather than a caller closing it or an add-mode
-            // change — nothing else here ever drops the stream deliberately.
-            // Retry rather than leaving the peripheral role dead.
-            log::warn!("[transport][ble] serve stream ended unexpectedly; retrying in {delay:?}");
-            tokio::time::sleep(delay).await;
-            delay = (delay * 2).min(max_delay);
-        }
+                });
+                // The shared owner is ready, also when the scanner initialized it.
+                self.bus.publish(Event::AdapterChanged);
+                Ok::<_, String>(link)
+        })
     }
 
     /// Start an exchange with this peer over Bluetooth unless one is running
     /// or being attempted (ADR-0008 D10). Called when there is work for the
     /// peer.
     pub fn start_exchange(&self, peer_id: &str) {
-        if self.has_session(peer_id) || !self.delivery.delivery_due(&self.scanner, peer_id) {
+        if self.stopping() || self.has_session(peer_id) || !self.delivery.delivery_due(&self.scanner, peer_id) {
             return;
         }
         // While a device is being added, the adapter belongs to that search --
@@ -670,33 +625,23 @@ impl BluetoothChannelService {
         if self.advertiser.in_add_mode() && !self.has_pairing_link(peer_id) {
             return;
         }
-        // Only the device with the smaller id connects; the other one
-        // advertises and accepts. When the two connected at once, BlueZ
-        // aborted one connect, and the crossing rule refused the other one.
-        // The first session after a pairing goes over the pairing link.
-        if self.identity.device_id.as_str() > peer_id
-            && !self.has_pairing_link(peer_id)
-            && !self.take_connect_once(peer_id)
-        {
-            return;
-        }
+
         if !self.scanner.begin_exchange(peer_id) {
             return;
         }
         let bluetooth = self.arc();
         let peer_id = peer_id.to_string();
         tauri::async_runtime::spawn(async move {
-            bluetooth.exchange_with(&peer_id).await;
+            tokio::select! {
+                biased;
+                () = bluetooth.wait_until_stopping() => {},
+                () = bluetooth.exchange_with(&peer_id) => {},
+            }
             bluetooth.scanner.end_exchange(&peer_id);
         });
     }
 
-    /// The channel with `peer_id` was switched on here. When this device has
-    /// the bigger id and refused the peer's session less than
-    /// `REJECTED_WAIT_TIME` ago, it connects once itself: the peer waits that
-    /// long before it connects again. Measured: a switch-on 3 s after a
-    /// refusal went green after 32 s. Without a refusal the peer connects by
-    /// itself, and a connect from here too crossed it and cost 7 s.
+    /// Connect after switch-on when the peer can still be in its rejection wait.
     pub fn connect_once_after_switch_on(&self, peer_id: &str) {
         let refused_recently = self
             .refused_at
@@ -704,26 +649,21 @@ impl BluetoothChannelService {
             .ok()
             .and_then(|mut refused| refused.remove(peer_id))
             .is_some_and(|at| at.elapsed() < REJECTED_WAIT_TIME);
-        if !refused_recently || self.identity.device_id.as_str() < peer_id {
+        if !refused_recently {
             return;
         }
-        log::info!("[transport][ble] {peer_id} was refused a short time ago; connecting to it once");
-        if let Ok(mut once) = self.connect_once.lock() {
-            once.insert(peer_id.to_string());
-        }
+        log::info!("[transport][ble] {peer_id} was rejected a short time ago; connecting to it once");
+        self.delivery.forget_delivery_misses(peer_id);
         self.start_exchange(peer_id);
     }
 
-    /// This device refused `peer_id`'s session: the channel is off here.
+    /// This device rejected `peer_id`'s session: the channel is off here.
     pub fn note_refused(&self, peer_id: &str) {
         if let Ok(mut refused) = self.refused_at.lock() {
             refused.insert(peer_id.to_string(), std::time::Instant::now());
         }
     }
 
-    fn take_connect_once(&self, peer_id: &str) -> bool {
-        self.connect_once.lock().is_ok_and(|mut once| once.remove(peer_id))
-    }
 
     /// One delivery (ADR-0008 D8, D12): a present peer is one dial to where
     /// it was last heard; otherwise a delivery search of up to
@@ -735,9 +675,14 @@ impl BluetoothChannelService {
         }
         // Just paired over Bluetooth: the pairing's BLE link is still up, so
         // the session goes over it, with no search and no new connect.
-        if let Some(address) = self.remove_pairing_link(peer_id) {
+        if let Some(channel) = self.remove_pairing_link(peer_id) {
+            let address = channel.peer().0;
             let guard = self.scanner.acquire_connect().await;
-            match self.connect_for_session(peer_id, &address).await {
+            let connected = self.connect_for_session(peer_id, &address).await;
+            if let Err(err) = channel.release().await {
+                log::warn!("[transport][ble] pairing channel release failed: {err}");
+            }
+            match connected {
                 Ok(link) => {
                     drop(guard);
                     log::info!("[transport][ble] first session with {peer_id} over the pairing link");
@@ -819,13 +764,12 @@ impl BluetoothChannelService {
             self.connect_session(peer_id, address, SYNC_ALPN),
         );
         let attempt = tokio::select! {
+            biased;
+            () = self.wait_until_stopping() => return Err("Bluetooth is stopping".to_string()),
             attempt = connect => attempt,
             () = self.wait_until_off(peer_id) => {
                 log::info!("[transport][ble] stopped the connect to {address}: {peer_id} has no Bluetooth channel any more");
-                // The dial runs in ble-gatt-iroh's own task: dropping the
-                // connect does not stop it, and BlueZ stays busy (no scan, no
-                // advertising) until its own timeout. Closing the link does.
-                self.close_link_at(address.to_string());
+                // Shared carrier users must stay valid.
                 return Err("the pair or the channel is gone".to_string());
             }
         };
@@ -834,17 +778,13 @@ impl BluetoothChannelService {
             Ok(Err(err)) => {
                 log::info!("[transport][ble] candidate {address} is not {peer_id}: {err}");
                 self.scanner.note_connect_failed(address);
-                // A connect that failed left its BLE link up, and while it
-                // was up BlueZ aborted the connects to the peer's next
-                // address (`le-connection-abort-by-local`).
-                self.close_link_at(address.to_string());
+
                 Err(err)
             }
             Err(_elapsed) => {
                 log::info!("[transport][ble] candidate {address} did not finish the connect in time");
                 self.scanner.note_connect_failed(address);
-                // As above: stop the dial that still runs.
-                self.close_link_at(address.to_string());
+
                 Err("connect timed out".to_string())
             }
         }
@@ -892,14 +832,7 @@ impl BluetoothChannelService {
         if matches!(held, Ok(close_code) if rejected_by_peer(close_code)) {
             self.delivery.record_rejected(peer_id);
         }
-        // The peer closed the session: its close is here, and QUIC sends
-        // nothing more while it drains, so the link can go now. Left up, it
-        // stayed for the drain (33 s measured), and the next connect ran on
-        // it and timed out. A session this side ended keeps its link:
-        // ble-gatt-iroh closes it once the close went out.
-        if matches!(held, Ok(Some(_))) {
-            self.close_link_at(address.to_string());
-        }
+        // Endpoint hooks release only the ended iroh user.
     }
 
     /// Works out again whether to advertise, from the stored channels and
@@ -1190,7 +1123,7 @@ impl BluetoothAdapter {
                 return true;
             }
             if let Some(_scan) = scanner.try_scan_lock() {
-                let Ok(adapter) = self.adapter().await else {
+                let Ok(shared) = scanner.peer_link().await else {
                     self.note_unreachable();
                     return false;
                 };
@@ -1201,7 +1134,7 @@ impl BluetoothAdapter {
                     return !self.is_unavailable();
                 }
                 scanner.note_scan_started();
-                return match adapter.central().scan(datagram_config().service).await {
+                return match shared.discover().await {
                     Ok(stream) => {
                         drop(stream);
                         self.note_reachable();
@@ -1310,7 +1243,7 @@ mod test_switch {
                 links: Mutex::new(Vec::new()),
             });
             let weak = Arc::downgrade(&switch);
-            let mut events = driver.events();
+            let mut events = driver.lifecycle_events();
             tokio::spawn(async move {
                 while let Some(event) = events.next().await {
                     let Some(switch) = weak.upgrade() else { return };
@@ -1328,11 +1261,15 @@ mod test_switch {
             let mut links = self.links.lock().unwrap();
             match event {
                 GattEvent::Connected { peer, local_role, session } => {
-                    links.push((peer.clone(), *local_role, *session));
+                    let link = (peer.clone(), *local_role, *session);
+                    if !links.contains(&link) {
+                        links.push(link);
+                    }
                 }
                 GattEvent::Disconnected { peer, local_role, session } => {
                     links.retain(|(p, r, s)| !(p.0 == peer.0 && r == local_role && s == session));
                 }
+                GattEvent::Lagged { .. } => links.clear(),
                 _ => {}
             }
         }
@@ -1358,6 +1295,16 @@ mod test_switch {
                 let _ = self.events.send(GattEvent::Disconnected { peer, local_role, session });
             }
             let _ = self.events.send(GattEvent::RadioChanged { status: RadioStatus::Off });
+        }
+
+        fn events(&self) -> BoxStream<GattEvent> {
+            Box::pin(futures_util::stream::unfold(self.events.subscribe(), |mut rx| async move {
+                match rx.recv().await {
+                    Ok(event) => Some((event, rx)),
+                    Err(broadcast::error::RecvError::Lagged(dropped)) => Some((GattEvent::Lagged { dropped }, rx)),
+                    Err(broadcast::error::RecvError::Closed) => None,
+                }
+            }))
         }
     }
 
@@ -1402,6 +1349,17 @@ mod test_switch {
 
         async fn stop_advertising(&self) -> ble_gatt::Result<()> {
             self.0.driver.stop_advertising().await
+        }
+
+        async fn set_advertising_enabled(&self, enabled: bool) -> ble_gatt::Result<()> {
+            if enabled && self.0.is_off() {
+                return Err(switched_off());
+            }
+            self.0.driver.set_advertising_enabled(enabled).await
+        }
+
+        async fn close(&self) -> ble_gatt::Result<()> {
+            self.0.driver.close().await
         }
 
         // Serving re-advertises this after the radio comes back on, so an
@@ -1450,16 +1408,12 @@ mod test_switch {
                 let drop_it = switch.is_off() && matches!(event, GattEvent::CharacteristicWritten { .. });
                 std::future::ready(!drop_it)
             });
-            let from_switch = futures_util::stream::unfold(self.0.events.subscribe(), |mut rx| async move {
-                loop {
-                    match rx.recv().await {
-                        Ok(event) => return Some((event, rx)),
-                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                        Err(broadcast::error::RecvError::Closed) => return None,
-                    }
-                }
-            });
+            let from_switch = self.0.events();
             Box::pin(futures_util::stream::select(from_driver, from_switch))
+        }
+
+        fn lifecycle_events(&self) -> BoxStream<GattEvent> {
+            Box::pin(futures_util::stream::select(self.0.driver.lifecycle_events(), self.0.events()))
         }
 
         async fn radio_status(&self) -> RadioStatus {
@@ -1711,20 +1665,10 @@ pub struct Advertiser {
     /// This device's name, cut to `SHORT_NAME_MAX_BYTES`, sent in the scan
     /// response so the Add Device list can show it without a connection.
     short_name: String,
-    /// Whether this device is in add-mode, watched by `run_server`'s
-    /// peripheral loop so a toggle can trigger a fresh advertisement
-    /// carrying (or dropping) the add-mode flag without restarting the whole
-    /// peripheral task -- Android's `start_peripheral_once` is deliberately a
-    /// one-time start (ADR-0002 in ble-gatt: constructing `AndroidDriver`
-    /// outside a genuine post-startup call panics), so the *outer* task can
-    /// never be torn down and re-spawned to pick up a config change; only the
-    /// inner advertise/accept loop can be.
-    ///
-    /// `watch::Sender` alone is enough: it has its own `borrow()` for a
-    /// snapshot read (`advertised_config`), and `subscribe()` hands out a
-    /// fresh `Receiver` for whichever caller needs to *wait* on a change
-    /// (`run_server`, in a `tokio::select!` against the incoming-connections
-    /// stream).
+    /// The readable metadata retains the complete application name.
+    hostname: String,
+    /// Add Device state, watched by the one advertisement task.
+    /// A change updates the shared owner without replacing its server.
     add_mode: watch::Sender<bool>,
     /// Whether this device should advertise (ADR-0008 D8): while it has a
     /// Bluetooth channel on, is setting one up, or is being paired. Otherwise
@@ -1747,10 +1691,40 @@ impl Advertiser {
         Self {
             fingerprint: fingerprint_of(&identity.device_id),
             short_name: short_name(&identity.hostname),
+            hostname: identity.hostname.clone(),
             add_mode: watch::channel(false).0,
             wanted: watch::channel(false).0,
             peripheral_running: AtomicBool::new(false),
         }
+    }
+
+    fn advertisement(&self) -> ble_gatt::advertisement::GattAdvertisement {
+        let config = self.advertised_config();
+        ble_gatt::advertisement::GattAdvertisement {
+            manufacturer_data: config.advertised_manufacturer_data,
+            service_data: config.advertised_service_data,
+            local_name: Some(self.hostname.clone()),
+        }
+    }
+
+    /// An uncertain update needs a hide fence and a complete hidden update.
+    pub(super) async fn update(&self, link: &ble_gatt::PeerLink, visible: bool, uncertain: &mut bool) -> Result<(), String> {
+        if *uncertain || !visible {
+            *uncertain = true;
+            link.set_advertising(false).await.map_err(|err| format!("advertisement hide failed: {err}"))?;
+        }
+        *uncertain = true;
+        if let Err(err) = link.update_advertisement(self.advertisement()).await {
+            // Show requires a complete hidden update after this fence.
+            let fence = link.set_advertising(false).await;
+            return Err(format!("advertisement write failed: {err}; hide fence: {fence:?}"));
+        }
+        if let Err(err) = link.set_advertising(visible).await {
+            let fence = link.set_advertising(false).await;
+            return Err(format!("advertisement visibility failed: {err}; hide fence: {fence:?}"));
+        }
+        *uncertain = false;
+        Ok(())
     }
 
     /// The datagram config `run_server` advertises: Fini's service plus one
@@ -1791,6 +1765,10 @@ impl Advertiser {
         self.wanted.subscribe()
     }
 
+    pub fn wanted(&self) -> bool {
+        *self.wanted.borrow()
+    }
+
     /// Records whether to advertise; see `refresh_advertising`.
     pub fn set_wanted(&self, wanted: bool) {
         self.wanted.send_if_modified(|current| {
@@ -1804,6 +1782,7 @@ impl Advertiser {
     pub fn claim_peripheral_role(&self) -> bool {
         !self.peripheral_running.swap(true, Ordering::SeqCst)
     }
+
 
     #[cfg(target_os = "android")]
     pub fn peripheral_running(&self) -> bool {
@@ -1897,7 +1876,7 @@ use super::*;
 
 pub struct BleDataLink {
     /// `None` once the channel went to the iroh transport.
-    channel: Option<DatagramChannel>,
+    channel: Option<PeerChannel>,
     peer_addr: String,
     /// A datagram already read off the channel (to route it, see
     /// `route_inbound`), returned by the first `recv`.
@@ -1908,8 +1887,20 @@ pub struct BleDataLink {
     session: Option<ble_gatt_iroh::BleGattTransport>,
 }
 
+impl Drop for BleDataLink {
+    fn drop(&mut self) {
+        if let Some(channel) = self.channel.take() {
+            tauri::async_runtime::spawn(async move {
+                if let Err(err) = channel.release().await {
+                    log::warn!("[transport][ble] plain channel release failed: {err}");
+                }
+            });
+        }
+    }
+}
+
 impl BleDataLink {
-    pub(super) fn new(channel: DatagramChannel) -> Self {
+    pub(super) fn new(channel: PeerChannel) -> Self {
         let peer_addr = channel.peer().0.clone();
         Self {
             channel: Some(channel),
@@ -1919,16 +1910,15 @@ impl BleDataLink {
         }
     }
 
-    pub(super) fn after(channel: DatagramChannel, first: Vec<u8>, session: Option<ble_gatt_iroh::BleGattTransport>) -> Self {
-        Self {
-            pending: Some(first),
-            session,
-            ..Self::new(channel)
-        }
+    pub(super) fn after(channel: PeerChannel, first: Vec<u8>, session: Option<ble_gatt_iroh::BleGattTransport>) -> Self {
+        let mut link = Self::new(channel);
+        link.pending = Some(first);
+        link.session = session;
+        link
     }
 
     /// The channel, for the iroh transport (`keep_identify_link`).
-    pub(super) fn into_channel(mut self) -> Option<DatagramChannel> {
+    pub(super) fn into_channel(mut self) -> Option<PeerChannel> {
         self.channel.take()
     }
 }
@@ -2015,13 +2005,13 @@ impl DataLink for BleDataLink {
 /// Central role: connect to a peer's Bluetooth address over a plain link,
 /// for Fini's own pre-pairing frames (identify, pair request/accept/
 /// complete). Sessions use `BluetoothChannel::connect_session`.
-pub async fn connect(address: &str) -> Result<BleDataLink, String> {
-    let adapter = BluetoothAdapter::this_device().adapter().await?;
+impl BleDataLink {
+pub(super) async fn connect(shared: Arc<PeerLink>, address: &str) -> Result<Self, String> {
     let peer = PeerAddress(address.to_string());
-    let channel = datagram::connect(&adapter, &peer, &datagram_config())
-        .await
-        .map_err(|err| format!("ble connect to {address} failed: {err}"))?;
+    let channel = shared.request(&peer).await.map_err(|err| err.to_string())?
+        .accept().await.map_err(|err| format!("ble connect to {address} failed: {err}"))?;
     Ok(BleDataLink::new(channel))
+}
 }
 }
 
@@ -2114,33 +2104,35 @@ impl BluetoothChannelService {
     /// (`BluetoothAdapter::adapter`). Its `Router` hands every connection to
     /// the handler of its ALPN.
     pub(crate) async fn iroh_endpoint(&self) -> Result<(iroh::Endpoint, ble_gatt_iroh::BleGattTransport), String> {
-        self.endpoint
-            .get_or_try_init(|| async {
-                let adapter = BluetoothAdapter::this_device().adapter().await?;
-                // Writes without response: several go out in each connection
-                // event, not one write and its response. QUIC sends again
-                // what the peer drops; a plain link has no such recovery, so
-                // it keeps the default.
-                let mut dial_config = datagram_config();
-                dial_config.write_type = ble_gatt::WriteType::WithoutResponse;
-                let transport = ble_gatt_iroh::BleGattTransport::builder()
-                    .dialer(ble_gatt_iroh::dial_with(adapter, dial_config))
-                    .build();
-                let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-                    .secret_key(self.identity.secret_key.clone())
-                    .relay_mode(iroh::RelayMode::Disabled)
-                    .alpns(vec![PEER_ALPN.to_vec(), SYNC_ALPN.to_vec()])
-                    .transport_config(crate::services::channel_service::iroh_link::transport_config())
-                    .clear_ip_transports()
-                    .add_custom_transport(Arc::new(transport.clone()))
-                    // The transport learns which device each link carries, in
-                    // either role, so `close_links` also reaches a link the
-                    // peer dialled.
-                    .hooks(transport.hooks())
-                    .address_lookup(transport.address_lookup())
-                    .bind()
-                    .await
-                    .map_err(|err| format!("binding the bluetooth endpoint failed: {err}"))?;
+        let shared = self.peer_link().await?;
+        let _initialization = self.initialization.write().await;
+        if self.stopping() { return Err("Bluetooth is stopping".to_string()); }
+        if let Some(endpoint) = self.endpoint.get() { return Ok(endpoint.clone()); }
+        let transport = ble_gatt_iroh::BleGattTransport::builder()
+            .dialer(ble_gatt_iroh::dial_with(shared))
+            .build();
+        let bind = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .secret_key(self.identity.secret_key.clone())
+            .relay_mode(iroh::RelayMode::Disabled)
+            .alpns(vec![PEER_ALPN.to_vec(), SYNC_ALPN.to_vec()])
+            .transport_config(crate::services::channel_service::iroh_link::transport_config())
+            .clear_ip_transports()
+            .add_custom_transport(Arc::new(transport.clone()))
+            .hooks(transport.hooks())
+            .address_lookup(transport.address_lookup())
+            .bind();
+        let endpoint = tokio::select! {
+            biased;
+            () = self.wait_until_stopping() => return Err("Bluetooth is stopping".to_string()),
+            endpoint = bind => endpoint,
+        }.map_err(|err| format!("binding the Bluetooth endpoint failed: {err}"))?;
+        let published = {
+            let _admission = self.admission.lock().map_err(|err| err.to_string())?;
+            if self.stopping() {
+                false
+            } else {
+                self.endpoint.set((endpoint.clone(), transport.clone()))
+                    .map_err(|_| "Bluetooth endpoint already initialized".to_string())?;
                 match self.handlers.get().cloned() {
                     Some(handlers) => {
                         tokio::spawn(crate::services::channel_service::LinkAcceptor::serve(
@@ -2152,10 +2144,16 @@ impl BluetoothChannelService {
                     }
                     None => log::warn!("[transport][ble] no link handlers; the endpoint answers nobody"),
                 }
-                Ok::<_, String>((endpoint, transport))
-            })
-            .await
-            .cloned()
+                true
+            }
+        };
+        if !published {
+            return match tokio::time::timeout(Duration::from_secs(2), endpoint.close()).await {
+                Ok(()) => Err("Bluetooth stopped during endpoint initialization".to_string()),
+                Err(err) => Err(format!("Bluetooth endpoint initialization close timed out: {err}")),
+            };
+        }
+        Ok((endpoint, transport))
     }
 
     /// Opens an authenticated link to paired `peer_id` at `address`: an iroh
@@ -2191,60 +2189,78 @@ impl BluetoothChannelService {
     /// (`le-connection-abort-by-local`). Android changes the address when it
     /// leaves Add Device, so the first session after a pairing failed so.
     pub(crate) fn close_links_to(&self, peer_key: iroh::EndpointId) {
+        let held = self.pairing_links.lock().ok().map(|mut links| {
+            let peers: Vec<_> = links.iter().filter(|(_, (_, key, _))| *key == peer_key)
+                .map(|(peer, _)| peer.clone()).collect();
+            peers.into_iter().filter_map(|peer| links.remove(&peer).map(|(_, _, channel)| channel))
+                .collect::<Vec<_>>()
+        }).unwrap_or_default();
+        for channel in held {
+            tauri::async_runtime::spawn(async move {
+                if let Err(err) = channel.disconnect().await {
+                    log::warn!("[transport][ble] pairing channel disconnect failed: {err}");
+                }
+                if let Err(err) = channel.release().await {
+                    log::warn!("[transport][ble] pairing use release failed: {err}");
+                }
+            });
+        }
         let Some((_, transport)) = self.endpoint.get().cloned() else {
             return;
         };
         log::info!("[transport][ble] closing the links to {peer_key}");
         transport.close_links(&peer_key);
+        transport.forget_peer(&peer_key);
     }
 
-    /// A pairing with `peer_id` finished on the BLE link to `address`: keep the
-    /// link for the first session (`remove_pairing_link`). Not used in
-    /// `PAIRING_LINK_KEEP_TIME`, it is closed: a link left up blocks the connect
-    /// to the peer's new address.
+    /// Keep a scoped use until the first session acquires the pairing channel.
     pub(crate) fn keep_pairing_link(&self, peer_id: &str, address: &str, peer_key: iroh::EndpointId) {
-        if let Ok(mut links) = self.pairing_links.lock() {
-            links.insert(peer_id.to_string(), address.to_string());
+        if self.stopping() { return; }
+        let Some(channel) = self.peer_link.get().and_then(|link| link.channel(&PeerAddress(address.to_string()))) else {
+            log::warn!("[transport][ble] pairing channel is already closed");
+            return;
+        };
+        let token = Uuid::new_v4();
+        let previous = self.pairing_links.lock().ok()
+            .and_then(|mut links| {
+                if self.stopping() { return None; }
+                links.insert(peer_id.to_string(), (token, peer_key, channel))
+            });
+        if let Some((_, _, channel)) = previous {
+            tauri::async_runtime::spawn(async move {
+                if let Err(err) = channel.release().await {
+                    log::warn!("[transport][ble] old pairing use release failed: {err}");
+                }
+            });
         }
-        // A new pair: rejected sessions and misses from before it (the other
-        // device rejected them while it was not paired yet) must not stop its
-        // first session.
         self.delivery.forget_delivery_misses(peer_id);
-        log::info!("[transport][ble] keeping the pairing link to {address} for the first session");
         self.bus.publish(Event::DeviceHeard { peer_device_id: peer_id.to_string(), kind: ChannelKind::Bluetooth });
-        let bluetooth = self.arc();
+        let owner = self.me.clone();
         let peer_id = peer_id.to_string();
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(PAIRING_LINK_KEEP_TIME).await;
-            let unused = bluetooth.remove_pairing_link(&peer_id).is_some();
-            if unused && !bluetooth.has_session(&peer_id) {
-                bluetooth.close_links_to(peer_key);
+            let Some(owner) = owner.upgrade() else { return };
+            let expired = owner.pairing_links.lock().ok().and_then(|mut links| {
+                if links.get(&peer_id).is_some_and(|(current, _, _)| *current == token) {
+                    links.remove(&peer_id).map(|(_, _, channel)| channel)
+                } else {
+                    None
+                }
+            });
+            if let Some(channel) = expired {
+                if let Err(err) = channel.release().await {
+                    log::warn!("[transport][ble] pairing use release failed: {err}");
+                }
             }
         });
     }
 
-    /// Whether a pairing link is kept for `peer_id`'s first session.
     pub(crate) fn has_pairing_link(&self, peer_id: &str) -> bool {
         self.pairing_links.lock().is_ok_and(|links| links.contains_key(peer_id))
     }
 
-    /// The address of the pairing link kept for `peer_id`'s first session,
-    /// once: a later session searches as usual.
-    pub(crate) fn remove_pairing_link(&self, peer_id: &str) -> Option<String> {
-        self.pairing_links.lock().ok()?.remove(peer_id)
-    }
-
-    /// The gate rejected a Bluetooth session from `address` (not paired, or
-    /// the channel is off or missing). Its BLE link stayed up until idle, and
-    /// iroh sent this device's own next connection to the peer into it
-    /// instead of connecting: the connect timed out. No session to the peer is
-    /// kept on this channel then, so the link is closed -- unless a setup
-    /// with `device_id` is open: its connect can use the same link.
-    pub(crate) fn close_rejected_link(&self, address: String, device_id: Option<&str>) {
-        if address.is_empty() || (device_id.is_some() && self.advertiser.in_add_mode()) {
-            return;
-        }
-        self.close_link_at(address);
+    pub(crate) fn remove_pairing_link(&self, peer_id: &str) -> Option<PeerChannel> {
+        self.pairing_links.lock().ok()?.remove(peer_id).map(|(_, _, channel)| channel)
     }
 
     /// Like `close_links_to`, for a link the peer opened from `address`,
@@ -2269,22 +2285,20 @@ impl BluetoothChannelService {
         transport.attach(channel);
     }
 
-    pub(crate) fn close_link_at(&self, address: String) {
-        let Some((_, transport)) = self.endpoint.get().cloned() else {
-            return;
-        };
-        log::info!("[transport][ble] closing the link to {address}");
-        transport.close_link(&PeerAddress(address));
-    }
-
     /// Routes a channel a central opened by its first datagram: a QUIC
     /// Initial goes to the iroh transport (an authenticated session),
     /// anything else is one of Fini's own pre-pairing frames on a plain
     /// link.
-    pub(super) async fn route_inbound(&self, mut channel: DatagramChannel) -> Option<tokio::task::JoinHandle<()>> {
+    pub(super) async fn route_inbound(&self, channel: PeerChannel) -> Option<tokio::task::JoinHandle<()>> {
         let first = match tokio::time::timeout(FIRST_DATAGRAM_TIMEOUT, channel.recv()).await {
             Ok(Some(Ok(first))) => first,
-            _ => return None,
+            outcome => {
+                log::info!("[transport][ble] first frame ended: {outcome:?}; reason {:?}", channel.close_reason());
+                if let Err(err) = channel.release().await {
+                    log::warn!("[transport][ble] incoming channel release failed: {err}");
+                }
+                return None;
+            }
         };
         if ble_gatt_iroh::is_quic_initial(&first) {
             match self.iroh_endpoint().await {
@@ -2341,9 +2355,9 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::{oneshot, watch, Mutex, MutexGuard, Notify};
 
-use super::{connect, ADD_MODE_FLAG_BYTE};
+use super::ADD_MODE_FLAG_BYTE;
 use super::{
-    advertised_fingerprint, datagram_config, fingerprint_of, BluetoothAdapter, FINGERPRINT_LEN,
+    advertised_fingerprint, fingerprint_of, BluetoothAdapter, BluetoothChannelService, FINGERPRINT_LEN,
     FINI_MANUFACTURER_ID, SCAN_WINDOW,
 };
 use crate::models::Event;
@@ -2460,6 +2474,7 @@ struct Requests {
 }
 
 pub struct Scanner {
+    channel: std::sync::Weak<BluetoothChannelService>,
     /// Pairing legs (request / accept / complete) in progress. The add-mode
     /// candidate scan yields to them: it holds a discovery session and
     /// re-dials the same phone every pass, and an adapter doing either while
@@ -2518,13 +2533,26 @@ pub struct Scanner {
 #[cfg(test)]
 impl Default for Scanner {
     fn default() -> Self {
-        Self::new(Arc::default())
+        Self::new(Arc::default(), std::sync::Weak::new())
     }
 }
 
 impl Scanner {
-    pub fn new(bus: Arc<EventBus>) -> Self {
+    pub(super) fn stop(&self) {
+        self.add_device_mode.store(false, Ordering::SeqCst);
+        if let Ok(mut requests) = self.requests.lock() {
+            requests.searches.clear();
+        }
+        self.changed.notify_waiters();
+    }
+
+    pub(super) async fn peer_link(&self) -> Result<Arc<ble_gatt::PeerLink>, String> {
+        self.channel.upgrade().ok_or_else(|| "Bluetooth channel closed".to_string())?.peer_link().await
+    }
+
+    pub fn new(bus: Arc<EventBus>, channel: std::sync::Weak<BluetoothChannelService>) -> Self {
         Self {
+            channel,
             bus,
             pairing_steps: Arc::new(watch::channel(0).0),
             candidate_probe: Mutex::new(()),
@@ -2672,7 +2700,15 @@ impl Scanner {
         // synchronous commands, which run on the main thread outside any
         // Tokio context.
         self.started.call_once(|| {
-            tauri::async_runtime::spawn(self.clone().run());
+            let scanner = self.clone();
+            tauri::async_runtime::spawn(async move {
+                let Some(owner) = scanner.channel.upgrade() else { return; };
+                tokio::select! {
+                    biased;
+                    () = owner.wait_until_stopping() => {},
+                    () = scanner.run() => {},
+                }
+            });
         });
     }
 
@@ -2743,6 +2779,7 @@ impl Scanner {
         tauri::async_runtime::spawn(async move {
             while scanner.in_add_device_mode() {
                 tokio::time::sleep(STALE_CHECK).await;
+                if !scanner.in_add_device_mode() { break; }
                 if scanner.available.remove_stale() {
                     scanner.bus.publish(Event::AvailableDevicesChanged);
                 }
@@ -2845,7 +2882,7 @@ impl Scanner {
             }
 
             let bluetooth = BluetoothAdapter::this_device();
-            let Ok(adapter) = bluetooth.adapter().await else {
+            let Ok(shared) = self.peer_link().await else {
                 bluetooth.note_unreachable();
                 let _ = tokio::time::timeout(SCAN_FAILURE_PAUSE, self.changed.notified()).await;
                 continue;
@@ -2861,16 +2898,8 @@ impl Scanner {
             }
             let scan = self.scan_lock().await;
             self.note_scan_started();
-            let mut discovered = match adapter.central().scan(datagram_config().service).await {
-                // A peer that sends only the service UUID (Windows) has no
-                // fingerprint in its advertisement: read it from the GATT
-                // advertisement characteristic (ble-gatt ADR-0012).
-                Ok(stream) => ble_gatt::advertisement::complete(
-                    adapter.driver(),
-                    datagram_config().service,
-                    stream,
-                    ble_gatt::advertisement::GattAdvertisementPolicy::default(),
-                ),
+            let mut discovered = match shared.discover().await {
+                Ok(stream) => stream,
                 Err(err) => {
                     log::warn!("[transport][ble] search scan refused: {err}");
                     bluetooth.note_scan_refused(&err);
@@ -2901,7 +2930,7 @@ impl Scanner {
             loop {
                 tokio::select! {
                     next = tokio::time::timeout_at(deadline, discovered.next()) => match next {
-                        Ok(Some(Ok(candidate))) => {
+                        Ok(Some(Ok((_endpoint, candidate)))) => {
                             let payload = candidate
                                 .manufacturer_data
                                 .get(&FINI_MANUFACTURER_ID)
@@ -2992,7 +3021,7 @@ impl Scanner {
         let started = Instant::now();
         loop {
             let address = self.available.heard_address(fingerprint).ok_or_else(device_gone)?;
-            match connect(&address).await {
+            match super::BleDataLink::connect(self.peer_link().await?, &address).await {
                 Ok(link) => return Ok((link, address, (probe, connect_guard))),
                 Err(err) if started.elapsed() < IDENTIFY_TRY_AGAIN_TIME => {
                     log::info!("[transport][ble] connect to {address} ended with an error ({err}); trying again");

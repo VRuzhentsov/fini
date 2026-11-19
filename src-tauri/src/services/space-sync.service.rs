@@ -847,9 +847,6 @@ impl SpaceSyncService {
         let Some(device_id) = device_id else {
             log::warn!("[space_sync][accept] {kind:?} session from {from_addr} rejected: its key is pinned for no pair");
             link.close(CLOSE_NOT_PAIRED, "not paired; pair the devices again");
-            if kind == ChannelKind::Bluetooth {
-                self.bluetooth.close_rejected_link(from_addr, None);
-            }
             return;
         };
         log::info!("[space_sync][accept] {kind:?} session from {device_id} via {from_addr}");
@@ -863,7 +860,6 @@ impl SpaceSyncService {
             link.close(CLOSE_CHANNEL_OFF, "the channel is off for this pair");
             if kind == ChannelKind::Bluetooth {
                 self.bluetooth.note_refused(&device_id);
-                self.bluetooth.close_rejected_link(from_addr, Some(&device_id));
             }
             return;
         }
@@ -1415,9 +1411,6 @@ impl SessionHandler for SpaceSyncService {
         self.has_session_on(peer_device_id, kind)
     }
 
-    fn close_session(&self, peer_device_id: &str, kind: ChannelKind) -> bool {
-        self.close_session_on(peer_device_id, kind)
-    }
 
     async fn hold<'a>(
         &'a self,

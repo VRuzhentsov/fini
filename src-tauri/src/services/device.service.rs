@@ -299,7 +299,12 @@ impl DeviceService {
         &self,
         fingerprint: [u8; crate::services::bluetooth_channel_service::FINGERPRINT_LEN],
     ) -> Result<crate::services::bluetooth_channel_service::AvailableDevice, String> {
-        self.close_held_bluetooth_session_to(fingerprint).await;
+        let paired = self.with_conn(|conn| DeviceRepository::new(conn).ids());
+        if let Some(peer) = paired.into_iter().find(|peer| {
+            crate::services::bluetooth_channel_service::fingerprint_of(peer) == fingerprint
+        }) {
+            return self.identify_paired_device(&peer, fingerprint).await;
+        }
         let scanner = &self.bluetooth.scanner;
         let started = std::time::Instant::now();
         let (mut link, address, _guards) = scanner
@@ -329,28 +334,35 @@ impl DeviceService {
         }
     }
 
-    /// Ends a held Bluetooth session to the paired device that advertises
-    /// `fingerprint`, and its BLE link. While one is held, BlueZ rejects a
-    /// second LE connection to the same device, so the identify step for
-    /// adding it again could never connect.
+    /// Identify a paired device through iroh, without taking another user's channel.
     #[cfg(all(feature = "ui-plane", any(target_os = "linux", target_os = "android", target_os = "windows")))]
-    async fn close_held_bluetooth_session_to(&self, fingerprint: [u8; crate::services::bluetooth_channel_service::FINGERPRINT_LEN]) {
-        use crate::services::bluetooth_channel_service::fingerprint_of;
-        let paired = self.with_conn(|conn| DeviceRepository::new(conn).ids());
-        let Some(peer) =
-            paired.into_iter().find(|peer| fingerprint_of(peer) == fingerprint && self.bluetooth.has_session(peer))
-        else {
-            return;
+    async fn identify_paired_device(&self, peer: &str, fingerprint: [u8; crate::services::bluetooth_channel_service::FINGERPRINT_LEN])
+        -> Result<crate::services::bluetooth_channel_service::AvailableDevice, String>
+    {
+        let scanner = &self.bluetooth.scanner;
+        let _step = scanner.begin_pairing_step();
+        let address = scanner.available.heard_address(fingerprint)
+            .ok_or("the device is not available; open Add Device on it again")?;
+        let _connect = scanner.acquire_connect().await;
+        let mut link = self.bluetooth.connect_session(peer, &address, crate::services::channel_service::iroh_link::PEER_ALPN).await?;
+        let identify = PeerFrame::IdentifyDevice {
+            device_id: self.identity.device_id.clone(),
+            hostname: self.identity.hostname.clone(),
+            endpoint_id: self.identity.endpoint_id.clone(),
         };
-        log::info!("[pairing][ble] closing the held Bluetooth session with {peer} to identify it again");
-        self.bluetooth.close_session(&peer);
-        let until = tokio::time::Instant::now() + Duration::from_secs(3);
-        while self.bluetooth.has_session(&peer) && tokio::time::Instant::now() < until {
-            tokio::time::sleep(Duration::from_millis(50)).await;
+        send_pair_frame(link.as_mut(), &identify).await?;
+        let reply = tokio::time::timeout(IDENTIFY_ANSWER_TIMEOUT, recv_frame(link.as_mut())).await;
+        let Ok(Some(Ok(PeerFrame::DeviceIdentified { device_id, hostname, endpoint_id }))) = reply else {
+            return Err("the device did not answer; open Add Device on it again".to_string());
+        };
+        if device_id != peer || link.peer_key().as_deref() != Some(endpoint_id.as_str()) {
+            return Err("the identified device does not match the paired key".to_string());
         }
-        if let Some(peer_key) = self.pinned_key(&peer).and_then(|key| key.parse::<iroh::EndpointId>().ok()) {
-            self.bluetooth.close_links_to(peer_key);
-        }
+        let peer_key = endpoint_id.parse().map_err(|err| format!("invalid identified key: {err}"))?;
+        self.bluetooth.keep_pairing_link(&device_id, &address, peer_key);
+        let device = crate::services::bluetooth_channel_service::AvailableDevice { address, device_id, hostname };
+        scanner.available.record_identified(&device, endpoint_id);
+        Ok(device)
     }
 
     // ---- Pairing ----
@@ -473,8 +485,6 @@ impl DeviceService {
                 }
             })
             .await;
-            drop(link);
-            log::info!("[pairing][ble] request link closed");
             let Some(peer_key) = peer_key else {
                 return;
             };
@@ -482,11 +492,11 @@ impl DeviceService {
                 // The first session goes over this pairing's BLE link, which
                 // is still up: no search and no new connect.
                 service.bluetooth.keep_pairing_link(&to_device_id, &address, peer_key);
-            } else {
-                // The phone leaves Add Device with a new address; the BLE
-                // link to its old one must not outlive the pairing.
-                service.bluetooth.close_links_to(peer_key);
             }
+            // This DataLink owns the failed exchange. Its stream drain and the
+            // endpoint hooks release only that iroh user, not another session.
+            drop(link);
+            log::info!("[pairing][ble] request link closed");
         });
     }
 
@@ -558,6 +568,14 @@ impl DeviceService {
                                 links.insert(request_id, link);
                             }
                         } else {
+                            #[cfg(all(feature = "ui-plane", any(target_os = "linux", target_os = "android", target_os = "windows")))]
+                            if let Some(peer_key) = link.peer_key().and_then(|key| key.parse().ok()) {
+                                self.bluetooth.keep_pairing_link(
+                                    &stored.request.from_device_id,
+                                    &link.peer_addr().unwrap_or_default(),
+                                    peer_key,
+                                );
+                            }
                             // A send only queues: hold the link until the
                             // requester closes it after it read the frame.
                             tauri::async_runtime::block_on(async {
@@ -743,9 +761,6 @@ impl DeviceService {
         self.with_conn(|conn| DeviceRepository::new(conn).list())
     }
 
-    fn pinned_key(&self, device_id: &str) -> Option<String> {
-        self.with_conn(|conn| DeviceRepository::new(conn).pinned_key(device_id))
-    }
 
     /// Saves a pair at the end of pairing. The key pinned is the one the
     /// peer proved during pairing `request_id`; a devtools build also takes

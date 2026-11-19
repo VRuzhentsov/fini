@@ -83,8 +83,6 @@ pub trait SessionHandler: Send + Sync {
     /// Whether a session with the peer runs on this channel now.
     fn has_session(&self, peer_device_id: &str, kind: ChannelKind) -> bool;
 
-    /// Ends the session with the peer on this channel, if one runs.
-    fn close_session(&self, peer_device_id: &str, kind: ChannelKind) -> bool;
 
     /// A session link that this device connected: runs the session on it
     /// until it ends. `on_held` runs once the session is claimed.
@@ -130,10 +128,7 @@ impl LinkHandlerSlot {
         self.get().is_some_and(|handlers| handlers.session.has_session(peer_device_id, kind))
     }
 
-    /// Ends the session with the peer on this channel, if one runs.
-    pub fn close_session(&self, peer_device_id: &str, kind: ChannelKind) -> bool {
-        self.get().is_some_and(|handlers| handlers.session.close_session(peer_device_id, kind))
-    }
+
 }
 
 /// Everything one channel service can do. Implemented by

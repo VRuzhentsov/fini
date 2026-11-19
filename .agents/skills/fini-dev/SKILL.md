@@ -165,10 +165,10 @@ Two limits to state rather than work around silently:
   `tauri dev` does not always pick one up on its own. After editing Rust,
   confirm the running app actually has the change (query the behaviour, do
   not assume) and restart the dev process when it does not.
-- **`make android-dev` serves the frontend from the host over the network**,
-  so it cannot run while the phone's Wi-Fi is off for a Bluetooth-only test
-  (`make e2e-devices-ble`). When a task needs both, say so and let the user
-  choose which half to give up.
+- **Bluetooth-only proof can retain Wi-Fi and HMR.** Keep both paired Network
+  channels off and verify that Bluetooth carries the session and test data
+  (`make e2e-devices-ble`). Use an installed package only when the test needs
+  independence from HMR. Change radio settings only with specific user approval.
 
 On your own computer, prefer these Makefile targets over raw `npm`, `tauri`, or container commands. Make is for local development only (`fini-scripting`, "Make is local only"): for CI, a release, a container or CI-parity evidence, use what the last column names.
 
