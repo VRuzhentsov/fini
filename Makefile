@@ -82,7 +82,7 @@ require-container:
 
 # Swap the devtools capability in for the duration of one command and put the
 # committed one back however that command exits -- including Ctrl-C, which is
-# how every `dev` session ends. Shared by the three targets that need it
+# how every `dev` session ends. Shared by the four targets that need it
 # rather than copied into each: it is the same workflow every time, and a
 # copy that drifts leaves the devtools capability committed by accident.
 define with_devtools_capability
@@ -349,7 +349,7 @@ e2e-devices:
 #
 # The control plane reaches the phone over `adb forward` on USB.
 #
-#   1. make android-dev               # phone app running
+#   1. make android-dev ANDROID_DEV_FEATURES=ui-plane,devtools  # phone app running
 #   2. make desktop-debug-dev         # desktop app running
 #   3. pair them over Bluetooth only
 #   4. make e2e-devices-ble
@@ -533,6 +533,8 @@ android-connect:
 	@timeout "$(ADB_CONNECT_TIMEOUT)s" adb connect $(DEVICE_ADDRESS) || (echo "ADB connect timed out for $(DEVICE_ADDRESS). Re-authorize wireless debugging, reconnect USB, or start an emulator." && exit 1)
 
 android-dev: require-container android-connect
+	@set -eu; \
+	$(if $(findstring devtools,$(ANDROID_DEV_FEATURES)),$(with_devtools_capability)) \
 	$(ANDROID_BUILD_RUN) npm run tauri android dev -- --features $(ANDROID_DEV_FEATURES) --host $(HOST_IP)
 
 android-build: require-container
