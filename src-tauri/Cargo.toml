@@ -86,8 +86,8 @@ data-encoding = "2"
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = { version = "0.18.2", optional = true }
 notify-rust = { version = "4", optional = true }
-ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "218e4aeb1c4da415625a1238c5d2d98abe5c46d7", optional = true }
-ble-gatt-iroh = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "218e4aeb1c4da415625a1238c5d2d98abe5c46d7", optional = true }
+ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "12359b34da8bf7f7eee7587271afe8d39e1c9321", optional = true }
+ble-gatt-iroh = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "12359b34da8bf7f7eee7587271afe8d39e1c9321", optional = true }
 # Only used behind #[cfg(target_os = "linux")] (resume_watcher's sleep/wake
 # watcher, settings.rs's portal theme-change watcher, both over the
 # session/system D-Bus) -- kept target-gated rather than unconditional so
@@ -99,15 +99,15 @@ zvariant = "5.10.0"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # The WinRT driver of ble-gatt (its ADR-0011): the Bluetooth channel on Windows.
-ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "218e4aeb1c4da415625a1238c5d2d98abe5c46d7", optional = true }
-ble-gatt-iroh = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "218e4aeb1c4da415625a1238c5d2d98abe5c46d7", optional = true }
+ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "12359b34da8bf7f7eee7587271afe8d39e1c9321", optional = true }
+ble-gatt-iroh = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "12359b34da8bf7f7eee7587271afe8d39e1c9321", optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
-ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "218e4aeb1c4da415625a1238c5d2d98abe5c46d7", optional = true }
-ble-gatt-iroh = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "218e4aeb1c4da415625a1238c5d2d98abe5c46d7", optional = true }
+ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "12359b34da8bf7f7eee7587271afe8d39e1c9321", optional = true }
+ble-gatt-iroh = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "12359b34da8bf7f7eee7587271afe8d39e1c9321", optional = true }
 # Ships ble-gatt's Kotlin bridge, builds the Android backend after the
 # Activity is up, and asks for the Bluetooth runtime permissions.
-tauri-plugin-ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "218e4aeb1c4da415625a1238c5d2d98abe5c46d7", optional = true }
+tauri-plugin-ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "12359b34da8bf7f7eee7587271afe8d39e1c9321", optional = true }
 ndk-context = "0.1"
 tokio-stream = "0.1"
 jni = "0.21"
