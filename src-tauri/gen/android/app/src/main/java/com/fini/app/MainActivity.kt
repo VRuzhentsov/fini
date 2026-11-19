@@ -16,4 +16,11 @@ class MainActivity : TauriActivity() {
     // prompt is only triggered from a genuine user action (the Bluetooth
     // toggle in Device settings), not on every app launch.
   }
+
+  override fun onResume() {
+    super.onResume()
+    // Android refuses a foreground service start while the app is in the
+    // background; the service then starts now. See SyncForegroundService.start.
+    SyncForegroundService.startIfRefused(this)
+  }
 }
