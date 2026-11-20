@@ -1,17 +1,19 @@
 // Pre-commit checks for staged Rust files. lint-staged calls this script
 // with the staged `.rs` files; it runs only when such files exist.
 //
-//   node scripts/rust-staged.mts fmt [files...]     rustfmt --check on the staged content of each file
+//   node scripts/rust-staged.mts fmt [files...]     rustfmt on the staged content of each file
 //   node scripts/rust-staged.mts clippy [files...]  cargo clippy on each crate with a staged file
 //
-// clippy checks the full crate, but this script fails only on warnings on the
-// lines that `git diff --cached -U0` shows as added or changed. Old warnings
-// in other lines do not stop the commit. Compile errors always stop it.
+// rustfmt formats full files and clippy checks the full crate, but this script
+// fails only on problems on the lines that `git diff --cached -U0` shows as
+// added or changed. Old problems in other lines do not stop the commit.
+// Compile errors and files that rustfmt cannot parse always stop it.
 // Without files, both modes use the staged `.rs` files.
 
 import { spawnSync } from 'node:child_process';
 import type { SpawnSyncOptions } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 const MAX_BUFFER = 512 * 1024 * 1024;
@@ -66,26 +68,76 @@ function edition(dir: string | undefined): string {
   return match ? match[1] : '2021';
 }
 
-// rustfmt reads the staged content from stdin. Then it checks only this file,
-// not the modules that the file declares with `mod`. With stdin, `--check`
-// shows the diff but exits 0, so compare the formatted output instead.
-function fmt(files: string[]): number {
-  let failed = 0;
-  for (const file of files) {
-    const staged = run('git', ['show', `:${file}`], { encoding: 'utf8' });
-    if (staged.status !== 0) continue;
-    const args = ['--edition', edition(crateDir(file))];
-    const formatted = run('rustfmt', args, { input: staged.stdout, encoding: 'utf8' });
-    if (formatted.status === 0 && formatted.stdout === staged.stdout) continue;
-    failed += 1;
-    console.error(`rustfmt: ${file} is not formatted (run "rustfmt ${args.join(' ')} ${file}"):`);
-    const check = run('rustfmt', ['--check', ...args], { input: staged.stdout, encoding: 'utf8' });
-    console.error(String(check.stdout).replaceAll('<stdin>', file) + String(check.stderr));
-  }
-  return failed === 0 ? 0 : 1;
-}
-
 type Range = [number, number];
+
+const overlaps = (ranges: Range[] | undefined, [start, end]: Range) =>
+  ranges?.some(([from, to]) => start <= to && end >= from) ?? false;
+
+// rustfmt reads the staged content from stdin. Then it checks only this file,
+// not the modules that the file declares with `mod`. The formatted output is
+// compared with the staged content, and only the rustfmt changes that touch
+// staged lines stop the commit.
+function fmt(files: string[]): number {
+  const changed = changedLines(files);
+  const temp = mkdtempSync(path.join(tmpdir(), 'rust-staged-'));
+  let onChangedLines = 0;
+  let elsewhere = 0;
+  let broken = 0;
+  try {
+    for (const file of files) {
+      const staged = run('git', ['show', `:${file}`], { encoding: 'utf8' });
+      if (staged.status !== 0) continue;
+      const args = ['--edition', edition(crateDir(file))];
+      const formatted = run('rustfmt', args, { input: staged.stdout, encoding: 'utf8' });
+      if (formatted.status !== 0) {
+        broken += 1;
+        console.error(`rustfmt: cannot format ${file}:\n${String(formatted.stderr).replaceAll('<stdin>', file)}`);
+        continue;
+      }
+      if (formatted.stdout === staged.stdout) continue;
+
+      const before = path.join(temp, 'staged.rs');
+      const after = path.join(temp, 'formatted.rs');
+      writeFileSync(before, String(staged.stdout));
+      writeFileSync(after, String(formatted.stdout));
+      const diff = run('git', ['diff', '--no-index', '--no-color', '-U0', '--', before, after], { encoding: 'utf8' });
+
+      // Each hunk is one rustfmt change; its old side is a line range of the staged file.
+      const hunks: { range: Range; text: string[] }[] = [];
+      for (const line of String(diff.stdout).split('\n')) {
+        const header = /^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@/.exec(line);
+        if (header) {
+          const start = Number(header[1]);
+          const count = header[2] === undefined ? 1 : Number(header[2]);
+          // A pure insertion goes between line `start` and the next line.
+          const range: Range = count === 0 ? [Math.max(start, 1), start + 1] : [start, start + count - 1];
+          hunks.push({ range, text: [] });
+        } else if (hunks.length > 0 && /^[-+]/.test(line)) {
+          hunks[hunks.length - 1].text.push(line);
+        }
+      }
+      for (const hunk of hunks) {
+        if (overlaps(changed.get(file), hunk.range)) {
+          onChangedLines += 1;
+          console.error(`rustfmt: ${file}:${hunk.range[0]} is not formatted:\n${hunk.text.join('\n')}\n`);
+        } else {
+          elsewhere += 1;
+        }
+      }
+    }
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
+
+  if (broken > 0 || onChangedLines > 0) {
+    if (onChangedLines > 0) {
+      console.error(`rustfmt: ${onChangedLines} place(s) on staged lines need formatting (rustfmt shows the fix above).`);
+    }
+    return 1;
+  }
+  console.error(`rustfmt: staged lines are formatted (${elsewhere} place(s) on other lines were ignored).`);
+  return 0;
+}
 
 // Added or changed line ranges of each staged file, from the zero-context diff.
 function changedLines(files: string[]): Map<string, Range[]> {
