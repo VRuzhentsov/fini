@@ -1,5 +1,0 @@
-# Commits that only change formatting. Use with:
-#   git config blame.ignoreRevsFile .git-blame-ignore-revs
-
-# Format src-tauri with rustfmt
-cd4b1d151d25feb6fe97f800d76c852f090759e4
