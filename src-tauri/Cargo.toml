@@ -27,6 +27,11 @@ name = "fini-app"
 path = "src/desktop.rs"
 required-features = ["ui-plane"]
 
+[lints.clippy]
+# The default clippy set. The pre-commit hook fails only on warnings on
+# changed lines (scripts/rust-staged.mts).
+all = { level = "warn", priority = -1 }
+
 [patch.crates-io]
 sherpa-onnx-sys = { path = "patches/sherpa-onnx-sys" }
 

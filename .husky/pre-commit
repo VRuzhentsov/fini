@@ -1,0 +1,10 @@
+if ! command -v node >/dev/null 2>&1; then
+  echo "pre-commit: node is not on PATH, so the lint checks cannot run." >&2
+  echo "pre-commit: install Node 24 and run \"npm install\", or skip the checks one time with \"git commit --no-verify\"." >&2
+  exit 1
+fi
+if ! command -v lint-staged >/dev/null 2>&1; then
+  echo "pre-commit: lint-staged is not installed. Run \"npm install\", or skip the checks one time with \"git commit --no-verify\"." >&2
+  exit 1
+fi
+lint-staged

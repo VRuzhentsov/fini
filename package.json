@@ -21,7 +21,17 @@
     "gate:e2e:cleanup": "node scripts/ci-gate.mts e2e-cleanup",
     "build:android:e2e": "node scripts/with-devtools-capability.mts npm run tauri android build -- --features ui-plane,devtools --ci --debug --apk --target x86_64",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "lint": "eslint .",
+    "lint:rust": "cargo fmt --manifest-path src-tauri/Cargo.toml --check && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{ts,mts,cts,tsx,vue,js,mjs,cjs}": "eslint --config eslint.staged.config.js --max-warnings=0 --no-warn-ignored",
+    "*.rs": [
+      "node scripts/rust-staged.mts fmt",
+      "node scripts/rust-staged.mts clippy"
+    ]
   },
   "dependencies": {
     "@heroicons/vue": "^2.2.0",
@@ -38,18 +48,26 @@
   "devDependencies": {
     "@babel/core": "^7.28.0",
     "@babel/preset-env": "^7.28.0",
+    "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.51.0",
     "@srsholmes/tauri-playwright": "^0.2.2",
     "@tailwindcss/vite": "^4.2.1",
     "@tauri-apps/cli": "^2.11.0",
     "@types/jest": "^29.5.14",
     "@vitejs/plugin-vue": "^5.2.1",
+    "@vue/eslint-config-typescript": "^14.9.0",
     "@vue/test-utils": "^2.4.6",
     "@vue/vue3-jest": "^29.2.6",
     "babel-jest": "^29.7.0",
+    "eslint": "^10.15.0",
+    "eslint-plugin-diff": "^2.1.7",
+    "eslint-plugin-vue": "^10.12.1",
+    "globals": "^17.14.0",
+    "husky": "^9.1.7",
     "identity-obj-proxy": "^3.0.0",
     "jest": "^29.7.0",
     "jest-environment-jsdom": "^29.7.0",
+    "lint-staged": "^17.6.1",
     "tailwindcss": "^4.2.1",
     "ts-jest": "^29.4.1",
     "typescript": "~5.6.2",
