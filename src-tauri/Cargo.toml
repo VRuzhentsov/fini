@@ -27,11 +27,6 @@ name = "fini-app"
 path = "src/desktop.rs"
 required-features = ["ui-plane"]
 
-[lints.clippy]
-# The default clippy set. CI and the pre-commit hook run clippy with
-# `-D warnings` (`npm run lint:rust:clippy`).
-all = { level = "warn", priority = -1 }
-
 [patch.crates-io]
 sherpa-onnx-sys = { path = "patches/sherpa-onnx-sys" }
 
