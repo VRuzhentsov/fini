@@ -28,7 +28,7 @@ checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 [[package]]
 name = "ble-gatt"
 version = "0.1.0"
-source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=4d4bfa3dd27a95ed68463f4ce6f11ded139683a3#4d4bfa3dd27a95ed68463f4ce6f11ded139683a3"
+source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=96fbaf96574854af63d9716a3a350bc7cfb0a6cf#96fbaf96574854af63d9716a3a350bc7cfb0a6cf"
 dependencies = [
  "async-trait",
  "bluer",
