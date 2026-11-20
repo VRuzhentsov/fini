@@ -18,5 +18,5 @@ path = "src/main.rs"
 # every real release build the moment its required feature is off (as it
 # always is in a release build). Living in its own crate keeps it out of
 # src-tauri's Cargo.toml entirely, so Tauri's bundler never sees it.
-ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "0c1b8bea4430d6800059c606809779f42cead606", features = ["mock-broker"] }
+ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "8bb981c36b667d1d0b2b76a66dab2c6de932da6b", features = ["mock-broker"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util"] }
