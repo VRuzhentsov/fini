@@ -705,14 +705,13 @@ impl BluetoothChannelService {
                 Err(err) => log::info!("[transport][ble] the pairing link to {address} is gone: {err}"),
             }
         }
-        if self.answers_first(peer_id) && self.wait_for_peer_session(peer_id).await {
-            log::info!("[transport][ble] {peer_id} connected first; no dial from here");
-            return;
-        }
         let deadline = tokio::time::Instant::now() + SEARCH_WINDOW;
         let mut last_error = None;
 
         if let Some(address) = self.scanner.last_heard_address(peer_id) {
+            if self.peer_connected_first(peer_id).await {
+                return;
+            }
             let guard = self.scanner.acquire_connect().await;
             match self.connect_for_session(peer_id, &address).await {
                 Ok(link) => {
@@ -753,7 +752,9 @@ impl BluetoothChannelService {
                 }
                 return;
             };
-            if !self.is_on(peer_id) {
+            // The peer's session can arrive while this search runs: it carries
+            // the work, and a dial now would only cross it.
+            if !self.is_on(peer_id) || self.has_session(peer_id) || self.peer_connected_first(peer_id).await {
                 return;
             }
             match self.connect_for_session(peer_id, &found.address).await {
@@ -783,6 +784,22 @@ impl BluetoothChannelService {
         self.identity.device_id.as_str() > peer_id
     }
 
+    /// Before each dial of the device that answers first: waits up to
+    /// `ANSWER_FIRST_WAIT` for the session the peer opens. True when one runs,
+    /// so this device does not dial. The wait is per dial, not once per
+    /// exchange: on hardware the phone's exchange started 12 s before the PC
+    /// app was up, and a wait at its start had ended when the PC dialled.
+    async fn peer_connected_first(&self, peer_id: &str) -> bool {
+        if !self.answers_first(peer_id) {
+            return false;
+        }
+        let connected = self.wait_for_peer_session(peer_id).await;
+        if connected {
+            log::info!("[transport][ble] {peer_id} connected first; no dial from here");
+        }
+        connected
+    }
+
     /// Waits up to `ANSWER_FIRST_WAIT` for a session with `peer_id` that the
     /// peer opened. True when one runs.
     async fn wait_for_peer_session(&self, peer_id: &str) -> bool {
@@ -809,6 +826,7 @@ impl BluetoothChannelService {
     /// runs: a connect that went on to its timeout after an unpair stopped
     /// the Add Device scan for up to 20 s.
     async fn connect_for_session(&self, peer_id: &str, address: &str) -> Result<Box<dyn DataLink>, String> {
+        let _dialing = self.scanner.begin_dial(peer_id);
         let connect = tokio::time::timeout(
             CONNECT_CANDIDATE_TIMEOUT,
             self.connect_session(peer_id, address, SYNC_ALPN),
@@ -2526,6 +2544,18 @@ struct Requests {
     searches: Vec<Request>,
 }
 
+/// A session dial in progress (`Scanner::begin_dial`); unmarked on drop.
+pub(super) struct DialMark<'a> {
+    scanner: &'a Scanner,
+    peer_id: String,
+}
+
+impl Drop for DialMark<'_> {
+    fn drop(&mut self) {
+        self.scanner.dialing.lock().unwrap().remove(&self.peer_id);
+    }
+}
+
 pub struct Scanner {
     channel: std::sync::Weak<BluetoothChannelService>,
     /// Pairing legs (request / accept / complete) in progress. The add-mode
@@ -2555,6 +2585,9 @@ pub struct Scanner {
     scan_running: AtomicBool,
     /// Peers with an exchange attempt in flight -- one at a time per peer.
     exchanges: StdMutex<HashSet<String>>,
+    /// Peers this device is dialling a session to right now (the connect
+    /// step of an exchange, not its search or its wait).
+    dialing: StdMutex<HashSet<String>>,
     /// When this device's own connection to each peer became a session
     /// (`note_connected`).
     connected_at: StdMutex<HashMap<String, Instant>>,
@@ -2612,6 +2645,7 @@ impl Scanner {
             scan_lock: Mutex::new(()),
             scan_running: AtomicBool::new(false),
             exchanges: StdMutex::new(HashSet::new()),
+            dialing: StdMutex::new(HashSet::new()),
             connected_at: StdMutex::new(HashMap::new()),
             connections: Arc::new(watch::channel(0).0),
             requests: StdMutex::new(Requests::default()),
@@ -2697,16 +2731,28 @@ impl Scanner {
         self.scan_running.load(Ordering::SeqCst)
     }
 
-    /// Whether this device is connecting to the peer right now, or its own
+    /// Whether this device is dialling the peer right now, or its own
     /// connection became a session within `session::CROSSING_WINDOW`.
+    ///
+    /// The dial, not the whole exchange: an exchange that is searching or
+    /// waiting has no connection to keep. Counting it made a deadlock on
+    /// hardware: ble-gatt kept the phone's link and ended each PC dial, while
+    /// the PC, still in its exchange, refused the phone's session as a
+    /// crossing in which its own connection is kept.
     pub fn connecting(&self, peer_id: &str) -> bool {
-        self.exchanges.lock().unwrap().contains(peer_id)
+        self.dialing.lock().unwrap().contains(peer_id)
             || self
                 .connected_at
                 .lock()
                 .unwrap()
                 .get(peer_id)
                 .is_some_and(|at| at.elapsed() < crate::services::space_sync_service::CROSSING_WINDOW)
+    }
+
+    /// Marks a session dial to `peer_id` until the returned guard drops.
+    pub(super) fn begin_dial(&self, peer_id: &str) -> DialMark<'_> {
+        self.dialing.lock().unwrap().insert(peer_id.to_string());
+        DialMark { scanner: self, peer_id: peer_id.to_string() }
     }
 
     /// Registers an exchange attempt with `peer_id`; false if one runs.
