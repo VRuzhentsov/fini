@@ -280,7 +280,7 @@ A pair syncs only the spaces that the two devices map.
 ## Not done yet
 
 - The app and broker use BLE revision
-  `12359b34da8bf7f7eee7587271afe8d39e1c9321`. Consumer compilation is not
+  `0c1b8bea4430d6800059c606809779f42cead606`. Consumer compilation is not
   runtime proof. Advertisement changes, initialization during shutdown,
   pairing failure with another user, re-identify during a sync session and
   real app BLE delivery still need manual proof.

@@ -366,10 +366,17 @@ const FINI_MANUFACTURER_ID: u16 = 0xFFFF;
 /// The payload used to be exactly this one byte, present only while in
 /// add-mode. ADR-0006's slice 2 made it a five-byte record — one flags
 /// byte then four fingerprint bytes — advertised always, because the
-/// fingerprint is how a scanner tells which peer it has found. Five bytes
-/// still fits: legacy advertisements cap at 31 total and the 128-bit
-/// service UUID plus this record spend about 26. See
-/// `GattServiceSpec::manufacturer_data`'s own doc comment in ble-gatt.
+/// fingerprint is how a scanner tells which peer it has found.
+///
+/// The record travels in ble-gatt's fast advertisement
+/// (`DatagramConfig::fast_advertisement_company`, ble-gatt ADR-0012 §2):
+/// the endpoint, a hash of the readable metadata and these five bytes, under
+/// `0xFFFF`, in the Android scan response. A scanner gets the five bytes
+/// back under `0xFFFF` and lists the phone with no connection. The short
+/// name no longer fits there; it comes from one read later. Windows and
+/// Linux cannot send the fast advertisement; scanners read their record.
+/// A build before this change reads the fast advertisement as a wrong
+/// record (accepted: the two pull requests ship together).
 const ADD_MODE_FLAG_BYTE: u8 = 0x01;
 
 /// The Bluetooth half of the held connections (2026-10-13: green is a live
@@ -1737,6 +1744,9 @@ impl Advertiser {
         payload.extend_from_slice(&self.fingerprint);
         config.advertised_manufacturer_data.insert(FINI_MANUFACTURER_ID, payload);
         config.advertised_local_name = Some(self.short_name.clone());
+        // The record travels in ble-gatt's fast advertisement, and the scan
+        // gives it back under the same ID (ble-gatt ADR-0012 §2).
+        config.fast_advertisement_company = Some(FINI_MANUFACTURER_ID);
         config
     }
 
