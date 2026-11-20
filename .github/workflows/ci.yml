@@ -120,6 +120,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      # Rust format and clippy, in the same build container. The image has the
+      # minimal rustup profile, so add the two components first.
+      - name: Check Rust format and clippy
+        uses: ./.github/actions/container-stage
+        with:
+          engine: ${{ env.CONTAINER_ENGINE }}
+          image: linux
+          stage: build
+          run: |
+            rustup component add clippy rustfmt
+            cargo fmt --manifest-path src-tauri/Cargo.toml --all --check
+            cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --features cli-plane,ui-plane,desktop-updater -- -D warnings
+
       # `createUpdaterArtifacts: true` in tauri.conf.json means `tauri build`
       # requires *some* signing key to be present or it refuses to bundle at
       # all -- but this job only needs to prove the bundle assembles, not
