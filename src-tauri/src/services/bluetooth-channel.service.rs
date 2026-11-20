@@ -373,8 +373,10 @@ const FINI_MANUFACTURER_ID: u16 = 0xFFFF;
 /// the endpoint, a hash of the readable metadata and these five bytes, under
 /// `0xFFFF`, in the Android scan response. A scanner gets the five bytes
 /// back under `0xFFFF` and lists the phone with no connection. The short
-/// name no longer fits there; it comes from one read later. Windows and
-/// Linux cannot send the fast advertisement; scanners read their record.
+/// name no longer fits there; it comes from one read later. Windows sends
+/// the fast advertisement in a publisher advertisement of its own, from
+/// another address than its GATT server; the scanner joins the two after
+/// one read. Linux cannot send it; scanners read its record.
 /// A build before this change reads the fast advertisement as a wrong
 /// record (accepted: the two pull requests ship together).
 const ADD_MODE_FLAG_BYTE: u8 = 0x01;
