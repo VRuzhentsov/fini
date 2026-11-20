@@ -35,11 +35,7 @@ pub async fn adapter() -> Result<Adapter, String> {
 /// Whether the Bluetooth runtime permissions are granted. Fails closed: an
 /// unanswerable check reads as not granted.
 pub fn permission_granted() -> bool {
-    match app().and_then(|app| {
-        app.ble_gatt()
-            .permission_state()
-            .map_err(|err| err.to_string())
-    }) {
+    match app().and_then(|app| app.ble_gatt().permission_state().map_err(|err| err.to_string())) {
         Ok(state) => state == PermissionState::Granted,
         Err(err) => {
             eprintln!("[ble-plugin] permission check failed, treating as not granted: {err}");
@@ -69,8 +65,7 @@ pub fn request_permission() {
             return;
         }
         if !granted_before && permission_granted() {
-            crate::services::bluetooth_channel_service::BluetoothAdapter::this_device()
-                .publish_changed();
+            crate::services::bluetooth_channel_service::BluetoothAdapter::this_device().publish_changed();
         }
     });
 }

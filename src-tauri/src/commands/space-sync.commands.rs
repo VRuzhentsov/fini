@@ -9,8 +9,8 @@ use crate::models::channel::ChannelKind;
 use crate::services::channel_service::CustomSpaceDescriptor;
 use crate::services::db::DbPool;
 use crate::services::space_sync_service::{
-    IncomingSpaceMappingUpdate, SpaceMappingApplyResult, SpaceResolutionMode, SpaceSyncService,
-    SpaceSyncStatus, SpaceSyncTickResult, SyncQueueSummary,
+    IncomingSpaceMappingUpdate, SpaceMappingApplyResult, SpaceResolutionMode, SpaceSyncService, SpaceSyncStatus, SpaceSyncTickResult,
+    SyncQueueSummary,
 };
 
 type SpaceSync<'a> = State<'a, Arc<SpaceSyncService>>;
@@ -108,9 +108,6 @@ pub fn space_sync_queue_summary(
 
 /// The channel of a session that runs with this peer now, if any.
 #[tauri::command]
-pub fn space_sync_session_channel(
-    space_sync: SpaceSync,
-    peer_device_id: String,
-) -> Option<ChannelKind> {
+pub fn space_sync_session_channel(space_sync: SpaceSync, peer_device_id: String) -> Option<ChannelKind> {
     space_sync.active_session_channel(&peer_device_id)
 }

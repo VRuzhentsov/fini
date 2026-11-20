@@ -62,7 +62,10 @@ pub fn get_spaces(state: State<DbPool>) -> Result<Vec<Space>, String> {
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn create_space(state: State<DbPool>, input: CreateSpaceInput) -> Result<Space, String> {
+pub fn create_space(
+    state: State<DbPool>,
+    input: CreateSpaceInput,
+) -> Result<Space, String> {
     let mut conn = state.get()?;
     SpaceRepository::new(&mut conn).create(input)
 }

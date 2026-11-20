@@ -40,18 +40,11 @@ impl<'a> SpaceMappingRepository<'a> {
 
     /// Each space of this pair with its last sync and its end:
     /// `(space_id, last_synced_at, end_of_sync_at)`.
-    pub fn rows(
-        &mut self,
-        peer_device_id: &str,
-    ) -> Result<Vec<(String, Option<String>, Option<String>)>, String> {
+    pub fn rows(&mut self, peer_device_id: &str) -> Result<Vec<(String, Option<String>, Option<String>)>, String> {
         mappings::table
             .filter(mappings::peer_device_id.eq(peer_device_id))
             .order(mappings::space_id.asc())
-            .select((
-                mappings::space_id,
-                mappings::last_synced_at,
-                mappings::end_of_sync_at,
-            ))
+            .select((mappings::space_id, mappings::last_synced_at, mappings::end_of_sync_at))
             .load(&mut *self.conn)
             .map_err(|e| e.to_string())
     }
@@ -81,12 +74,7 @@ impl<'a> SpaceMappingRepository<'a> {
     }
 
     /// Ends the sync of these spaces with this pair at `ended_at`.
-    pub fn end(
-        &mut self,
-        peer_device_id: &str,
-        space_ids: &[String],
-        ended_at: &str,
-    ) -> Result<(), String> {
+    pub fn end(&mut self, peer_device_id: &str, space_ids: &[String], ended_at: &str) -> Result<(), String> {
         if space_ids.is_empty() {
             return Ok(());
         }
@@ -108,10 +96,8 @@ impl<'a> SpaceMappingRepository<'a> {
             return Ok(());
         }
         let existing = self.all(peer_device_id)?;
-        let (again, new): (Vec<String>, Vec<String>) = space_ids
-            .iter()
-            .cloned()
-            .partition(|space_id| existing.contains(space_id));
+        let (again, new): (Vec<String>, Vec<String>) =
+            space_ids.iter().cloned().partition(|space_id| existing.contains(space_id));
         let now = utc_now();
         if !again.is_empty() {
             diesel::update(
@@ -148,12 +134,7 @@ impl<'a> SpaceMappingRepository<'a> {
 
     /// Records that this pair synced this space up to `synced_at`, unless
     /// a later sync is recorded already.
-    pub fn record_synced(
-        &mut self,
-        peer_device_id: &str,
-        space_id: &str,
-        synced_at: &str,
-    ) -> Result<(), String> {
+    pub fn record_synced(&mut self, peer_device_id: &str, space_id: &str, synced_at: &str) -> Result<(), String> {
         let current: Option<String> = mappings::table
             .filter(mappings::peer_device_id.eq(peer_device_id))
             .filter(mappings::space_id.eq(space_id))
@@ -162,22 +143,14 @@ impl<'a> SpaceMappingRepository<'a> {
             .optional()
             .map_err(|e| e.to_string())?
             .flatten();
-        if current
-            .as_deref()
-            .is_some_and(|current| current >= synced_at)
-        {
+        if current.as_deref().is_some_and(|current| current >= synced_at) {
             return Ok(());
         }
         self.set_last_synced(peer_device_id, space_id, synced_at)
     }
 
     /// Sets when this pair last synced this space.
-    pub fn set_last_synced(
-        &mut self,
-        peer_device_id: &str,
-        space_id: &str,
-        synced_at: &str,
-    ) -> Result<(), String> {
+    pub fn set_last_synced(&mut self, peer_device_id: &str, space_id: &str, synced_at: &str) -> Result<(), String> {
         diesel::update(
             mappings::table
                 .filter(mappings::peer_device_id.eq(peer_device_id))

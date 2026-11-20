@@ -11,9 +11,7 @@ pub const OCCURRENCE_ABANDONED: &str = "abandoned";
 /// overrides the quest's field for that day; `None` takes the quest's value
 /// (D4). A checklist day's `description` is that day's own copy, with its
 /// ticks (D5).
-#[derive(
-    Queryable, Selectable, Insertable, AsChangeset, Serialize, Deserialize, Clone, Debug, PartialEq,
-)]
+#[derive(Queryable, Selectable, Insertable, AsChangeset, Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[diesel(table_name = quest_occurrences)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 #[diesel(treat_none_as_null = true)]

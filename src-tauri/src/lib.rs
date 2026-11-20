@@ -22,13 +22,14 @@ use commands::channel_commands::channel_probe_bluetooth;
 use commands::channel_commands::channel_set_test_switch;
 #[cfg(feature = "ui-plane")]
 use commands::device_commands::{
-    device_available_devices, device_channel_statuses, device_debug_status, device_enter_add_mode,
-    device_get_identity, device_heard_devices, device_identify_bluetooth_device,
-    device_leave_add_mode, device_pair_accept_request, device_pair_acknowledge_request,
-    device_pair_complete_request, device_pair_incoming_requests, device_pair_outgoing_completions,
-    device_pair_outgoing_updates, device_paired_devices, device_save_paired_device,
-    device_send_pair_request, device_send_pair_request_bluetooth, device_set_channel_enabled,
-    device_set_primary_channel, device_unpair, device_update_last_seen,
+    device_available_devices, device_heard_devices, device_channel_statuses,
+    device_debug_status, device_enter_add_mode, device_get_identity,
+    device_identify_bluetooth_device, device_leave_add_mode, device_pair_accept_request,
+    device_pair_acknowledge_request, device_pair_complete_request, device_pair_incoming_requests,
+    device_pair_outgoing_completions, device_pair_outgoing_updates, device_paired_devices,
+    device_save_paired_device, device_send_pair_request, device_send_pair_request_bluetooth,
+    device_set_channel_enabled, device_set_primary_channel, device_unpair,
+    device_update_last_seen,
 };
 #[cfg(feature = "ui-plane")]
 use commands::space_sync_commands::{
@@ -49,16 +50,10 @@ use services::notification::{
 mod resume_watcher;
 #[cfg(feature = "ui-plane")]
 use commands::quest_commands::{
-    add_checklist_item, complete_quest_through_today, create_quest, delete_quest,
-    edit_checklist_item, get_active_focus, get_checklist_activity, get_quests,
-    remove_checklist_item, reorder_checklist, set_focus, toggle_checklist_item, update_quest,
+    add_checklist_item, complete_quest_through_today, create_quest, delete_quest, edit_checklist_item,
+    get_active_focus, get_checklist_activity, get_quests, remove_checklist_item, reorder_checklist,
+    set_focus, toggle_checklist_item, update_quest,
 };
-#[cfg(feature = "ui-plane")]
-use services::bluetooth_channel_service::BluetoothChannelService;
-#[cfg(feature = "ui-plane")]
-use services::device_service::DeviceService;
-#[cfg(feature = "ui-plane")]
-use services::network_channel_service::NetworkChannelService;
 #[cfg(feature = "ui-plane")]
 use services::reconciler;
 #[cfg(feature = "ui-plane")]
@@ -69,6 +64,12 @@ use services::reminder::{
 use services::settings::{self, ThemeMode};
 #[cfg(feature = "ui-plane")]
 use services::space::{create_space, delete_space, get_spaces, update_space};
+#[cfg(feature = "ui-plane")]
+use services::bluetooth_channel_service::BluetoothChannelService;
+#[cfg(feature = "ui-plane")]
+use services::device_service::DeviceService;
+#[cfg(feature = "ui-plane")]
+use services::network_channel_service::NetworkChannelService;
 #[cfg(feature = "ui-plane")]
 use services::space_sync_service::SpaceSyncService;
 #[cfg(feature = "ui-plane")]
@@ -185,7 +186,10 @@ fn get_auto_update_enabled(db: tauri::State<DbPool>) -> Result<bool, String> {
 
 #[cfg(feature = "ui-plane")]
 #[tauri::command]
-fn set_auto_update_enabled(db: tauri::State<DbPool>, enabled: bool) -> Result<bool, String> {
+fn set_auto_update_enabled(
+    db: tauri::State<DbPool>,
+    enabled: bool,
+) -> Result<bool, String> {
     let mut conn = db.get()?;
     settings::set_automatic_updates_enabled(&mut conn, enabled)
 }
@@ -210,10 +214,7 @@ const FINI_EVENT: &str = "fini-event";
 /// Forwards each event of the bus to the UI. A subscriber that lagged
 /// misses some events; the stores read the state again on the next one.
 #[cfg(feature = "ui-plane")]
-async fn forward_events_to_ui(
-    mut events: tokio::sync::broadcast::Receiver<models::Event>,
-    app: AppHandle,
-) {
+async fn forward_events_to_ui(mut events: tokio::sync::broadcast::Receiver<models::Event>, app: AppHandle) {
     loop {
         match events.recv().await {
             Ok(event) => {
@@ -284,9 +285,7 @@ pub fn run() {
                 .level_for("iroh", log::LevelFilter::Warn)
                 .targets([
                     tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
-                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
-                        file_name: None,
-                    }),
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir { file_name: None }),
                 ])
                 .build(),
         )
@@ -346,10 +345,7 @@ pub fn run() {
                     let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
                         .map(std::path::PathBuf::from)
                         .unwrap_or_else(|_| std::env::temp_dir());
-                    runtime_dir
-                        .join("fini-playwright.sock")
-                        .to_string_lossy()
-                        .into_owned()
+                    runtime_dir.join("fini-playwright.sock").to_string_lossy().into_owned()
                 });
                 tauri_plugin_playwright::PluginConfig::new().socket_path(&socket_path)
             }
@@ -390,8 +386,7 @@ pub fn run() {
             match DbPool::open(&db_path) {
                 Ok(pool) => {
                     app.manage(StartupRecoveryState(std::sync::Mutex::new(None)));
-                    let auto_updates_enabled =
-                        settings::automatic_updates_enabled(&mut *pool.get()?).unwrap_or(true);
+                    let auto_updates_enabled = settings::automatic_updates_enabled(&mut *pool.get()?).unwrap_or(true);
                     app.manage(pool);
                     services::desktop_update::spawn_startup_auto_update(
                         &app_handle,
@@ -444,34 +439,18 @@ pub fn run() {
             // channels' link handlers last.
             use services::channel_service::{ChannelService, LinkHandlers};
             let data_dir = app_data_dir(&app_handle);
-            let identity = repositories::DeviceRepository::new(&mut *pool.get()?)
-                .load_or_create_identity(&data_dir)?;
+            let identity =
+                repositories::DeviceRepository::new(&mut *pool.get()?).load_or_create_identity(&data_dir)?;
             let bus = std::sync::Arc::new(services::event_bus_service::EventBus::default());
             let network = NetworkChannelService::new(identity.clone(), pool.clone(), bus.clone());
-            let bluetooth =
-                BluetoothChannelService::new(identity.clone(), pool.clone(), bus.clone());
-            let space_sync = SpaceSyncService::new(
-                identity.clone(),
-                pool.clone(),
-                bus.clone(),
-                network.clone(),
-                bluetooth.clone(),
-            );
+            let bluetooth = BluetoothChannelService::new(identity.clone(), pool.clone(), bus.clone());
+            let space_sync =
+                SpaceSyncService::new(identity.clone(), pool.clone(), bus.clone(), network.clone(), bluetooth.clone());
             // ADR-0012 D11: the quests and occurrence marks that a migration
             // wrote have no sync events yet; sync sends only what has one.
-            repositories::QuestRepository::new(&mut *pool.get()?)
-                .emit_missing_sync_events(&identity.device_id)?;
-            let devices = DeviceService::new(
-                identity,
-                pool,
-                bus.clone(),
-                network.clone(),
-                bluetooth.clone(),
-            );
-            let handlers = LinkHandlers {
-                peer: devices.clone(),
-                session: space_sync.clone(),
-            };
+            repositories::QuestRepository::new(&mut *pool.get()?).emit_missing_sync_events(&identity.device_id)?;
+            let devices = DeviceService::new(identity, pool, bus.clone(), network.clone(), bluetooth.clone());
+            let handlers = LinkHandlers { peer: devices.clone(), session: space_sync.clone() };
             network.set_link_handlers(handlers.clone());
             bluetooth.set_link_handlers(handlers);
 

@@ -36,8 +36,7 @@ impl<'a> ChannelRepository<'a> {
     /// Whether this channel is configured *and* switched on. A missing row
     /// reads as off: an unknown channel must not carry traffic.
     pub fn is_enabled(&mut self, device_id: &str, kind: ChannelKind) -> bool {
-        self.find(device_id, kind)
-            .is_some_and(|channel| channel.enabled)
+        self.find(device_id, kind).is_some_and(|channel| channel.enabled)
     }
 
     /// Set a channel up, or switch an existing one on or off. Idempotent: it
@@ -56,18 +55,12 @@ impl<'a> ChannelRepository<'a> {
                 .conn
                 .transaction::<(), diesel::result::Error, _>(|conn| {
                     let row = channels::table.find((device_id, kind.code()));
-                    diesel::update(row)
-                        .set(channels::enabled.eq(enabled))
-                        .execute(conn)?;
+                    diesel::update(row).set(channels::enabled.eq(enabled)).execute(conn)?;
                     if !enabled {
-                        diesel::update(row)
-                            .set(channels::is_primary.eq(false))
-                            .execute(conn)?;
+                        diesel::update(row).set(channels::is_primary.eq(false)).execute(conn)?;
                     }
                     if let Some(address) = address {
-                        diesel::update(row)
-                            .set(channels::address.eq(address))
-                            .execute(conn)?;
+                        diesel::update(row).set(channels::address.eq(address)).execute(conn)?;
                     }
                     Ok(())
                 })
@@ -90,11 +83,7 @@ impl<'a> ChannelRepository<'a> {
 
     /// Make one channel the primary, or clear the pair's primary (ADR-0007).
     /// Clearing first keeps the write from tripping the one-primary index.
-    pub fn set_primary(
-        &mut self,
-        device_id: &str,
-        kind: Option<ChannelKind>,
-    ) -> Result<(), String> {
+    pub fn set_primary(&mut self, device_id: &str, kind: Option<ChannelKind>) -> Result<(), String> {
         self.conn
             .transaction::<(), diesel::result::Error, _>(|conn| {
                 diesel::update(channels::table.filter(channels::device_id.eq(device_id)))

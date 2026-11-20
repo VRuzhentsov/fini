@@ -475,8 +475,7 @@ pub fn apply_import(
             }
 
             for occurrence in &backup_occurrences {
-                let action =
-                    conflict_action(&resolution_map, "quest_occurrence", &occurrence.sync_id());
+                let action = conflict_action(&resolution_map, "quest_occurrence", &occurrence.sync_id());
                 upsert_occurrence_for_import(tx, occurrence, action)?;
             }
 
@@ -906,11 +905,7 @@ fn collect_conflicts(
         {
             if occurrence_value(&local)? != occurrence_value(&backup)? {
                 let summary = |mark: &QuestOccurrence| {
-                    format!(
-                        "{} ({})",
-                        mark.period_key,
-                        mark.status.as_deref().unwrap_or("open")
-                    )
+                    format!("{} ({})", mark.period_key, mark.status.as_deref().unwrap_or("open"))
                 };
                 conflicts.push(BackupConflict {
                     entity_type: "quest_occurrence".to_string(),
@@ -1244,6 +1239,8 @@ mod tests {
             .expect("insert custom space");
     }
 
+
+
     #[test]
     fn dry_run_plan_reports_unresolved_conflicts_without_selecting_a_resolution() {
         let _guard = lock_temp_dir_namespace();
@@ -1338,6 +1335,7 @@ mod tests {
         let _ = fs::remove_file(source_db_path);
         let _ = fs::remove_file(target_db_path);
     }
+
 
     #[test]
     fn backup_roundtrip_preserves_checklist_activity() {

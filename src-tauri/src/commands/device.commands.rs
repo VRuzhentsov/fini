@@ -11,8 +11,8 @@ use crate::services::channel_service::DiscoveredDevice;
 use crate::services::db::DbPool;
 use crate::services::device_service::{
     ChannelStatus, DeviceConnectionDebugStatus, DevicePairRequestAckInput,
-    DevicePairRequestBluetoothInput, DevicePairRequestInput, DeviceService, IncomingPairRequest,
-    PairCodeUpdate, PairCompletionUpdate,
+    DevicePairRequestBluetoothInput, DevicePairRequestInput, DeviceService, IncomingPairRequest, PairCodeUpdate,
+    PairCompletionUpdate,
 };
 use crate::services::space_sync_service::SpaceSyncService;
 
@@ -39,9 +39,7 @@ fn statuses(
     peer_device_id: &str,
 ) -> Result<Vec<ChannelStatus>, String> {
     let mut conn = db.get()?;
-    devices.channel_statuses(&mut conn, peer_device_id, |kind| {
-        space_sync.has_session_on(peer_device_id, kind)
-    })
+    devices.channel_statuses(&mut conn, peer_device_id, |kind| space_sync.has_session_on(peer_device_id, kind))
 }
 
 #[tauri::command]
@@ -71,18 +69,12 @@ pub fn device_heard_devices(devices: Devices) -> Vec<DiscoveredDevice> {
 }
 
 #[tauri::command]
-pub async fn device_identify_bluetooth_device(
-    devices: Devices<'_>,
-    device_id: String,
-) -> Result<DiscoveredDevice, String> {
+pub async fn device_identify_bluetooth_device(devices: Devices<'_>, device_id: String) -> Result<DiscoveredDevice, String> {
     devices.identify_bluetooth_device(&device_id).await
 }
 
 #[tauri::command]
-pub async fn device_send_pair_request(
-    devices: Devices<'_>,
-    input: DevicePairRequestInput,
-) -> Result<(), String> {
+pub async fn device_send_pair_request(devices: Devices<'_>, input: DevicePairRequestInput) -> Result<(), String> {
     off_main_thread(&devices, move |devices| devices.send_pair_request(input)).await
 }
 
@@ -91,10 +83,7 @@ pub async fn device_send_pair_request_bluetooth(
     devices: Devices<'_>,
     input: DevicePairRequestBluetoothInput,
 ) -> Result<(), String> {
-    off_main_thread(&devices, move |devices| {
-        devices.send_pair_request_bluetooth(input)
-    })
-    .await
+    off_main_thread(&devices, move |devices| devices.send_pair_request_bluetooth(input)).await
 }
 
 #[tauri::command]
@@ -108,44 +97,27 @@ pub fn device_pair_outgoing_updates(devices: Devices) -> Result<Vec<PairCodeUpda
 }
 
 #[tauri::command]
-pub fn device_pair_outgoing_completions(
-    devices: Devices,
-) -> Result<Vec<PairCompletionUpdate>, String> {
+pub fn device_pair_outgoing_completions(devices: Devices) -> Result<Vec<PairCompletionUpdate>, String> {
     devices.outgoing_completions()
 }
 
 #[tauri::command]
-pub async fn device_pair_accept_request(
-    devices: Devices<'_>,
-    input: DevicePairRequestAckInput,
-) -> Result<PairCodeUpdate, String> {
+pub async fn device_pair_accept_request(devices: Devices<'_>, input: DevicePairRequestAckInput) -> Result<PairCodeUpdate, String> {
     off_main_thread(&devices, move |devices| devices.accept_pair_request(input)).await
 }
 
 #[tauri::command]
-pub async fn device_pair_complete_request(
-    devices: Devices<'_>,
-    input: DevicePairRequestAckInput,
-) -> Result<(), String> {
-    off_main_thread(&devices, move |devices| {
-        devices.complete_pair_request(input)
-    })
-    .await
+pub async fn device_pair_complete_request(devices: Devices<'_>, input: DevicePairRequestAckInput) -> Result<(), String> {
+    off_main_thread(&devices, move |devices| devices.complete_pair_request(input)).await
 }
 
 #[tauri::command]
-pub fn device_pair_acknowledge_request(
-    devices: Devices,
-    input: DevicePairRequestAckInput,
-) -> Result<(), String> {
+pub fn device_pair_acknowledge_request(devices: Devices, input: DevicePairRequestAckInput) -> Result<(), String> {
     devices.acknowledge_pair_request(input)
 }
 
 #[tauri::command]
-pub fn device_debug_status(
-    devices: Devices,
-    space_sync: SpaceSync,
-) -> Result<DeviceConnectionDebugStatus, String> {
+pub fn device_debug_status(devices: Devices, space_sync: SpaceSync) -> Result<DeviceConnectionDebugStatus, String> {
     let mut status = devices.debug_status()?;
     status.peer_session_count = space_sync.session_count();
     status.incoming_space_mapping_update_count = space_sync.space_mapping_update_count();
@@ -183,11 +155,7 @@ pub fn device_save_paired_device(
 }
 
 #[tauri::command]
-pub fn device_unpair(
-    db: State<DbPool>,
-    devices: Devices,
-    peer_device_id: String,
-) -> Result<(), String> {
+pub fn device_unpair(db: State<DbPool>, devices: Devices, peer_device_id: String) -> Result<(), String> {
     let mut conn = db.get()?;
     devices.unpair(&mut conn, &peer_device_id)
 }
@@ -222,9 +190,7 @@ pub async fn device_set_channel_enabled(
     kind: ChannelKind,
     enabled: bool,
 ) -> Result<Vec<ChannelStatus>, String> {
-    devices
-        .set_channel_enabled(&peer_device_id, kind, enabled)
-        .await?;
+    devices.set_channel_enabled(&peer_device_id, kind, enabled).await?;
     statuses(&db, &devices, &space_sync, &peer_device_id)
 }
 
@@ -242,3 +208,4 @@ pub fn device_set_primary_channel(
     }
     statuses(&db, &devices, &space_sync, &peer_device_id)
 }
+

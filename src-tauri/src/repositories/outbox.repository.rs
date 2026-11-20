@@ -100,15 +100,7 @@ impl<'a> OutboxRepository<'a> {
         op_type: &str,
         payload: Option<String>,
     ) -> Result<(), String> {
-        self.emit_sync_event_at(
-            origin_device_id,
-            entity_type,
-            entity_id,
-            space_id,
-            op_type,
-            payload,
-            sync_timestamp(),
-        )
+        self.emit_sync_event_at(origin_device_id, entity_type, entity_id, space_id, op_type, payload, sync_timestamp())
     }
 
     /// The changes in these spaces that `peer_device_id` has not acked.
@@ -157,10 +149,7 @@ impl<'a> OutboxRepository<'a> {
     }
 
     /// Every change in one space, oldest first.
-    pub fn load_events_for_space(
-        &mut self,
-        space_id: &str,
-    ) -> Result<Vec<SyncEventEnvelope>, String> {
+    pub fn load_events_for_space(&mut self, space_id: &str) -> Result<Vec<SyncEventEnvelope>, String> {
         let rows: Vec<SyncOutboxEntry> = sync_outbox::table
             .filter(sync_outbox::space_id.eq(space_id))
             .order(sync_outbox::created_at.asc())
@@ -197,10 +186,7 @@ impl<'a> OutboxRepository<'a> {
     /// Records that a change from a peer was applied here.
     pub fn mark_event_seen(&mut self, event_id: &str) -> Result<(), String> {
         diesel::insert_or_ignore_into(sync_seen::table)
-            .values(&CreateSyncSeen {
-                event_id: event_id.to_string(),
-                received_at: utc_now(),
-            })
+            .values(&CreateSyncSeen { event_id: event_id.to_string(), received_at: utc_now() })
             .execute(&mut *self.conn)
             .map(|_| ())
             .map_err(|e| e.to_string())
@@ -229,8 +215,8 @@ impl<'a> OutboxRepository<'a> {
         let (frame_type, subject) = kept_as(frame).ok_or_else(|| {
             diesel::result::Error::QueryBuilderError("this frame is not kept in the outbox".into())
         })?;
-        let encoded = serde_json::to_string(frame)
-            .map_err(|e| diesel::result::Error::SerializationError(Box::new(e)))?;
+        let encoded =
+            serde_json::to_string(frame).map_err(|e| diesel::result::Error::SerializationError(Box::new(e)))?;
         Self::remove_about(conn, peer_device_id, frame_type, &subject)?;
         diesel::insert_into(peer_control_outbox::table)
             .values((
@@ -269,11 +255,7 @@ impl<'a> OutboxRepository<'a> {
 
     /// The space is synced again: its end has not gone yet, so the peer
     /// never stopped, and delivered late it would undo the new request.
-    pub fn drop_space_sync_end(
-        &mut self,
-        peer_device_id: &str,
-        space_id: &str,
-    ) -> Result<(), String> {
+    pub fn drop_space_sync_end(&mut self, peer_device_id: &str, space_id: &str) -> Result<(), String> {
         Self::remove_about(self.conn, peer_device_id, SPACE_SYNC_END, space_id)
             .map(|_| ())
             .map_err(|e| e.to_string())
@@ -306,6 +288,7 @@ impl<'a> OutboxRepository<'a> {
     }
 }
 
+
 // ── Sync events of quests ────────────────────────────────────────────────────
 
 #[cfg(any(feature = "ui-plane", feature = "cli-plane", test))]
@@ -314,24 +297,12 @@ impl OutboxRepository<'_> {
     /// repeating quest syncs as one entity, ADR-0012 D11). A quest that moved
     /// from `previous_space_id` is a delete there and an upsert in its new
     /// space, with its marks.
-    pub fn record_quest(
-        &mut self,
-        origin_device_id: &str,
-        previous_space_id: &str,
-        quest_id: &str,
-    ) -> Result<(), String> {
+    pub fn record_quest(&mut self, origin_device_id: &str, previous_space_id: &str, quest_id: &str) -> Result<(), String> {
         let quest = QuestRepository::new(self.conn).get(quest_id)?;
         let payload = serde_json::to_string(&quest).map_err(|e| e.to_string())?;
 
         if previous_space_id == quest.space_id {
-            self.emit_sync_event(
-                origin_device_id,
-                "quest",
-                &quest.id,
-                &quest.space_id,
-                "upsert",
-                Some(payload),
-            )?;
+            self.emit_sync_event(origin_device_id, "quest", &quest.id, &quest.space_id, "upsert", Some(payload))?;
             return self.record_checklist_activity(origin_device_id, &quest);
         }
 
@@ -339,24 +310,8 @@ impl OutboxRepository<'_> {
         let upsert_updated_at = (Utc::now() + chrono::Duration::seconds(1))
             .format("%Y-%m-%dT%H:%M:%S%.3fZ")
             .to_string();
-        self.emit_sync_event_at(
-            origin_device_id,
-            "quest",
-            &quest.id,
-            previous_space_id,
-            "delete",
-            None,
-            delete_updated_at,
-        )?;
-        self.emit_sync_event_at(
-            origin_device_id,
-            "quest",
-            &quest.id,
-            &quest.space_id,
-            "upsert",
-            Some(payload),
-            upsert_updated_at,
-        )?;
+        self.emit_sync_event_at(origin_device_id, "quest", &quest.id, previous_space_id, "delete", None, delete_updated_at)?;
+        self.emit_sync_event_at(origin_device_id, "quest", &quest.id, &quest.space_id, "upsert", Some(payload), upsert_updated_at)?;
         self.record_checklist_activity(origin_device_id, &quest)?;
 
         // The marks go with their quest to its new space.
@@ -368,48 +323,19 @@ impl OutboxRepository<'_> {
 
     /// Records one occurrence mark: the entity `quest_occurrence`, keyed by
     /// (quest_id, period_key) (ADR-0012 D11).
-    pub fn record_occurrence(
-        &mut self,
-        origin_device_id: &str,
-        space_id: &str,
-        occurrence: &QuestOccurrence,
-    ) -> Result<(), String> {
+    pub fn record_occurrence(&mut self, origin_device_id: &str, space_id: &str, occurrence: &QuestOccurrence) -> Result<(), String> {
         let payload = serde_json::to_string(occurrence).map_err(|e| e.to_string())?;
-        self.emit_sync_event(
-            origin_device_id,
-            "quest_occurrence",
-            &occurrence.sync_id(),
-            space_id,
-            "upsert",
-            Some(payload),
-        )
+        self.emit_sync_event(origin_device_id, "quest_occurrence", &occurrence.sync_id(), space_id, "upsert", Some(payload))
     }
 
     /// Records a removed mark (a day opened again with nothing left to keep).
-    fn record_occurrence_removed(
-        &mut self,
-        origin_device_id: &str,
-        space_id: &str,
-        quest_id: &str,
-        period_key: &str,
-    ) -> Result<(), String> {
-        self.emit_sync_event(
-            origin_device_id,
-            "quest_occurrence",
-            &format!("{quest_id}:{period_key}"),
-            space_id,
-            "delete",
-            None,
-        )
+    fn record_occurrence_removed(&mut self, origin_device_id: &str, space_id: &str, quest_id: &str, period_key: &str) -> Result<(), String> {
+        self.emit_sync_event(origin_device_id, "quest_occurrence", &format!("{quest_id}:{period_key}"), space_id, "delete", None)
     }
 
     /// Records the checklist activity of `quest` that this device made and
     /// that is not in the outbox yet.
-    fn record_checklist_activity(
-        &mut self,
-        origin_device_id: &str,
-        quest: &Quest,
-    ) -> Result<(), String> {
+    fn record_checklist_activity(&mut self, origin_device_id: &str, quest: &Quest) -> Result<(), String> {
         if !quest.is_checklist {
             return Ok(());
         }
@@ -436,26 +362,14 @@ impl OutboxRepository<'_> {
 
         for activity in activities {
             let payload = serde_json::to_string(&activity).map_err(|e| e.to_string())?;
-            self.emit_sync_event(
-                origin_device_id,
-                "checklist_activity",
-                &activity.id,
-                &quest.space_id,
-                "upsert",
-                Some(payload),
-            )?;
+            self.emit_sync_event(origin_device_id, "checklist_activity", &activity.id, &quest.space_id, "upsert", Some(payload))?;
         }
         Ok(())
     }
 
     /// Records what a change wrote: the quest row, and each changed or
     /// removed mark.
-    pub fn record_change(
-        &mut self,
-        origin_device_id: &str,
-        previous_space_id: &str,
-        change: &QuestChange,
-    ) -> Result<(), String> {
+    pub fn record_change(&mut self, origin_device_id: &str, previous_space_id: &str, change: &QuestChange) -> Result<(), String> {
         if change.quest_row_changed {
             self.record_quest(origin_device_id, previous_space_id, &change.quest.id)?;
         }
@@ -464,12 +378,7 @@ impl OutboxRepository<'_> {
             self.record_occurrence(origin_device_id, &quest.space_id, occurrence)?;
         }
         for period_key in &change.removed_occurrences {
-            self.record_occurrence_removed(
-                origin_device_id,
-                &quest.space_id,
-                &change.quest.id,
-                period_key,
-            )?;
+            self.record_occurrence_removed(origin_device_id, &quest.space_id, &change.quest.id, period_key)?;
         }
         if !change.quest_row_changed && !change.occurrences.is_empty() {
             // Checklist activity of a day is kept on the quest.
@@ -478,6 +387,7 @@ impl OutboxRepository<'_> {
         Ok(())
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -490,18 +400,9 @@ mod tests {
         let mut conn = open_db_at_path(&dir.path().join("fini.db"));
         let mut outbox = OutboxRepository::new(&mut conn);
         outbox
-            .emit_sync_event(
-                "device-a",
-                "quest",
-                "quest-1",
-                "1",
-                "upsert",
-                Some(r#"{"title":"Test"}"#.to_string()),
-            )
+            .emit_sync_event("device-a", "quest", "quest-1", "1", "upsert", Some(r#"{"title":"Test"}"#.to_string()))
             .expect("emit sync event");
-        let events = outbox
-            .load_unacked_events_for_peer("device-b", &["1".to_string()])
-            .expect("load unacked");
+        let events = outbox.load_unacked_events_for_peer("device-b", &["1".to_string()]).expect("load unacked");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].entity_type, "quest");
         assert_eq!(events[0].entity_id, "quest-1");

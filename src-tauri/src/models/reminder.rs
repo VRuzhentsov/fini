@@ -32,17 +32,13 @@ impl Reminder {
         if self.kind == REMINDER_ABSOLUTE {
             return self.due_at_utc.as_deref().and_then(|at| at.parse().ok());
         }
-        quest
-            .due_at()
-            .map(|due_at| due_at - Duration::minutes(self.mm_offset.unwrap_or(0)))
+        quest.due_at().map(|due_at| due_at - Duration::minutes(self.mm_offset.unwrap_or(0)))
     }
 
     /// The reminder as the CLI and the UI read it: `due_at_utc` is its
     /// moment, also when the moment is computed.
     pub fn with_moment(mut self, quest: &Quest) -> Self {
-        self.due_at_utc = self
-            .moment(quest)
-            .map(|at| at.format("%Y-%m-%dT%H:%M:%SZ").to_string());
+        self.due_at_utc = self.moment(quest).map(|at| at.format("%Y-%m-%dT%H:%M:%SZ").to_string());
         self
     }
 }

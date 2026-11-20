@@ -66,3 +66,4 @@ pub struct NewChannel {
     pub address: Option<String>,
     pub configured_at: String,
 }
+
