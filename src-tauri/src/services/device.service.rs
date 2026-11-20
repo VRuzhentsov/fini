@@ -22,8 +22,9 @@ use crate::models::{Device, Event, Identity};
 use crate::repositories::{ChannelRepository, DeviceRepository};
 use crate::services::bluetooth_channel_service::BluetoothChannelService;
 use crate::services::channel_service::{
-    recv_frame, send_frame, ChannelKind, ChannelProblem, ChannelService, DataLink, DiscoveredDevice,
-    PairAcceptPayload, PairCompletePayload, PairRequestPayload, PeerFrame, PeerLinkHandler,
+    recv_frame, send_frame, ChannelKind, ChannelProblem, ChannelService, DataLink,
+    DiscoveredDevice, PairAcceptPayload, PairCompletePayload, PairRequestPayload, PeerFrame,
+    PeerLinkHandler,
 };
 use crate::services::db::{utc_now, DbPool};
 use crate::services::event_bus_service::EventBus;
@@ -53,7 +54,12 @@ struct StoredPairRequest {
 impl StoredPairRequest {
     /// A pair request as this device stores it when it arrives. Its expiry
     /// is counted from this device's clock, not the sender's.
-    fn from_payload(payload: &PairRequestPayload, from_addr: String, from_endpoint_id: Option<String>, via_bluetooth: bool) -> Self {
+    fn from_payload(
+        payload: &PairRequestPayload,
+        from_addr: String,
+        from_endpoint_id: Option<String>,
+        via_bluetooth: bool,
+    ) -> Self {
         let expires_at = (Utc::now() + chrono::Duration::seconds(PAIR_REQUEST_TTL_SECS))
             .format("%Y-%m-%dT%H:%M:%SZ")
             .to_string();
@@ -98,7 +104,8 @@ struct PairingState {
 
 impl PairingState {
     fn prune_expired_requests(&mut self) {
-        self.incoming_requests.retain(|_, request| !request.expired());
+        self.incoming_requests
+            .retain(|_, request| !request.expired());
     }
 }
 
@@ -136,7 +143,9 @@ impl DeviceService {
     }
 
     fn arc(&self) -> Arc<Self> {
-        self.me.upgrade().expect("the device service lives as long as its tasks")
+        self.me
+            .upgrade()
+            .expect("the device service lives as long as its tasks")
     }
 
     fn with_conn<T>(&self, f: impl FnOnce(&mut SqliteConnection) -> T) -> T {
@@ -144,7 +153,9 @@ impl DeviceService {
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, PairingState>, String> {
-        self.state.lock().map_err(|_| "the pairing state lock is poisoned".to_string())
+        self.state
+            .lock()
+            .map_err(|_| "the pairing state lock is poisoned".to_string())
     }
 
     pub fn identity(&self) -> &Identity {
@@ -202,7 +213,9 @@ impl DeviceService {
     }
 
     pub fn is_add_mode_enabled(&self) -> bool {
-        self.lock().map(|state| state.add_mode_enabled).unwrap_or(false)
+        self.lock()
+            .map(|state| state.add_mode_enabled)
+            .unwrap_or(false)
     }
 
     /// The Add Device list: the devices in Add Device that the channels
@@ -214,7 +227,11 @@ impl DeviceService {
         let mut devices = self.network.available_devices();
         #[cfg(any(target_os = "linux", target_os = "android"))]
         devices.extend(self.bluetooth_available_devices());
-        devices.sort_by(|a, b| b.last_seen_at.cmp(&a.last_seen_at).then_with(|| a.device_id.cmp(&b.device_id)));
+        devices.sort_by(|a, b| {
+            b.last_seen_at
+                .cmp(&a.last_seen_at)
+                .then_with(|| a.device_id.cmp(&b.device_id))
+        });
         devices
     }
 
@@ -235,11 +252,23 @@ impl DeviceService {
             .in_add_device(mine)
             .into_iter()
             .map(|device| {
-                let code: String = device.fingerprint.iter().map(|byte| format!("{byte:02x}")).collect();
-                let paired_here = paired.iter().find(|(id, _)| fingerprint_of(id) == device.fingerprint).cloned();
+                let code: String = device
+                    .fingerprint
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect();
+                let paired_here = paired
+                    .iter()
+                    .find(|(id, _)| fingerprint_of(id) == device.fingerprint)
+                    .cloned();
                 let (device_id, hostname) = match device.identified.or(paired_here) {
                     Some(found) => found,
-                    None => (format!("bt:{code}"), device.name.unwrap_or_else(|| format!("Fini device {}", &code[..4]))),
+                    None => (
+                        format!("bt:{code}"),
+                        device
+                            .name
+                            .unwrap_or_else(|| format!("Fini device {}", &code[..4])),
+                    ),
                 };
                 DiscoveredDevice {
                     device_id,
@@ -258,7 +287,10 @@ impl DeviceService {
     /// advertisement: one plain link to it, this device's `IdentifyDevice`,
     /// and its `DeviceIdentified` answer -- device id, name and iroh key.
     /// `device_id` is a `bt:<fingerprint>` row, or a device id.
-    pub async fn identify_bluetooth_device(&self, device_id: &str) -> Result<DiscoveredDevice, String> {
+    pub async fn identify_bluetooth_device(
+        &self,
+        device_id: &str,
+    ) -> Result<DiscoveredDevice, String> {
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
         {
             let _ = device_id;
@@ -268,7 +300,10 @@ impl DeviceService {
         {
             #[cfg(target_os = "android")]
             if !crate::services::ble_plugin::permission_granted() {
-                return Err("Bluetooth permission required -- grant it in the dialog, then try again".to_string());
+                return Err(
+                    "Bluetooth permission required -- grant it in the dialog, then try again"
+                        .to_string(),
+                );
             }
             let fingerprint: [u8; 4] = match device_id.strip_prefix("bt:") {
                 Some(code) => {
@@ -277,7 +312,9 @@ impl DeviceService {
                         .map(|at| u8::from_str_radix(code.get(at..at + 2).unwrap_or("zz"), 16))
                         .collect::<Result<_, _>>()
                         .map_err(|_| format!("not a Bluetooth list id: {device_id}"))?;
-                    bytes.try_into().map_err(|_| format!("not a Bluetooth list id: {device_id}"))?
+                    bytes
+                        .try_into()
+                        .map_err(|_| format!("not a Bluetooth list id: {device_id}"))?
                 }
                 None => crate::services::bluetooth_channel_service::fingerprint_of(device_id),
             };
@@ -305,7 +342,12 @@ impl DeviceService {
         let (mut link, address, _guards) = scanner
             .connect_heard_device(fingerprint)
             .await
-            .inspect_err(|err| log::info!("[pairing][ble] identify failed after {:?}: {err}", started.elapsed()))?;
+            .inspect_err(|err| {
+                log::info!(
+                    "[pairing][ble] identify failed after {:?}: {err}",
+                    started.elapsed()
+                )
+            })?;
         let identify = PeerFrame::IdentifyDevice {
             device_id: self.identity.device_id.clone(),
             hostname: self.identity.hostname.clone(),
@@ -313,15 +355,26 @@ impl DeviceService {
         };
         send_frame(&mut link, &identify).await?;
         let reply = tokio::time::timeout(IDENTIFY_ANSWER_TIMEOUT, recv_frame(&mut link)).await;
-        log::info!("[pairing][ble] identify {address} took {:?}", started.elapsed());
+        log::info!(
+            "[pairing][ble] identify {address} took {:?}",
+            started.elapsed()
+        );
         match reply {
-            Ok(Some(Ok(PeerFrame::DeviceIdentified { device_id, hostname, endpoint_id }))) => {
+            Ok(Some(Ok(PeerFrame::DeviceIdentified {
+                device_id,
+                hostname,
+                endpoint_id,
+            }))) => {
                 if device_id == self.identity.device_id {
                     return Err("that is this device".to_string());
                 }
                 // The pairing connection that follows runs on this link.
                 self.bluetooth.keep_identify_link(link, &endpoint_id).await;
-                let device = crate::services::bluetooth_channel_service::AvailableDevice { address, device_id, hostname };
+                let device = crate::services::bluetooth_channel_service::AvailableDevice {
+                    address,
+                    device_id,
+                    hostname,
+                };
                 scanner.available.record_identified(&device, endpoint_id);
                 Ok(device)
             }
@@ -334,21 +387,30 @@ impl DeviceService {
     /// second LE connection to the same device, so the identify step for
     /// adding it again could never connect.
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    async fn close_held_bluetooth_session_to(&self, fingerprint: [u8; crate::services::bluetooth_channel_service::FINGERPRINT_LEN]) {
+    async fn close_held_bluetooth_session_to(
+        &self,
+        fingerprint: [u8; crate::services::bluetooth_channel_service::FINGERPRINT_LEN],
+    ) {
         use crate::services::bluetooth_channel_service::fingerprint_of;
         let paired = self.with_conn(|conn| DeviceRepository::new(conn).ids());
-        let Some(peer) =
-            paired.into_iter().find(|peer| fingerprint_of(peer) == fingerprint && self.bluetooth.has_session(peer))
+        let Some(peer) = paired
+            .into_iter()
+            .find(|peer| fingerprint_of(peer) == fingerprint && self.bluetooth.has_session(peer))
         else {
             return;
         };
-        log::info!("[pairing][ble] closing the held Bluetooth session with {peer} to identify it again");
+        log::info!(
+            "[pairing][ble] closing the held Bluetooth session with {peer} to identify it again"
+        );
         self.bluetooth.close_session(&peer);
         let until = tokio::time::Instant::now() + Duration::from_secs(3);
         while self.bluetooth.has_session(&peer) && tokio::time::Instant::now() < until {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        if let Some(peer_key) = self.pinned_key(&peer).and_then(|key| key.parse::<iroh::EndpointId>().ok()) {
+        if let Some(peer_key) = self
+            .pinned_key(&peer)
+            .and_then(|key| key.parse::<iroh::EndpointId>().ok())
+        {
             self.bluetooth.close_links_to(peer_key);
         }
     }
@@ -383,21 +445,41 @@ impl DeviceService {
 
     /// Sends one frame before a session over the Network channel: one iroh
     /// connection to the device holding `peer_key`.
-    fn send_over_network(&self, peer_key: &str, addr: IpAddr, port: u16, frame: PeerFrame) -> Result<(), String> {
+    fn send_over_network(
+        &self,
+        peer_key: &str,
+        addr: IpAddr,
+        port: u16,
+        frame: PeerFrame,
+    ) -> Result<(), String> {
         tauri::async_runtime::block_on(self.network.send_one_frame(peer_key, addr, port, &frame))
     }
 
     /// Sends a pair request over the Network channel.
     pub fn send_pair_request(&self, input: DevicePairRequestInput) -> Result<(), String> {
-        let target_ip: IpAddr =
-            input.to_addr.parse().map_err(|err| format!("invalid peer addr '{}': {err}", input.to_addr))?;
+        let target_ip: IpAddr = input
+            .to_addr
+            .parse()
+            .map_err(|err| format!("invalid peer addr '{}': {err}", input.to_addr))?;
         let payload = self.pair_request_payload(input.request_id, input.to_device_id);
         let target_port = input.to_ws_port.unwrap_or(self.network.port());
         let peer_key = input
             .to_endpoint_id
-            .or_else(|| self.network.heard_address(&payload.to_device_id).map(|(_, key)| key))
-            .ok_or_else(|| "this device has not announced its key yet; try again in a moment, or pass its key".to_string())?;
-        self.send_over_network(&peer_key, target_ip, target_port, PeerFrame::PairStart(payload.clone()))?;
+            .or_else(|| {
+                self.network
+                    .heard_address(&payload.to_device_id)
+                    .map(|(_, key)| key)
+            })
+            .ok_or_else(|| {
+                "this device has not announced its key yet; try again in a moment, or pass its key"
+                    .to_string()
+            })?;
+        self.send_over_network(
+            &peer_key,
+            target_ip,
+            target_port,
+            PeerFrame::PairStart(payload.clone()),
+        )?;
         self.count_sent();
         log::info!(
             "[device-sync] pair request {} sent to {} ({target_ip}:{target_port})",
@@ -411,7 +493,10 @@ impl DeviceService {
     /// identify answer reported, and keeps that one connection open for the
     /// accept and the complete. Nothing connects back to this device:
     /// Android connects out from a private address it never advertises on.
-    pub fn send_pair_request_bluetooth(&self, input: DevicePairRequestBluetoothInput) -> Result<(), String> {
+    pub fn send_pair_request_bluetooth(
+        &self,
+        input: DevicePairRequestBluetoothInput,
+    ) -> Result<(), String> {
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
         {
             let _ = input;
@@ -422,21 +507,29 @@ impl DeviceService {
             let payload = self.pair_request_payload(input.request_id, input.to_device_id);
             let to_device_id = payload.to_device_id.clone();
             let available = &self.bluetooth.scanner.available;
-            let peer_key = available
-                .key(&to_device_id)
-                .ok_or_else(|| "that device has not been found over Bluetooth yet -- try again".to_string())?;
+            let peer_key = available.key(&to_device_id).ok_or_else(|| {
+                "that device has not been found over Bluetooth yet -- try again".to_string()
+            })?;
             // The list's address can be old: Android advertises from a new
             // private address on every Add Device change.
-            let address = available.latest_address(&to_device_id).unwrap_or(input.to_bluetooth_address);
+            let address = available
+                .latest_address(&to_device_id)
+                .unwrap_or(input.to_bluetooth_address);
             let frame = PeerFrame::PairStart(payload.clone());
             let link = tauri::async_runtime::block_on(async {
-                let (mut link, _clear_of_scan) = self.bluetooth.connect_for_pairing(&peer_key, &address).await?;
+                let (mut link, _clear_of_scan) = self
+                    .bluetooth
+                    .connect_for_pairing(&peer_key, &address)
+                    .await?;
                 send_pair_frame(link.as_mut(), &frame).await?;
                 Ok::<_, String>(link)
             })?;
             self.listen_for_answers(link, to_device_id.clone(), address.clone());
             self.count_sent();
-            log::info!("[device-sync] pair request {} sent to {to_device_id} (bluetooth {address})", payload.request_id);
+            log::info!(
+                "[device-sync] pair request {} sent to {to_device_id} (bluetooth {address})",
+                payload.request_id
+            );
             Ok(())
         }
     }
@@ -444,13 +537,20 @@ impl DeviceService {
     /// Reads the accept and the complete that come back on a Bluetooth
     /// request's link.
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    fn listen_for_answers(&self, mut link: Box<dyn DataLink>, to_device_id: String, address: String) {
+    fn listen_for_answers(
+        &self,
+        mut link: Box<dyn DataLink>,
+        to_device_id: String,
+        address: String,
+    ) {
         let service = self.arc();
         tauri::async_runtime::spawn(async move {
             // The whole exchange runs on this link: keep the Add Device scan
             // from connecting to the peer a second time until it is over.
             let _step = service.bluetooth.scanner.begin_pairing_step();
-            let peer_key = link.peer_key().and_then(|key| key.parse::<iroh::EndpointId>().ok());
+            let peer_key = link
+                .peer_key()
+                .and_then(|key| key.parse::<iroh::EndpointId>().ok());
             let listen_for = Duration::from_secs(PAIR_REQUEST_TTL_SECS as u64 + 30);
             let mut completed = false;
             let _ = tokio::time::timeout(listen_for, async {
@@ -481,7 +581,9 @@ impl DeviceService {
             if completed {
                 // The first session goes over this pairing's BLE link, which
                 // is still up: no search and no new connect.
-                service.bluetooth.keep_pairing_link(&to_device_id, &address, peer_key);
+                service
+                    .bluetooth
+                    .keep_pairing_link(&to_device_id, &address, peer_key);
             } else {
                 // The phone leaves Add Device with a new address; the BLE
                 // link to its old one must not outlive the pairing.
@@ -494,9 +596,16 @@ impl DeviceService {
     pub fn incoming_requests(&self) -> Result<Vec<IncomingPairRequest>, String> {
         let mut state = self.lock()?;
         state.prune_expired_requests();
-        let mut requests: Vec<IncomingPairRequest> =
-            state.incoming_requests.values().map(|stored| stored.request.clone()).collect();
-        requests.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| a.request_id.cmp(&b.request_id)));
+        let mut requests: Vec<IncomingPairRequest> = state
+            .incoming_requests
+            .values()
+            .map(|stored| stored.request.clone())
+            .collect();
+        requests.sort_by(|a, b| {
+            b.created_at
+                .cmp(&a.created_at)
+                .then_with(|| a.request_id.cmp(&b.request_id))
+        });
         Ok(requests)
     }
 
@@ -504,8 +613,13 @@ impl DeviceService {
     /// accepted, newest first.
     pub fn outgoing_updates(&self) -> Result<Vec<PairCodeUpdate>, String> {
         let state = self.lock()?;
-        let mut updates: Vec<PairCodeUpdate> = state.outgoing_code_updates.values().cloned().collect();
-        updates.sort_by(|a, b| b.accepted_at.cmp(&a.accepted_at).then_with(|| a.request_id.cmp(&b.request_id)));
+        let mut updates: Vec<PairCodeUpdate> =
+            state.outgoing_code_updates.values().cloned().collect();
+        updates.sort_by(|a, b| {
+            b.accepted_at
+                .cmp(&a.accepted_at)
+                .then_with(|| a.request_id.cmp(&b.request_id))
+        });
         Ok(updates)
     }
 
@@ -513,8 +627,13 @@ impl DeviceService {
     /// first.
     pub fn outgoing_completions(&self) -> Result<Vec<PairCompletionUpdate>, String> {
         let state = self.lock()?;
-        let mut updates: Vec<PairCompletionUpdate> = state.outgoing_pair_completions.values().cloned().collect();
-        updates.sort_by(|a, b| b.paired_at.cmp(&a.paired_at).then_with(|| a.request_id.cmp(&b.request_id)));
+        let mut updates: Vec<PairCompletionUpdate> =
+            state.outgoing_pair_completions.values().cloned().collect();
+        updates.sort_by(|a, b| {
+            b.paired_at
+                .cmp(&a.paired_at)
+                .then_with(|| a.request_id.cmp(&b.request_id))
+        });
         Ok(updates)
     }
 
@@ -522,28 +641,56 @@ impl DeviceService {
     fn incoming_request(&self, request_id: &str) -> Result<StoredPairRequest, String> {
         let mut state = self.lock()?;
         state.prune_expired_requests();
-        state.incoming_requests.get(request_id).cloned().ok_or_else(|| "incoming request not found".to_string())
+        state
+            .incoming_requests
+            .get(request_id)
+            .cloned()
+            .ok_or_else(|| "incoming request not found".to_string())
     }
 
     /// Sends an answer to an incoming request, over the channel it came on.
     /// `more`: another answer to the same request follows (the accept, then
     /// the complete).
-    fn answer(&self, stored: &StoredPairRequest, frame: PeerFrame, more: bool) -> Result<(), String> {
+    fn answer(
+        &self,
+        stored: &StoredPairRequest,
+        frame: PeerFrame,
+        more: bool,
+    ) -> Result<(), String> {
         if stored.request.via_bluetooth {
             return self.answer_over_bluetooth(stored, frame, more);
         }
-        let target_ip: IpAddr =
-            stored.from_addr.parse().map_err(|err| format!("invalid sender addr '{}': {err}", stored.from_addr))?;
-        let peer_key = stored.from_endpoint_id.as_deref().ok_or_else(|| "the requester's key is unknown".to_string())?;
-        self.send_over_network(peer_key, target_ip, stored.from_ws_port.unwrap_or(self.network.port()), frame)
+        let target_ip: IpAddr = stored
+            .from_addr
+            .parse()
+            .map_err(|err| format!("invalid sender addr '{}': {err}", stored.from_addr))?;
+        let peer_key = stored
+            .from_endpoint_id
+            .as_deref()
+            .ok_or_else(|| "the requester's key is unknown".to_string())?;
+        self.send_over_network(
+            peer_key,
+            target_ip,
+            stored.from_ws_port.unwrap_or(self.network.port()),
+            frame,
+        )
     }
 
     /// Answers a Bluetooth `PairStart` on the connection it arrived on,
     /// which the link handler parked. With none, or a dead one, it connects
     /// to the requester's key.
-    fn answer_over_bluetooth(&self, stored: &StoredPairRequest, frame: PeerFrame, more: bool) -> Result<(), String> {
+    fn answer_over_bluetooth(
+        &self,
+        stored: &StoredPairRequest,
+        frame: PeerFrame,
+        more: bool,
+    ) -> Result<(), String> {
         let request_id = stored.request.request_id.clone();
-        let parked = self.parked_links.lock().ok().and_then(|mut links| links.remove(&request_id));
+        let parked = self
+            .parked_links
+            .lock()
+            .ok()
+            .and_then(|mut links| links.remove(&request_id));
         match parked {
             Some(mut link) => {
                 let sent = tauri::async_runtime::block_on(tokio::time::timeout(
@@ -561,22 +708,35 @@ impl DeviceService {
                             // A send only queues: hold the link until the
                             // requester closes it after it read the frame.
                             tauri::async_runtime::block_on(async {
-                                let _ = tokio::time::timeout(Duration::from_secs(15), link.recv()).await;
+                                let _ = tokio::time::timeout(Duration::from_secs(15), link.recv())
+                                    .await;
                             });
                         }
                         return Ok(());
                     }
-                    Ok(Err(err)) => log::warn!("[pairing][ble] request link failed: {err}; connecting instead"),
-                    Err(_) => log::warn!("[pairing][ble] request link timed out; connecting instead"),
+                    Ok(Err(err)) => {
+                        log::warn!("[pairing][ble] request link failed: {err}; connecting instead")
+                    }
+                    Err(_) => {
+                        log::warn!("[pairing][ble] request link timed out; connecting instead")
+                    }
                 }
             }
-            None => log::warn!("[pairing][ble] no parked link for {request_id}; connecting instead"),
+            None => {
+                log::warn!("[pairing][ble] no parked link for {request_id}; connecting instead")
+            }
         }
         #[cfg(any(target_os = "linux", target_os = "android"))]
         {
-            let peer_key = stored.from_endpoint_id.as_deref().ok_or_else(|| "the requester's key is unknown".to_string())?;
+            let peer_key = stored
+                .from_endpoint_id
+                .as_deref()
+                .ok_or_else(|| "the requester's key is unknown".to_string())?;
             tauri::async_runtime::block_on(async {
-                let (mut link, _clear_of_scan) = self.bluetooth.connect_for_pairing(peer_key, &stored.from_addr).await?;
+                let (mut link, _clear_of_scan) = self
+                    .bluetooth
+                    .connect_for_pairing(peer_key, &stored.from_addr)
+                    .await?;
                 send_pair_frame(link.as_mut(), &frame).await
             })
         }
@@ -584,9 +744,16 @@ impl DeviceService {
         Err("Bluetooth is not available on this platform".to_string())
     }
 
-    pub fn accept_pair_request(&self, input: DevicePairRequestAckInput) -> Result<PairCodeUpdate, String> {
+    pub fn accept_pair_request(
+        &self,
+        input: DevicePairRequestAckInput,
+    ) -> Result<PairCodeUpdate, String> {
         let stored = self.incoming_request(&input.request_id)?;
-        let update = PairCodeUpdate { request_id: input.request_id, code: generate_passcode(), accepted_at: utc_now() };
+        let update = PairCodeUpdate {
+            request_id: input.request_id,
+            code: generate_passcode(),
+            accepted_at: utc_now(),
+        };
         let payload = PairAcceptPayload {
             protocol: DISCOVERY_PROTOCOL.to_string(),
             kind: "pair_accept".to_string(),
@@ -600,7 +767,11 @@ impl DeviceService {
         // The complete follows on the same request.
         self.answer(&stored, PeerFrame::PairAccept(payload), true)?;
         self.count_sent();
-        log::info!("[device-sync] accepted request {} for {}", update.request_id, stored.request.from_device_id);
+        log::info!(
+            "[device-sync] accepted request {} for {}",
+            update.request_id,
+            stored.request.from_device_id
+        );
         Ok(update)
     }
 
@@ -626,11 +797,18 @@ impl DeviceService {
             state.tx_count += 1;
             state.incoming_requests.remove(&input.request_id);
             if let Some(key) = stored.from_endpoint_id.clone() {
-                state.pairing_keys.insert(input.request_id.clone(), (stored.request.from_device_id.clone(), key));
+                state.pairing_keys.insert(
+                    input.request_id.clone(),
+                    (stored.request.from_device_id.clone(), key),
+                );
             }
         }
         self.bus.publish(Event::PairRequestsChanged);
-        log::info!("[device-sync] completed request {} for {}", input.request_id, stored.request.from_device_id);
+        log::info!(
+            "[device-sync] completed request {} for {}",
+            input.request_id,
+            stored.request.from_device_id
+        );
         Ok(())
     }
 
@@ -640,7 +818,13 @@ impl DeviceService {
         Ok(())
     }
 
-    fn receive_pair_request(&self, payload: PairRequestPayload, from_addr: String, from_key: Option<String>, via_bluetooth: bool) {
+    fn receive_pair_request(
+        &self,
+        payload: PairRequestPayload,
+        from_addr: String,
+        from_key: Option<String>,
+        via_bluetooth: bool,
+    ) {
         if payload.to_device_id != self.identity.device_id {
             return;
         }
@@ -676,23 +860,40 @@ impl DeviceService {
             state.rx_count += 1;
             state.outgoing_code_updates.insert(
                 payload.request_id.clone(),
-                PairCodeUpdate { request_id: payload.request_id, code: payload.code, accepted_at: payload.accepted_at },
+                PairCodeUpdate {
+                    request_id: payload.request_id,
+                    code: payload.code,
+                    accepted_at: payload.accepted_at,
+                },
             );
         }
         self.bus.publish(Event::PairRequestsChanged);
     }
 
-    fn receive_pair_complete(&self, payload: PairCompletePayload, from_addr: String, from_key: Option<String>, via_bluetooth: bool) {
+    fn receive_pair_complete(
+        &self,
+        payload: PairCompletePayload,
+        from_addr: String,
+        from_key: Option<String>,
+        via_bluetooth: bool,
+    ) {
         if payload.to_device_id != self.identity.device_id {
             return;
         }
         // Over Bluetooth, the address seen on this connection wins over the
         // one the sender reports.
-        let bluetooth_address = if via_bluetooth { Some(from_addr) } else { payload.bluetooth_address.clone() };
+        let bluetooth_address = if via_bluetooth {
+            Some(from_addr)
+        } else {
+            payload.bluetooth_address.clone()
+        };
         if let Ok(mut state) = self.state.lock() {
             state.rx_count += 1;
             if let Some(key) = from_key {
-                state.pairing_keys.insert(payload.request_id.clone(), (payload.from_device_id.clone(), key));
+                state.pairing_keys.insert(
+                    payload.request_id.clone(),
+                    (payload.from_device_id.clone(), key),
+                );
             }
             state.outgoing_pair_completions.insert(
                 payload.request_id.clone(),
@@ -768,30 +969,56 @@ impl DeviceService {
             drop(endpoint_id);
             None
         };
-        let endpoint_id = request_id.and_then(|request_id| self.pairing_key(&request_id, peer_device_id)).or(endpoint_id);
-        let device = DeviceRepository::new(conn).save(peer_device_id, display_name, endpoint_id.as_deref())?;
-        let address = bluetooth_address.as_deref().and_then(normalize_bluetooth_address);
+        let endpoint_id = request_id
+            .and_then(|request_id| self.pairing_key(&request_id, peer_device_id))
+            .or(endpoint_id);
+        let device = DeviceRepository::new(conn).save(
+            peer_device_id,
+            display_name,
+            endpoint_id.as_deref(),
+        )?;
+        let address = bluetooth_address
+            .as_deref()
+            .and_then(normalize_bluetooth_address);
         // ADR-0011 D2: the channel of the pairing is On, the other one Off.
         // Pairing again keeps the switch of the other one as it is.
         let mut channels = ChannelRepository::new(conn);
         if via_bluetooth {
-            channels.configure(peer_device_id, ChannelKind::Bluetooth, true, address.as_deref())?;
-            if channels.find(peer_device_id, ChannelKind::Network).is_none() {
+            channels.configure(
+                peer_device_id,
+                ChannelKind::Bluetooth,
+                true,
+                address.as_deref(),
+            )?;
+            if channels
+                .find(peer_device_id, ChannelKind::Network)
+                .is_none()
+            {
                 channels.configure(peer_device_id, ChannelKind::Network, false, None)?;
             }
         } else {
             channels.configure(peer_device_id, ChannelKind::Network, true, None)?;
             // A Network pairing that carries an address is no proof that
             // Bluetooth works between the two: the address is kept only.
-            if channels.find(peer_device_id, ChannelKind::Bluetooth).is_none() {
-                channels.configure(peer_device_id, ChannelKind::Bluetooth, false, address.as_deref())?;
+            if channels
+                .find(peer_device_id, ChannelKind::Bluetooth)
+                .is_none()
+            {
+                channels.configure(
+                    peer_device_id,
+                    ChannelKind::Bluetooth,
+                    false,
+                    address.as_deref(),
+                )?;
             } else if let Some(address) = address.as_deref() {
                 channels.note_address(peer_device_id, ChannelKind::Bluetooth, address);
             }
         }
         self.bus.publish(Event::PairedDevicesChanged);
         self.refresh_network_lookup(conn);
-        self.bus.publish(Event::ChannelsChanged { peer_device_id: peer_device_id.to_string() });
+        self.bus.publish(Event::ChannelsChanged {
+            peer_device_id: peer_device_id.to_string(),
+        });
         Ok(device)
     }
 
@@ -818,11 +1045,18 @@ impl DeviceService {
     /// Tells the Network channel whether some pair has Network on: with none,
     /// its mDNS lookup does not run (ADR-0011 D3).
     fn refresh_network_lookup(&self, conn: &mut SqliteConnection) {
-        let on = !ChannelRepository::new(conn).peers_with_channel_enabled(ChannelKind::Network).is_empty();
+        let on = !ChannelRepository::new(conn)
+            .peers_with_channel_enabled(ChannelKind::Network)
+            .is_empty();
         self.network.set_any_pair_on(on);
     }
 
-    pub fn update_last_seen(&self, conn: &mut SqliteConnection, peer_device_id: &str, last_seen_at: &str) -> Result<(), String> {
+    pub fn update_last_seen(
+        &self,
+        conn: &mut SqliteConnection,
+        peer_device_id: &str,
+        last_seen_at: &str,
+    ) -> Result<(), String> {
         DeviceRepository::new(conn).set_last_seen(peer_device_id, last_seen_at)
     }
 
@@ -842,7 +1076,9 @@ impl DeviceService {
         }
         // A pair-level problem: no channel of the pair can connect until it
         // is paired again.
-        let pair_key_missing = DeviceRepository::new(conn).pinned_key(peer_device_id).is_none();
+        let pair_key_missing = DeviceRepository::new(conn)
+            .pinned_key(peer_device_id)
+            .is_none();
         Ok([ChannelKind::Network, ChannelKind::Bluetooth]
             .into_iter()
             .map(|kind| {
@@ -853,7 +1089,11 @@ impl DeviceService {
                     _ => ChannelState::Off,
                 };
                 let primary = channel.is_some_and(|channel| channel.is_primary);
-                let problem = if pair_key_missing { Some(ChannelProblem::PairKeyMissing) } else { self.channel(kind).problem() };
+                let problem = if pair_key_missing {
+                    Some(ChannelProblem::PairKeyMissing)
+                } else {
+                    self.channel(kind).problem()
+                };
                 ChannelStatus::new(kind, state, has_session(kind), problem, primary)
             })
             .collect())
@@ -864,7 +1104,12 @@ impl DeviceService {
     /// hears the change). On: a channel that works on this device (ADR-0008
     /// D6); a pair from before ADR-0011 with no row gets one. Earlier
     /// failures are forgotten.
-    pub async fn set_channel_enabled(&self, peer_device_id: &str, kind: ChannelKind, enabled: bool) -> Result<(), String> {
+    pub async fn set_channel_enabled(
+        &self,
+        peer_device_id: &str,
+        kind: ChannelKind,
+        enabled: bool,
+    ) -> Result<(), String> {
         if !self.with_conn(|conn| DeviceRepository::new(conn).is_paired(peer_device_id)) {
             return Err("paired device not found".to_string());
         }
@@ -874,7 +1119,10 @@ impl DeviceService {
             {
                 crate::services::ble_plugin::request_permission();
                 if !crate::services::ble_plugin::permission_granted() {
-                    return Err("Bluetooth permission required -- grant it in the dialog, then try again".to_string());
+                    return Err(
+                        "Bluetooth permission required -- grant it in the dialog, then try again"
+                            .to_string(),
+                    );
                 }
             }
         }
@@ -889,7 +1137,9 @@ impl DeviceService {
         if enabled && !channel.usable() {
             return Err(format!("{kind:?} is unavailable on this device"));
         }
-        self.with_conn(|conn| ChannelRepository::new(conn).configure(peer_device_id, kind, enabled, None))?;
+        self.with_conn(|conn| {
+            ChannelRepository::new(conn).configure(peer_device_id, kind, enabled, None)
+        })?;
         // Off: SpaceSync ends the session with CLOSE_BYE, and
         // ble-gatt-iroh closes the BLE link once that close went out.
         // Closing the link here first dropped the close frame.
@@ -900,7 +1150,9 @@ impl DeviceService {
             self.refresh_network_lookup(conn);
             self.bluetooth.refresh_advertising(conn);
         });
-        self.bus.publish(Event::ChannelsChanged { peer_device_id: peer_device_id.to_string() });
+        self.bus.publish(Event::ChannelsChanged {
+            peer_device_id: peer_device_id.to_string(),
+        });
         if enabled && kind == ChannelKind::Bluetooth {
             self.bluetooth.connect_once_after_switch_on(peer_device_id);
         }
@@ -909,7 +1161,12 @@ impl DeviceService {
 
     /// Chooses the channel that carries this pair's traffic, or clears the
     /// choice (ADR-0007). Rejected for a channel that is not on.
-    pub fn set_primary_channel(&self, conn: &mut SqliteConnection, peer_device_id: &str, primary: Option<ChannelKind>) -> Result<(), String> {
+    pub fn set_primary_channel(
+        &self,
+        conn: &mut SqliteConnection,
+        peer_device_id: &str,
+        primary: Option<ChannelKind>,
+    ) -> Result<(), String> {
         if !DeviceRepository::new(conn).is_paired(peer_device_id) {
             return Err("paired device not found".to_string());
         }
@@ -919,7 +1176,9 @@ impl DeviceService {
             }
         }
         ChannelRepository::new(conn).set_primary(peer_device_id, primary)?;
-        self.bus.publish(Event::ChannelsChanged { peer_device_id: peer_device_id.to_string() });
+        self.bus.publish(Event::ChannelsChanged {
+            peer_device_id: peer_device_id.to_string(),
+        });
         Ok(())
     }
 }
@@ -952,7 +1211,8 @@ impl PeerLinkHandler for DeviceService {
                     // The Add Device scan stays off the adapter meanwhile.
                     #[cfg(any(target_os = "linux", target_os = "android"))]
                     let _step = self.bluetooth.scanner.begin_pairing_step();
-                    let hold_until = tokio::time::Instant::now() + Duration::from_secs(PAIR_REQUEST_TTL_SECS as u64 + 5);
+                    let hold_until = tokio::time::Instant::now()
+                        + Duration::from_secs(PAIR_REQUEST_TTL_SECS as u64 + 5);
                     while tokio::time::Instant::now() < hold_until {
                         tokio::time::sleep(Duration::from_millis(500)).await;
                         let pending = self.state.lock().is_ok_and(|mut state| {
@@ -964,7 +1224,11 @@ impl PeerLinkHandler for DeviceService {
                         }
                     }
                     log::info!("[pairing][ble] request {request_id} settled; releasing its link");
-                    let parked = self.parked_links.lock().ok().and_then(|mut links| links.remove(&request_id));
+                    let parked = self
+                        .parked_links
+                        .lock()
+                        .ok()
+                        .and_then(|mut links| links.remove(&request_id));
                     drop(parked);
                 }
             }
@@ -992,7 +1256,10 @@ impl PeerLinkHandler for DeviceService {
                     let _ = tokio::time::timeout(Duration::from_secs(3), link.recv()).await;
                 }
             }
-            other => log::warn!("[pairing][accept] {kind:?} link from {from_addr}: unexpected first frame `{}`", other.wire_type()),
+            other => log::warn!(
+                "[pairing][accept] {kind:?} link from {from_addr}: unexpected first frame `{}`",
+                other.wire_type()
+            ),
         }
     }
 }
@@ -1018,10 +1285,19 @@ pub fn normalize_bluetooth_address(value: &str) -> Option<String> {
 }
 
 /// Runs `command` with a time limit that also stops it.
-async fn run_command_with_timeout(mut command: tokio::process::Command, timeout: Duration) -> Option<String> {
-    command.kill_on_drop(true).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+async fn run_command_with_timeout(
+    mut command: tokio::process::Command,
+    timeout: Duration,
+) -> Option<String> {
+    command
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
     let child = command.spawn().ok()?;
-    let output = tokio::time::timeout(timeout, child.wait_with_output()).await.ok()?.ok()?;
+    let output = tokio::time::timeout(timeout, child.wait_with_output())
+        .await
+        .ok()?
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -1086,7 +1362,8 @@ mod tests {
             expires_at: "1999-01-01T00:00:00Z".to_string(),
             from_endpoint_id: None,
         };
-        let stored = StoredPairRequest::from_payload(&payload, "192.168.1.50".to_string(), None, false);
+        let stored =
+            StoredPairRequest::from_payload(&payload, "192.168.1.50".to_string(), None, false);
         assert!(!stored.expired(), "the sender's old expiry does not count");
         assert_eq!(stored.from_addr, "192.168.1.50");
     }
@@ -1169,7 +1446,6 @@ pub struct DevicePairRequestAckInput {
     pub request_id: String,
 }
 
-
 /// The switch of a channel on this device (ADR-0011 D1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1204,7 +1480,13 @@ pub struct ChannelStatus {
 impl ChannelStatus {
     /// The row for a channel (ADR-0008 D19). A problem outranks a live
     /// connection: the person can only act on the problem.
-    pub fn new(kind: ChannelKind, state: ChannelState, green: bool, problem: Option<ChannelProblem>, primary: bool) -> Self {
+    pub fn new(
+        kind: ChannelKind,
+        state: ChannelState,
+        green: bool,
+        problem: Option<ChannelProblem>,
+        primary: bool,
+    ) -> Self {
         let (color, problem) = match state {
             ChannelState::Off => (ChannelColor::Off, None),
             ChannelState::On => match problem {
@@ -1213,7 +1495,13 @@ impl ChannelStatus {
                 None => (ChannelColor::Grey, None),
             },
         };
-        Self { kind, state, color, problem, primary }
+        Self {
+            kind,
+            state,
+            color,
+            problem,
+            primary,
+        }
     }
 }
 
@@ -1228,12 +1516,28 @@ mod channel_status_tests {
             (ChannelState::Off, true, problem, ChannelColor::Off, None),
             (ChannelState::On, true, None, ChannelColor::Green, None),
             (ChannelState::On, false, None, ChannelColor::Grey, None),
-            (ChannelState::On, true, problem, ChannelColor::Orange, problem),
-            (ChannelState::On, false, problem, ChannelColor::Orange, problem),
+            (
+                ChannelState::On,
+                true,
+                problem,
+                ChannelColor::Orange,
+                problem,
+            ),
+            (
+                ChannelState::On,
+                false,
+                problem,
+                ChannelColor::Orange,
+                problem,
+            ),
         ];
         for (state, green, reported, color, shown) in cases {
             let row = ChannelStatus::new(ChannelKind::Bluetooth, state, green, reported, false);
-            assert_eq!((row.color, row.problem), (color, shown), "{state:?}, green={green}, problem={reported:?}");
+            assert_eq!(
+                (row.color, row.problem),
+                (color, shown),
+                "{state:?}, green={green}, problem={reported:?}"
+            );
         }
     }
 }
@@ -1265,17 +1569,31 @@ mod pair_tests {
     /// A service on a temporary database. The Network channel listens on a
     /// free port, so that the test does not meet a running app.
     fn fixture(label: &str) -> Fixture {
-        let db_path = std::env::temp_dir().join(format!("fini-test-device-{label}-{}.db", Uuid::new_v4()));
-        let app_dir = std::env::temp_dir().join(format!("fini-test-app-{label}-{}", Uuid::new_v4()));
+        let db_path =
+            std::env::temp_dir().join(format!("fini-test-device-{label}-{}.db", Uuid::new_v4()));
+        let app_dir =
+            std::env::temp_dir().join(format!("fini-test-app-{label}-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&app_dir).unwrap();
         let mut conn = open_db_at_path(&db_path);
-        let identity = DeviceRepository::new(&mut conn).load_or_create_identity(&app_dir).unwrap();
+        let identity = DeviceRepository::new(&mut conn)
+            .load_or_create_identity(&app_dir)
+            .unwrap();
         let bus = Arc::new(EventBus::default());
         let pool = DbPool::open_for_test(&db_path);
-        let network = Arc::new(NetworkChannelService::on_port(identity.clone(), pool.clone(), bus.clone(), 0));
+        let network = Arc::new(NetworkChannelService::on_port(
+            identity.clone(),
+            pool.clone(),
+            bus.clone(),
+            0,
+        ));
         let bluetooth = BluetoothChannelService::new(identity.clone(), pool.clone(), bus.clone());
         let service = DeviceService::new(identity, pool, bus, network, bluetooth);
-        Fixture { service, conn, db_path, app_dir }
+        Fixture {
+            service,
+            conn,
+            db_path,
+            app_dir,
+        }
     }
 
     /// The fixture with one paired device, `peer-a`.
@@ -1294,14 +1612,31 @@ mod pair_tests {
         fixture
     }
 
-    fn channel(conn: &mut SqliteConnection, peer_device_id: &str, kind: ChannelKind) -> Option<Channel> {
+    fn channel(
+        conn: &mut SqliteConnection,
+        peer_device_id: &str,
+        kind: ChannelKind,
+    ) -> Option<Channel> {
         ChannelRepository::new(conn).find(peer_device_id, kind)
     }
 
-    fn save(fixture: &mut Fixture, peer_device_id: &str, address: Option<&str>, via_bluetooth: bool) {
+    fn save(
+        fixture: &mut Fixture,
+        peer_device_id: &str,
+        address: Option<&str>,
+        via_bluetooth: bool,
+    ) {
         fixture
             .service
-            .save_paired_device(&mut fixture.conn, peer_device_id, "Peer", address.map(str::to_string), via_bluetooth, None, None)
+            .save_paired_device(
+                &mut fixture.conn,
+                peer_device_id,
+                "Peer",
+                address.map(str::to_string),
+                via_bluetooth,
+                None,
+                None,
+            )
             .unwrap();
     }
 
@@ -1314,7 +1649,11 @@ mod pair_tests {
         let started = std::time::Instant::now();
         let result = run_command_with_timeout(command, Duration::from_millis(200)).await;
         assert!(result.is_none());
-        assert!(started.elapsed() < Duration::from_secs(5), "took {:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "took {:?}",
+            started.elapsed()
+        );
     }
 
     /// The key a pair is saved with is the one that came with that pairing.
@@ -1361,7 +1700,10 @@ mod pair_tests {
             false,
         );
 
-        assert_eq!(fixture.service.pairing_key("req-1", "peer-b").as_deref(), Some("legitimate-key"));
+        assert_eq!(
+            fixture.service.pairing_key("req-1", "peer-b").as_deref(),
+            Some("legitimate-key")
+        );
         // A key goes only to the device its pairing was with.
         assert_eq!(fixture.service.pairing_key("req-1", "peer-c"), None);
         assert_eq!(fixture.service.pairing_key("req-attacker", "peer-b"), None);
@@ -1374,10 +1716,15 @@ mod pair_tests {
         let mut fixture = fixture("bluetooth-pairing");
         save(&mut fixture, "peer-new", Some("aa:bb:cc:dd:ee:ff"), true);
 
-        let bluetooth = channel(&mut fixture.conn, "peer-new", ChannelKind::Bluetooth).expect("the Bluetooth channel");
+        let bluetooth = channel(&mut fixture.conn, "peer-new", ChannelKind::Bluetooth)
+            .expect("the Bluetooth channel");
         assert!(bluetooth.enabled);
         assert_eq!(bluetooth.address.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
-        assert!(!channel(&mut fixture.conn, "peer-new", ChannelKind::Network).expect("the Network channel").enabled);
+        assert!(
+            !channel(&mut fixture.conn, "peer-new", ChannelKind::Network)
+                .expect("the Network channel")
+                .enabled
+        );
     }
 
     /// One side kept its row while the other reset and paired again over
@@ -1387,10 +1734,14 @@ mod pair_tests {
     fn pairing_again_over_the_network_switches_network_on_again() {
         let mut fixture = fixture("network-repair");
         save(&mut fixture, "peer-old", None, false);
-        ChannelRepository::new(&mut fixture.conn).configure("peer-old", ChannelKind::Network, false, None).unwrap();
+        ChannelRepository::new(&mut fixture.conn)
+            .configure("peer-old", ChannelKind::Network, false, None)
+            .unwrap();
 
         save(&mut fixture, "peer-old", None, false);
-        assert!(ChannelRepository::new(&mut fixture.conn).is_enabled("peer-old", ChannelKind::Network));
+        assert!(
+            ChannelRepository::new(&mut fixture.conn).is_enabled("peer-old", ChannelKind::Network)
+        );
     }
 
     /// A Bluetooth address sent with a Network pairing is no proof that
@@ -1398,11 +1749,23 @@ mod pair_tests {
     #[test]
     fn a_network_pairing_does_not_set_up_bluetooth() {
         let mut fixture = fixture("network-pairing");
-        save(&mut fixture, "peer-network", Some("aa:bb:cc:dd:ee:ff"), false);
+        save(
+            &mut fixture,
+            "peer-network",
+            Some("aa:bb:cc:dd:ee:ff"),
+            false,
+        );
 
-        assert!(channel(&mut fixture.conn, "peer-network", ChannelKind::Network).expect("Network").enabled);
+        assert!(
+            channel(&mut fixture.conn, "peer-network", ChannelKind::Network)
+                .expect("Network")
+                .enabled
+        );
         let bluetooth = channel(&mut fixture.conn, "peer-network", ChannelKind::Bluetooth);
-        assert!(bluetooth.as_ref().is_none_or(|row| !row.enabled), "no Bluetooth channel is on: {bluetooth:?}");
+        assert!(
+            bluetooth.as_ref().is_none_or(|row| !row.enabled),
+            "no Bluetooth channel is on: {bluetooth:?}"
+        );
     }
 
     /// A pairing again over Bluetooth can land on a channel that this
@@ -1411,10 +1774,13 @@ mod pair_tests {
     #[test]
     fn a_bluetooth_pairing_switches_an_off_channel_on_again() {
         let mut fixture = paired_peer("bluetooth-repair");
-        ChannelRepository::new(&mut fixture.conn).configure("peer-a", ChannelKind::Bluetooth, false, None).unwrap();
+        ChannelRepository::new(&mut fixture.conn)
+            .configure("peer-a", ChannelKind::Bluetooth, false, None)
+            .unwrap();
 
         save(&mut fixture, "peer-a", Some("aa:bb:cc:dd:ee:ff"), true);
-        let row = channel(&mut fixture.conn, "peer-a", ChannelKind::Bluetooth).expect("the Bluetooth row");
+        let row = channel(&mut fixture.conn, "peer-a", ChannelKind::Bluetooth)
+            .expect("the Bluetooth row");
         assert!(row.enabled);
         assert_eq!(row.address.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
     }
@@ -1425,11 +1791,20 @@ mod pair_tests {
     async fn switching_a_channel_on_needs_neither_an_address_nor_a_bond() {
         let mut fixture = paired_peer("switch-on");
         // ADR-0008 D15: the channel exists (set up by an init), switched off.
-        ChannelRepository::new(&mut fixture.conn).configure("peer-a", ChannelKind::Bluetooth, false, None).unwrap();
-        crate::services::bluetooth_channel_service::BluetoothAdapter::pin_reachable_on_this_thread();
+        ChannelRepository::new(&mut fixture.conn)
+            .configure("peer-a", ChannelKind::Bluetooth, false, None)
+            .unwrap();
+        crate::services::bluetooth_channel_service::BluetoothAdapter::pin_reachable_on_this_thread(
+        );
 
-        fixture.service.set_channel_enabled("peer-a", ChannelKind::Bluetooth, true).await.unwrap();
-        assert!(ChannelRepository::new(&mut fixture.conn).is_enabled("peer-a", ChannelKind::Bluetooth));
+        fixture
+            .service
+            .set_channel_enabled("peer-a", ChannelKind::Bluetooth, true)
+            .await
+            .unwrap();
+        assert!(
+            ChannelRepository::new(&mut fixture.conn).is_enabled("peer-a", ChannelKind::Bluetooth)
+        );
     }
 
     /// Switching a channel off is not forgetting it (ADR-0007): what it
@@ -1438,11 +1813,21 @@ mod pair_tests {
     async fn switching_a_channel_off_keeps_what_it_learned() {
         let mut fixture = paired_peer("switch-off");
         ChannelRepository::new(&mut fixture.conn)
-            .configure("peer-a", ChannelKind::Bluetooth, true, Some("AA:BB:CC:DD:EE:FF"))
+            .configure(
+                "peer-a",
+                ChannelKind::Bluetooth,
+                true,
+                Some("AA:BB:CC:DD:EE:FF"),
+            )
             .unwrap();
 
-        fixture.service.set_channel_enabled("peer-a", ChannelKind::Bluetooth, false).await.unwrap();
-        let row = channel(&mut fixture.conn, "peer-a", ChannelKind::Bluetooth).expect("the row stays");
+        fixture
+            .service
+            .set_channel_enabled("peer-a", ChannelKind::Bluetooth, false)
+            .await
+            .unwrap();
+        let row =
+            channel(&mut fixture.conn, "peer-a", ChannelKind::Bluetooth).expect("the row stays");
         assert!(!row.enabled);
         assert_eq!(row.address.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
     }
@@ -1450,7 +1835,9 @@ mod pair_tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn unpair_removes_the_pair_and_its_channels() {
         let mut fixture = paired_peer("unpair");
-        ChannelRepository::new(&mut fixture.conn).configure("peer-a", ChannelKind::Bluetooth, true, None).unwrap();
+        ChannelRepository::new(&mut fixture.conn)
+            .configure("peer-a", ChannelKind::Bluetooth, true, None)
+            .unwrap();
 
         fixture.service.unpair(&mut fixture.conn, "peer-a").unwrap();
         assert!(!DeviceRepository::new(&mut fixture.conn).is_paired("peer-a"));
@@ -1466,12 +1853,18 @@ mod pair_tests {
     async fn unpair_then_pair_again_over_bluetooth_starts_clean() {
         let mut fixture = paired_peer("unpair-repair");
         ChannelRepository::new(&mut fixture.conn)
-            .configure("peer-a", ChannelKind::Bluetooth, true, Some("AA:BB:CC:DD:EE:FF"))
+            .configure(
+                "peer-a",
+                ChannelKind::Bluetooth,
+                true,
+                Some("AA:BB:CC:DD:EE:FF"),
+            )
             .unwrap();
         fixture.service.unpair(&mut fixture.conn, "peer-a").unwrap();
 
         save(&mut fixture, "peer-a", Some("11:22:33:44:55:66"), true);
-        let row = channel(&mut fixture.conn, "peer-a", ChannelKind::Bluetooth).expect("the new Bluetooth row");
+        let row = channel(&mut fixture.conn, "peer-a", ChannelKind::Bluetooth)
+            .expect("the new Bluetooth row");
         assert!(row.enabled);
         assert_eq!(row.address.as_deref(), Some("11:22:33:44:55:66"));
     }

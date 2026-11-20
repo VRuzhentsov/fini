@@ -17,7 +17,9 @@ pub struct EventBus {
 
 impl Default for EventBus {
     fn default() -> Self {
-        Self { sender: broadcast::channel(CAPACITY).0 }
+        Self {
+            sender: broadcast::channel(CAPACITY).0,
+        }
     }
 }
 

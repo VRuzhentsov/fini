@@ -46,7 +46,9 @@ impl<'a> DeviceRepository<'a> {
                 .map(|identity| identity.device_id)
                 .filter(|value| !value.trim().is_empty())
         };
-        let device_id = settings_device_id.or_else(file_device_id).unwrap_or_else(|| Uuid::new_v4().to_string());
+        let device_id = settings_device_id
+            .or_else(file_device_id)
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
         let existing_name = self.setting(DEVICE_NAME_KEY);
         let hostname = Self::current_device_name(&device_id, existing_name.as_deref());
 
@@ -55,20 +57,35 @@ impl<'a> DeviceRepository<'a> {
         let _ = std::fs::remove_file(file_identity_path);
 
         let secret_key = self.load_or_create_secret_key()?;
-        Ok(Identity { device_id, hostname, endpoint_id: secret_key.public().to_string(), secret_key })
+        Ok(Identity {
+            device_id,
+            hostname,
+            endpoint_id: secret_key.public().to_string(),
+            secret_key,
+        })
     }
 
     /// A settings row, if it has a value that is not blank.
     fn setting(&mut self, key: &str) -> Option<String> {
-        settings::load_setting(self.conn, key).ok().flatten().filter(|value| !value.trim().is_empty())
+        settings::load_setting(self.conn, key)
+            .ok()
+            .flatten()
+            .filter(|value| !value.trim().is_empty())
     }
 
     fn load_or_create_secret_key(&mut self) -> Result<iroh::SecretKey, String> {
-        if let Some(key) = self.setting(SECRET_KEY_SETTING).and_then(|hex| hex.parse::<iroh::SecretKey>().ok()) {
+        if let Some(key) = self
+            .setting(SECRET_KEY_SETTING)
+            .and_then(|hex| hex.parse::<iroh::SecretKey>().ok())
+        {
             return Ok(key);
         }
         let key = iroh::SecretKey::generate();
-        let hex: String = key.to_bytes().iter().map(|byte| format!("{byte:02x}")).collect();
+        let hex: String = key
+            .to_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
         settings::upsert_setting(self.conn, SECRET_KEY_SETTING, &hex)
             .map_err(|err| format!("storing the device key failed: {err}"))?;
         Ok(key)
@@ -120,11 +137,19 @@ impl<'a> DeviceRepository<'a> {
     /// Records a pair, or updates its name when the pair exists, and pins
     /// `endpoint_id` when one is given: pairing again pins the key proved
     /// this time, because a reinstalled device has a new one.
-    pub fn save(&mut self, device_id: &str, display_name: &str, endpoint_id: Option<&str>) -> Result<Device, String> {
+    pub fn save(
+        &mut self,
+        device_id: &str,
+        display_name: &str,
+        endpoint_id: Option<&str>,
+    ) -> Result<Device, String> {
         let now = utc_now();
         if self.find(device_id)?.is_some() {
             diesel::update(paired_devices::table.find(device_id))
-                .set((paired_devices::display_name.eq(display_name), paired_devices::last_seen_at.eq(&now)))
+                .set((
+                    paired_devices::display_name.eq(display_name),
+                    paired_devices::last_seen_at.eq(&now),
+                ))
                 .execute(&mut *self.conn)
                 .map_err(|e| e.to_string())?;
         } else {
@@ -143,7 +168,8 @@ impl<'a> DeviceRepository<'a> {
                 .execute(&mut *self.conn)
                 .map_err(|e| e.to_string())?;
         }
-        self.find(device_id)?.ok_or_else(|| "the pair was not saved".to_string())
+        self.find(device_id)?
+            .ok_or_else(|| "the pair was not saved".to_string())
     }
 
     /// Removes the pair. Its channels and mappings go with it (the foreign
@@ -215,8 +241,11 @@ mod tests {
     #[test]
     fn an_id_from_the_old_file_is_moved_into_the_settings() {
         let dir = tempfile::tempdir().expect("temp dir");
-        std::fs::write(dir.path().join("device_identity.json"), r#"{"device_id":"file-id","hostname":"h"}"#)
-            .expect("write the old file");
+        std::fs::write(
+            dir.path().join("device_identity.json"),
+            r#"{"device_id":"file-id","hostname":"h"}"#,
+        )
+        .expect("write the old file");
         assert_eq!(load(dir.path()).device_id, "file-id");
         assert!(!dir.path().join("device_identity.json").exists());
     }
@@ -226,8 +255,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let mut conn = open_db_at_path(&dir.path().join("fini.db"));
         settings::upsert_setting(&mut conn, DEVICE_ID_KEY, "settings-id").expect("seed id");
-        std::fs::write(dir.path().join("device_identity.json"), r#"{"device_id":"file-id"}"#)
-            .expect("write the old file");
+        std::fs::write(
+            dir.path().join("device_identity.json"),
+            r#"{"device_id":"file-id"}"#,
+        )
+        .expect("write the old file");
         assert_eq!(load(dir.path()).device_id, "settings-id");
     }
 }

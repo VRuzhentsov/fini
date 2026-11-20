@@ -41,7 +41,9 @@ pub fn ensure_bridged() -> Result<(), String> {
 /// throws `ClassNotFoundException` for every call through this function,
 /// silently, since every caller below fails closed on error.
 fn load_app_class<'a>(
-    env: &mut JNIEnv<'a>, context: &JObject, binary_name: &str,
+    env: &mut JNIEnv<'a>,
+    context: &JObject,
+    binary_name: &str,
 ) -> Result<jni::objects::JClass<'a>, String> {
     // `Context.getClassLoader()`, not the class's own loader: the context is
     // the Application, and `android.app.Application`'s class loader is the
@@ -52,9 +54,12 @@ fn load_app_class<'a>(
         .map_err(|err| format!("getClassLoader failed: {err}"))?;
     let name = env.new_string(binary_name).map_err(|err| err.to_string())?;
     let class_obj = env
-        .call_method(&class_loader, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;", &[
-            JValue::Object(&name),
-        ])
+        .call_method(
+            &class_loader,
+            "loadClass",
+            "(Ljava/lang/String;)Ljava/lang/Class;",
+            &[JValue::Object(&name)],
+        )
         .and_then(|v| v.l())
         .map_err(|err| format!("loadClass({binary_name}) failed: {err}"))?;
     Ok(jni::objects::JClass::from(class_obj))
@@ -100,11 +105,12 @@ pub fn call_static_context_void(class_binary_name: &str, method: &str) {
             return;
         }
     };
-    if let Err(err) =
-        env.call_static_method(class, method, "(Landroid/content/Context;)V", &[JValue::Object(
-            &context_obj,
-        )])
-    {
+    if let Err(err) = env.call_static_method(
+        class,
+        method,
+        "(Landroid/content/Context;)V",
+        &[JValue::Object(&context_obj)],
+    ) {
         let _ = env.exception_describe();
         let _ = env.exception_clear();
         eprintln!("[android-context] {class_binary_name}.{method} failed: {err}");

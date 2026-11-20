@@ -21,8 +21,8 @@ use crate::models::{Event, Identity};
 use crate::repositories::{ChannelRepository, DeviceRepository};
 use crate::services::channel_service::iroh_link::{IrohDataLink, PEER_ALPN, SYNC_ALPN};
 use crate::services::channel_service::{
-    send_frame, ChannelKind, ChannelProblem, ChannelService, DataLink, DiscoveredDevice, LinkHandlerSlot,
-    LinkHandlers, PeerFrame,
+    send_frame, ChannelKind, ChannelProblem, ChannelService, DataLink, DiscoveredDevice,
+    LinkHandlerSlot, LinkHandlers, PeerFrame,
 };
 use crate::services::db::{utc_now, DbPool};
 use crate::services::event_bus_service::EventBus;
@@ -155,7 +155,10 @@ impl NetworkChannelService {
     /// devices heard, as a lost network does.
     #[cfg(feature = "devtools")]
     pub fn set_switch(&self, on: bool) {
-        log::info!("[transport][network] test switch: network {}", if on { "on" } else { "off" });
+        log::info!(
+            "[transport][network] test switch: network {}",
+            if on { "on" } else { "off" }
+        );
         self.switched_off.store(!on, Ordering::SeqCst);
         if !on {
             self.heard.lock().unwrap().clear();
@@ -220,16 +223,30 @@ impl NetworkChannelService {
 
     /// Connects to the device holding `peer_key` at `ip:port`, for `alpn`:
     /// `SYNC_ALPN` for a session, `PEER_ALPN` for the frames before one.
-    pub async fn connect(&self, peer_key: &str, ip: IpAddr, port: u16, alpn: &[u8]) -> Result<Box<dyn DataLink>, String> {
+    pub async fn connect(
+        &self,
+        peer_key: &str,
+        ip: IpAddr,
+        port: u16,
+        alpn: &[u8],
+    ) -> Result<Box<dyn DataLink>, String> {
         Ok(Box::new(self.connect_link(peer_key, ip, port, alpn).await?))
     }
 
-    async fn connect_link(&self, peer_key: &str, ip: IpAddr, port: u16, alpn: &[u8]) -> Result<IrohDataLink, String> {
+    async fn connect_link(
+        &self,
+        peer_key: &str,
+        ip: IpAddr,
+        port: u16,
+        alpn: &[u8],
+    ) -> Result<IrohDataLink, String> {
         if self.switched_off() {
             return Err("the test switch set the network to off".to_string());
         }
         let endpoint = self.endpoint().await?;
-        let id: EndpointId = peer_key.parse().map_err(|err| format!("invalid peer key '{peer_key}': {err}"))?;
+        let id: EndpointId = peer_key
+            .parse()
+            .map_err(|err| format!("invalid peer key '{peer_key}': {err}"))?;
         let addr = EndpointAddr::from_parts(id, [TransportAddr::Ip(SocketAddr::new(ip, port))]);
         let connection = tokio::time::timeout(CONNECT_TIMEOUT, endpoint.connect(addr, alpn))
             .await
@@ -240,7 +257,13 @@ impl NetworkChannelService {
 
     /// Sends one frame before a session (a pair request, accept or
     /// completion) and lets the connection close once the peer has it.
-    pub async fn send_one_frame(&self, peer_key: &str, ip: IpAddr, port: u16, frame: &PeerFrame) -> Result<(), String> {
+    pub async fn send_one_frame(
+        &self,
+        peer_key: &str,
+        ip: IpAddr,
+        port: u16,
+        frame: &PeerFrame,
+    ) -> Result<(), String> {
         let mut link = self.connect_link(peer_key, ip, port, PEER_ALPN).await?;
         send_frame(&mut link, frame).await?;
         link.finish().await;
@@ -260,7 +283,10 @@ impl NetworkChannelService {
                 }
             }
         };
-        log::info!("[transport][network] listening on {:?}", endpoint.bound_sockets());
+        log::info!(
+            "[transport][network] listening on {:?}",
+            endpoint.bound_sockets()
+        );
         self.serve(endpoint).await;
     }
 
@@ -280,8 +306,13 @@ impl NetworkChannelService {
         };
         let channel = self.clone();
         let switched_off = Arc::new(move || channel.switched_off());
-        crate::services::channel_service::LinkAcceptor::serve(ChannelKind::Network, endpoint, handlers, switched_off)
-            .await;
+        crate::services::channel_service::LinkAcceptor::serve(
+            ChannelKind::Network,
+            endpoint,
+            handlers,
+            switched_off,
+        )
+        .await;
     }
 
     /// Finds other Fini devices on the network with iroh's own mDNS lookup,
@@ -310,7 +341,10 @@ impl NetworkChannelService {
             while self.switched_off() || !self.wants_lookup() {
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
-            let mdns = match MdnsAddressLookup::builder().service_name(MDNS_SERVICE_NAME).build(endpoint.id()) {
+            let mdns = match MdnsAddressLookup::builder()
+                .service_name(MDNS_SERVICE_NAME)
+                .build(endpoint.id())
+            {
                 Ok(mdns) => mdns,
                 Err(err) => {
                     log::warn!("[transport][network] mDNS lookup failed to start: {err}");
@@ -396,7 +430,14 @@ impl NetworkChannelService {
 
     /// Records a device that the mDNS lookup heard. A device that arrives
     /// is the moment that waiting work can go to it.
-    fn record_heard(&self, device_id: &str, hostname: &str, addr: SocketAddr, endpoint_id: &str, add_device: bool) {
+    fn record_heard(
+        &self,
+        device_id: &str,
+        hostname: &str,
+        addr: SocketAddr,
+        endpoint_id: &str,
+        add_device: bool,
+    ) {
         let (arrived, listed_before) = {
             let mut heard = self.heard.lock().unwrap();
             let previous = heard.get(device_id);
@@ -417,7 +458,10 @@ impl NetworkChannelService {
         };
         if arrived {
             log::info!("[transport][network] heard {device_id} at {addr}");
-            self.bus.publish(Event::DeviceHeard { peer_device_id: device_id.to_string(), kind: ChannelKind::Network });
+            self.bus.publish(Event::DeviceHeard {
+                peer_device_id: device_id.to_string(),
+                kind: ChannelKind::Network,
+            });
         }
         if arrived || listed_before != add_device {
             self.bus.publish(Event::AvailableDevicesChanged);
@@ -478,7 +522,9 @@ impl NetworkChannelService {
     /// (ADR-0008 D10), the peer is not heard, or its last attempt failed
     /// within `FAILURE_COOLDOWN`.
     fn start_exchange(self: &Arc<Self>, peer_id: &str) {
-        if self.handlers.has_session(peer_id, ChannelKind::Network) || self.heard_address(peer_id).is_none() {
+        if self.handlers.has_session(peer_id, ChannelKind::Network)
+            || self.heard_address(peer_id).is_none()
+        {
             return;
         }
         if self.recently_failed(peer_id) {
@@ -491,10 +537,17 @@ impl NetworkChannelService {
         let peer_id = peer_id.to_string();
         tauri::async_runtime::spawn(async move {
             if !channel.exchange_with(&peer_id).await {
-                channel.cooldown.lock().unwrap().insert(peer_id.clone(), Instant::now() + FAILURE_COOLDOWN);
+                channel
+                    .cooldown
+                    .lock()
+                    .unwrap()
+                    .insert(peer_id.clone(), Instant::now() + FAILURE_COOLDOWN);
                 // Now, so that the work can go over Bluetooth meanwhile; and
                 // once the cooldown is over, to try Network again.
-                let changed = Event::ConnectChanged { peer_device_id: peer_id.clone(), kind: ChannelKind::Network };
+                let changed = Event::ConnectChanged {
+                    peer_device_id: peer_id.clone(),
+                    kind: ChannelKind::Network,
+                };
                 channel.bus.publish(changed.clone());
                 let bus = channel.bus.clone();
                 tauri::async_runtime::spawn(async move {
@@ -532,7 +585,10 @@ impl NetworkChannelService {
         log::info!("[transport][network] connecting to {peer_id} at {addr}");
         // TLS proves the peer holds the pinned key; the peer may still
         // reject, by closing the connection with a code.
-        let link = match self.connect(&peer_key, addr.ip(), addr.port(), SYNC_ALPN).await {
+        let link = match self
+            .connect(&peer_key, addr.ip(), addr.port(), SYNC_ALPN)
+            .await
+        {
             Ok(link) => link,
             Err(err) => {
                 log::warn!("[transport][network] connect to {peer_id} failed: {err}");
@@ -548,7 +604,10 @@ impl NetworkChannelService {
                 Box::new(|| {
                     // Held, not connecting; for `CROSSING_WINDOW` a
                     // connection from the peer is still a crossing.
-                    self.connected_at.lock().unwrap().insert(peer_id.to_string(), Instant::now());
+                    self.connected_at
+                        .lock()
+                        .unwrap()
+                        .insert(peer_id.to_string(), Instant::now());
                     self.in_flight.lock().unwrap().remove(peer_id);
                     log::info!("[transport][network] holding a session with {peer_id}");
                 }),
@@ -560,7 +619,9 @@ impl NetworkChannelService {
     }
 
     fn pinned_key(&self, peer_id: &str) -> Option<String> {
-        tokio::task::block_in_place(|| DeviceRepository::new(&mut *self.pool.connection()).pinned_key(peer_id))
+        tokio::task::block_in_place(|| {
+            DeviceRepository::new(&mut *self.pool.connection()).pinned_key(peer_id)
+        })
     }
 
     /// The user data this device publishes with its iroh mDNS record: a
@@ -570,7 +631,11 @@ impl NetworkChannelService {
     fn user_data(&self) -> Option<iroh::endpoint_info::UserData> {
         let add_device = self.add_device_mode.load(Ordering::SeqCst);
         let mut name = self.identity.hostname.clone();
-        let prefix = format!("fini1;a={};d={};n=", u8::from(add_device), self.identity.device_id);
+        let prefix = format!(
+            "fini1;a={};d={};n=",
+            u8::from(add_device),
+            self.identity.device_id
+        );
         while prefix.len() + name.len() > 245 {
             name.pop();
         }
@@ -619,13 +684,13 @@ impl ChannelService for NetworkChannelService {
     /// channel on and is heard.
     fn keep_serving(self: Arc<Self>) {
         let peers = tokio::task::block_in_place(|| {
-            ChannelRepository::new(&mut *self.pool.connection()).peers_with_channel_enabled(ChannelKind::Network)
+            ChannelRepository::new(&mut *self.pool.connection())
+                .peers_with_channel_enabled(ChannelKind::Network)
         });
         for peer in peers {
             self.start_exchange(&peer);
         }
     }
-
 
     /// This device's own connection is being made, or became a session in
     /// the last `CROSSING_WINDOW`.
@@ -636,7 +701,9 @@ impl ChannelService for NetworkChannelService {
                 .lock()
                 .unwrap()
                 .get(peer_device_id)
-                .is_some_and(|at| at.elapsed() < crate::services::space_sync_service::CROSSING_WINDOW)
+                .is_some_and(|at| {
+                    at.elapsed() < crate::services::space_sync_service::CROSSING_WINDOW
+                })
     }
 
     fn forget_failures(&self, peer_device_id: &str) {
@@ -644,7 +711,9 @@ impl ChannelService for NetworkChannelService {
     }
 
     fn problem(&self) -> Option<ChannelProblem> {
-        self.discovery_stopped.load(Ordering::SeqCst).then_some(ChannelProblem::NetworkUnavailable)
+        self.discovery_stopped
+            .load(Ordering::SeqCst)
+            .then_some(ChannelProblem::NetworkUnavailable)
     }
 
     fn set_add_device_mode(&self, on: bool) {
@@ -662,7 +731,9 @@ impl ChannelService for NetworkChannelService {
             .lock()
             .unwrap()
             .iter()
-            .filter(|(_, device)| device.add_device && device.last_seen.elapsed() <= AVAILABLE_TIMEOUT)
+            .filter(|(_, device)| {
+                device.add_device && device.last_seen.elapsed() <= AVAILABLE_TIMEOUT
+            })
             .map(|(device_id, device)| DiscoveredDevice {
                 device_id: device_id.clone(),
                 hostname: device.hostname.clone(),
@@ -679,7 +750,11 @@ impl ChannelService for NetworkChannelService {
 /// The UDP port the Network endpoint is bound to.
 #[cfg(test)]
 pub(crate) fn bound_port(endpoint: &Endpoint) -> u16 {
-    endpoint.bound_sockets().first().map(|addr| addr.port()).expect("the network endpoint has a socket")
+    endpoint
+        .bound_sockets()
+        .first()
+        .map(|addr| addr.port())
+        .expect("the network endpoint has a socket")
 }
 
 /// What another device's user data says: Add Device flag, device id, name.
@@ -707,7 +782,11 @@ mod tests {
         cooldown.insert("peer-a".to_string(), now + FAILURE_COOLDOWN);
         assert!(is_cooling_down(&cooldown, "peer-a", now));
         assert!(!is_cooling_down(&cooldown, "peer-b", now));
-        assert!(!is_cooling_down(&cooldown, "peer-a", now + FAILURE_COOLDOWN + Duration::from_secs(1)));
+        assert!(!is_cooling_down(
+            &cooldown,
+            "peer-a",
+            now + FAILURE_COOLDOWN + Duration::from_secs(1)
+        ));
     }
 
     #[test]
