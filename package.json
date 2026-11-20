@@ -23,15 +23,10 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "lint": "eslint .",
-    "lint:rust": "cargo fmt --manifest-path src-tauri/Cargo.toml --check && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features",
+    "lint:rust": "npm run lint:rust:fmt && npm run lint:rust:clippy",
+    "lint:rust:fmt": "cargo fmt --manifest-path src-tauri/Cargo.toml --all --check && cargo fmt --manifest-path ble-mock-broker/Cargo.toml --all --check && cargo fmt --manifest-path xtask/Cargo.toml --all --check",
+    "lint:rust:clippy": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --features cli-plane,ui-plane,desktop-updater -- -D warnings",
     "prepare": "husky"
-  },
-  "lint-staged": {
-    "*.{ts,mts,cts,tsx,vue,js,mjs,cjs}": "eslint --config eslint.staged.config.js --max-warnings=0 --no-warn-ignored",
-    "*.rs": [
-      "node scripts/rust-staged.mts fmt",
-      "node scripts/rust-staged.mts clippy"
-    ]
   },
   "dependencies": {
     "@heroicons/vue": "^2.2.0",

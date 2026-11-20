@@ -28,8 +28,8 @@ path = "src/desktop.rs"
 required-features = ["ui-plane"]
 
 [lints.clippy]
-# The default clippy set. The pre-commit hook fails only on warnings on
-# changed lines (scripts/rust-staged.mts).
+# The default clippy set. CI and the pre-commit hook run clippy with
+# `-D warnings` (`npm run lint:rust:clippy`).
 all = { level = "warn", priority = -1 }
 
 [patch.crates-io]

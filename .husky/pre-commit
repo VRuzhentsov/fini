@@ -7,4 +7,9 @@ if ! command -v lint-staged >/dev/null 2>&1; then
   echo "pre-commit: lint-staged is not installed. Run \"npm install\", or skip the checks one time with \"git commit --no-verify\"." >&2
   exit 1
 fi
+if git diff --cached --name-only --diff-filter=ACMR -- '*.rs' | grep -q . && ! command -v cargo >/dev/null 2>&1; then
+  echo "pre-commit: cargo is not on PATH, so the Rust checks cannot run." >&2
+  echo "pre-commit: install the Rust toolchain (rustup, with the clippy and rustfmt components), or skip the checks one time with \"git commit --no-verify\"." >&2
+  exit 1
+fi
 lint-staged
