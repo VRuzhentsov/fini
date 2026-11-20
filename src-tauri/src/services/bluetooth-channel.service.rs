@@ -207,6 +207,11 @@ const REJECTED_WAIT_TIME: Duration = Duration::from_secs(30);
 /// own timeout, so the retries do not run in a tight loop.
 const FAILED_CONNECT_WAIT_TIME: Duration = Duration::from_secs(2);
 
+/// How long the device with the higher device id waits for the peer's session
+/// before it dials itself (`answers_first`). A dial and its handshake took
+/// 1-5 s on hardware.
+const ANSWER_FIRST_WAIT: Duration = Duration::from_secs(8);
+
 /// Per paired device: how many delivery searches in a row found nothing,
 /// and when the next one is due; and until when a rejection stops the next
 /// connection. In memory only, as ADR-0008 decided: a started app tries at
@@ -700,6 +705,10 @@ impl BluetoothChannelService {
                 Err(err) => log::info!("[transport][ble] the pairing link to {address} is gone: {err}"),
             }
         }
+        if self.answers_first(peer_id) && self.wait_for_peer_session(peer_id).await {
+            log::info!("[transport][ble] {peer_id} connected first; no dial from here");
+            return;
+        }
         let deadline = tokio::time::Instant::now() + SEARCH_WINDOW;
         let mut last_error = None;
 
@@ -755,6 +764,38 @@ impl BluetoothChannelService {
                 }
                 Err(err) => last_error = Some(err),
             }
+        }
+    }
+
+    /// Crossed session dials: when both paired devices have work, both start
+    /// an exchange and dial at once. On hardware the two links then ended
+    /// each other: ble-gatt's arbitration kept one managed attempt, but the
+    /// iroh path of the other side moved to the losing link and its handshake
+    /// was aborted, so neither side turned green (peer-sync-over-ble). Only
+    /// one side dials first: the device with the lower device id, whose
+    /// connection the session accept keeps on a crossing anyway
+    /// (`space_sync_service`, "the connection from the smaller device id is
+    /// kept"). The other
+    /// answers first: it waits `ANSWER_FIRST_WAIT` for the session that dial
+    /// opens, and dials itself only when none came (the peer has no work, or
+    /// cannot hear this device). Either side can still start a session.
+    fn answers_first(&self, peer_id: &str) -> bool {
+        self.identity.device_id.as_str() > peer_id
+    }
+
+    /// Waits up to `ANSWER_FIRST_WAIT` for a session with `peer_id` that the
+    /// peer opened. True when one runs.
+    async fn wait_for_peer_session(&self, peer_id: &str) -> bool {
+        let wait = async {
+            while !self.has_session(peer_id) {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        };
+        tokio::select! {
+            biased;
+            () = self.wait_until_stopping() => false,
+            () = self.wait_until_off(peer_id) => false,
+            waited = tokio::time::timeout(ANSWER_FIRST_WAIT, wait) => waited.is_ok(),
         }
     }
 
