@@ -116,7 +116,7 @@ Build planes are explicit:
 
 - Desktop GUI builds use `ui-plane`.
 - Mobile builds use `ui-plane` only; CLI code is not compiled into mobile bundles.
-- Docker/runtime builds use `cli-plane` only and expose `/usr/local/bin/fini`.
+- The container runtime image (stage `runtime` of `containers/linux/Containerfile`) uses `cli-plane` only and exposes `/usr/local/bin/fini`.
 - Release artifacts keep GUI and CLI distribution separate. Linux and Windows releases publish standalone CLI archives alongside GUI installers.
 
 The CLI binary is built separately from the desktop app binary:
@@ -131,10 +131,12 @@ archive for the wrong ABI:
 
 | Platform | CLI artifact |
 |---|---|
-| Linux x64 | `fini-vX.Y.Z-linux-x86_64-unknown-linux-gnu-cli.tar.gz` |
-| Linux arm64 | `fini-vX.Y.Z-linux-aarch64-unknown-linux-gnu-cli.tar.gz` |
+| Linux x64 | `fini-vX.Y.Z-linux-x86_64-unknown-linux-musl-cli.tar.gz` |
 | Windows x64 | `fini-vX.Y.Z-windows-x86_64-pc-windows-msvc-cli.zip` |
 | Windows arm64 | `fini-vX.Y.Z-windows-aarch64-pc-windows-msvc-cli.zip` |
+
+The Linux CLI is a static musl binary with no Bluetooth, for x86_64 only. The
+release has no arm64 Linux CLI; the arm64 Linux desktop app is still released.
 
 `fini update` explicitly downloads, zipsign-verifies, validates, and installs the
 matching standalone archive. `fini update --dry-run` checks the matching release
@@ -170,7 +172,8 @@ updater key and `latest.json` desktop manifest.
 - Rust (via rustup)
 - Node.js + npm
 - Linux: webkit2gtk4.1-devel and related packages
-- Android: Android Studio, JDK, NDK (see `src-tauri/gen/android/README.md`)
+- Android: a container engine (the android build image has the JDK, the SDK and the NDK), and adb on the host to deploy (see `src-tauri/gen/android/README.md`)
+- Container gates and e2e: a container engine, podman or docker (see `docs/container.md`, "Container engine")
 
 ### Run (desktop)
 
@@ -192,9 +195,9 @@ details. This only affects local builds — CI release builds are unaffected.
 
 ### Release
 
-Release workflow is GitOps: pushing a signed annotated `v*` tag starts CI. The release command first commits the npm, Rust, and Tauri version metadata on `main`, then tags and pushes that exact commit. CI owns tests, builds, signing checks, packaging, and artifacts.
+Releases run only in CI (GitOps): a signed annotated `v*` tag on the version commit starts the release workflow `release-tag.yml`. CI owns tests, builds, signing checks, packaging, artifacts and publication. The Makefile is for local development only; no `make` target is a release step.
 
-The one-click release path is the `Release Button` GitHub Actions workflow. It compares the latest `v*` tag with `origin/main`, chooses the next version from Conventional Commit subjects, creates one `chore: release vX.Y.Z` metadata commit, pushes `main` and a `release/vX.Y.Z` trace branch, and creates a signed annotated tag. The tag push starts the release pipeline. If there are no commits since the latest release tag, it exits successfully as a skipped no-op and does not create a commit, tag, or release pipeline run.
+The only release path is the `Release Button` GitHub Actions workflow, which the project owner starts by hand. It compares the latest `v*` tag with `origin/main`, chooses the next version from Conventional Commit subjects, creates one `chore: release vX.Y.Z` metadata commit, pushes `main` and a `release/vX.Y.Z` trace branch, and creates a signed annotated tag. The tag push starts the release pipeline. If there are no commits since the latest release tag, it exits successfully as a skipped no-op and does not create a commit, tag, or release pipeline run.
 
 Because `main` is protected, the button needs an automation token that can update protected branches for the repository:
 
@@ -218,15 +221,12 @@ gh secret set RELEASE_TAG_GPG_PASSPHRASE --body "$RELEASE_TAG_GPG_PASSPHRASE"
 unset RELEASE_TAG_GPG_PASSPHRASE
 ```
 
-The local release path remains available:
-
-```bash
-make release VERSION=0.1.12
-```
-
-The `make release` flow requires a clean `main` branch that matches `origin/main`, updates `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, and `src-tauri/tauri.conf.json`, creates a `chore: release vX.Y.Z` commit, pushes `main`, then creates and verifies a GPG-signed annotated tag before pushing it. It does not build local release bundles; the tag-triggered CI workflow builds release artifacts.
-
 ### Build (Android)
+
+The Android builds run in the `build` stage of `containers/android/Containerfile`
+(JDK 21, the Android SDK and NDK, Rust and Node), through `containers/run.sh`
+with the container engine. The host needs only the container engine, and adb for
+the deploy targets.
 
 ```bash
 make android-build
@@ -278,22 +278,28 @@ flatpak run org.flatpak.Builder --force-clean --user --install flatpak-build com
 flatpak run com.fini.app
 ```
 
-### Build (Docker runtime)
+### Build (container runtime)
 
-Use the official headless runtime target when you want to run the CLI inside a container:
+Use the CLI runtime image when you want to run the CLI inside a container. It
+is the `runtime` stage of `containers/linux/Containerfile`: `debian:bookworm-slim`
+with the static musl CLI only. The Make targets use the container engine
+(`docs/container.md`, "Container engine").
 
 ```bash
 make runtime-image
+make runtime-smoke
 
 # default CLI behavior
-podman run --rm fini-runtime
+${CONTAINER_ENGINE:-podman} run --rm fini-runtime
 
-# explicit CLI commands
-podman run --rm fini-runtime --help
-podman run --rm -v fini-data:/data fini-runtime app
+# explicit CLI commands (the data is in /data)
+${CONTAINER_ENGINE:-podman} run --rm fini-runtime --help
+${CONTAINER_ENGINE:-podman} run --rm -v fini-data:/data fini-runtime --json space list
 ```
 
-The published container image is CLI-first and uses the release binary. The e2e image is built from a separate `test` target and is not published as the runtime artifact.
+The published container image has only the release CLI binary. The images for
+the builds and the e2e tests are the other stages of `containers/linux/` and
+`containers/android/` (`docs/container.md`); they are not published.
 
 ## Status
 

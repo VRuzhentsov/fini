@@ -303,7 +303,7 @@ fn cli_asset_for_release(
 
 fn cli_asset_target_substrings(target: &str) -> Vec<String> {
     match target {
-        "cli-linux-x86_64" => vec!["x86_64-unknown-linux-gnu".to_string(), target.to_string()],
+        "cli-linux-x86_64" => vec!["x86_64-unknown-linux-musl".to_string(), target.to_string()],
         "cli-linux-aarch64" => vec!["aarch64-unknown-linux-gnu".to_string(), target.to_string()],
         "cli-windows-x86_64" => vec!["x86_64-pc-windows-msvc".to_string(), target.to_string()],
         "cli-windows-aarch64" => vec!["aarch64-pc-windows-msvc".to_string(), target.to_string()],
@@ -616,7 +616,7 @@ fn candidate_filename(target: &str) -> &'static str {
 }
 
 fn is_cli_linux_target(target: &str) -> bool {
-    target.starts_with("cli-linux-") || target.ends_with("-unknown-linux-gnu")
+    target.starts_with("cli-linux-") || target.ends_with("-unknown-linux-gnu") || target.ends_with("-unknown-linux-musl")
 }
 
 fn is_cli_windows_target(target: &str) -> bool {
@@ -1082,7 +1082,7 @@ mod tests {
     }
 
     fn versioned_cli_asset_name(version: &str) -> String {
-        format!("fini-{version}-linux-x86_64-unknown-linux-gnu-cli.tar.gz")
+        format!("fini-{version}-linux-x86_64-unknown-linux-musl-cli.tar.gz")
     }
 
     fn current_package_version() -> String {

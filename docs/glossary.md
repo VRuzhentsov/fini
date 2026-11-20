@@ -33,6 +33,14 @@ who knows the other design then knows where the term fits.
 
 The roles from [`code-design.md`](architecture/code-design.md).
 
+### Object-oriented programming (OOP)
+
+**Code organized around objects that own state and behavior.** A class defines
+such objects. Rust uses structs or enums with `impl` blocks for this purpose.
+
+*Elsewhere:* OOP in TypeScript and other object-oriented languages; methods
+and associated functions on Rust types.
+
 ### Service
 
 **An object that does one job and owns the state of that job**, for example
@@ -232,8 +240,8 @@ Each message name is a technical noun of the Fini protocol.
 ### Adapter
 
 The Bluetooth radio of this device, as the `ble-gatt` library gives it
-(`ble_gatt::Adapter`). Fini gets the adapter from `adapter()`. The word
-"backend" stays only inside `ble-gatt`, where a platform driver connects.
+(`ble_gatt::Adapter`). Fini gets the adapter from `adapter()`. In
+`ble-gatt`, the part for one platform is the *driver*.
 
 ### Scanner
 
@@ -297,6 +305,14 @@ distance between them is not academic — one ~400-byte `SyncEvent`, a single
 `PeerFrame`, once landed on BLE as 238 fragments taking 20+ seconds.
 
 ## Other words
+
+### Backend
+
+The Rust part of the Tauri app, in `src-tauri/`. The frontend (`src/`) calls
+it through Tauri commands. In short form: BE.
+
+*Elsewhere:* the Rust core of a Tauri app in the Tauri documents; a server in
+a client-server app, but the Fini backend runs in the same app as the UI.
 
 ### Primary
 
@@ -394,7 +410,7 @@ screen, headful.
 | **transport**, as a separate layer | retired — it is simply the older word for *channel* |
 | **arbiter** (`RadioArbiter`) | jargon (STE rule 1.10); the object is the *scanner* |
 | **directory** (`PeerDirectory`) | means a file folder; the data belongs to the *scanner* |
-| **backend** | does not say what it is; Fini uses *adapter* |
+| **backend**, for the Bluetooth layer | Fini uses *adapter*, and *driver* for the part of `ble-gatt` for one platform; *backend* is the Rust part of the app (see *Backend*) |
 | **probe** | not an approved word; Fini uses *identify* |
 | **candidate** (`AddModeCandidate`) | not an approved word; Fini uses *available device* |
 | **dial** | not an approved word; Fini uses *connect* |

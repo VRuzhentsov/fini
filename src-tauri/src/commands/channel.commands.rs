@@ -34,7 +34,7 @@ pub async fn channel_set_test_switch(
         }
     }
     if let Some(on) = bluetooth {
-        #[cfg(any(target_os = "linux", target_os = "android"))]
+        #[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
         {
             if !crate::services::bluetooth_channel_service::BluetoothAdapter::this_device().set_switch(on).await {
                 return Err("this device has no usable Bluetooth adapter".to_string());
@@ -43,7 +43,7 @@ pub async fn channel_set_test_switch(
                 space_sync.end_sessions_on(ChannelKind::Bluetooth);
             }
         }
-        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "windows")))]
         {
             let _ = on;
             return Err("Bluetooth is not available on this platform".to_string());

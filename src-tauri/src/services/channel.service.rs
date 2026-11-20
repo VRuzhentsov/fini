@@ -83,8 +83,6 @@ pub trait SessionHandler: Send + Sync {
     /// Whether a session with the peer runs on this channel now.
     fn has_session(&self, peer_device_id: &str, kind: ChannelKind) -> bool;
 
-    /// Ends the session with the peer on this channel, if one runs.
-    fn close_session(&self, peer_device_id: &str, kind: ChannelKind) -> bool;
 
     /// A session link that this device connected: runs the session on it
     /// until it ends. `on_held` runs once the session is claimed.
@@ -130,10 +128,7 @@ impl LinkHandlerSlot {
         self.get().is_some_and(|handlers| handlers.session.has_session(peer_device_id, kind))
     }
 
-    /// Ends the session with the peer on this channel, if one runs.
-    pub fn close_session(&self, peer_device_id: &str, kind: ChannelKind) -> bool {
-        self.get().is_some_and(|handlers| handlers.session.close_session(peer_device_id, kind))
-    }
+
 }
 
 /// Everything one channel service can do. Implemented by
@@ -252,7 +247,7 @@ impl LinkAcceptor {
         let path = paths.iter().find(|path| path.is_selected())?;
         match path.remote_addr() {
             iroh::TransportAddr::Ip(addr) => Some(addr.ip().to_string()),
-            #[cfg(any(target_os = "linux", target_os = "android"))]
+            #[cfg(all(feature = "ui-plane", any(target_os = "linux", target_os = "android", target_os = "windows")))]
             iroh::TransportAddr::Custom(addr) => ble_gatt_iroh::peer_address(addr).map(|peer| peer.0),
             _ => None,
         }

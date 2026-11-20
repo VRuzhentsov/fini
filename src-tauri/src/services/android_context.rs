@@ -1,10 +1,8 @@
 //! Shared Android JNI plumbing for Fini's own Kotlin classes
 //! (`com.fini.app.SyncForegroundService`).
 //!
-//! 1. **The Android context.** `ndk_context::initialize_android_context`
-//!    may run only once per process, and `tauri-plugin-ble-gatt` needs it
-//!    too, so Fini goes through the plugin's idempotent
-//!    `android_context::ensure()` instead of initializing it itself.
+//! 1. **The Android context.** The registered BLE plugin supplies an owned
+//!    Application reference. The runtime owns `ndk-context`.
 //! 2. **Loading app-defined classes from a natively-attached thread.**
 //!    `FindClass` (used implicitly by class-name strings in most `jni-rs`
 //!    calls) only searches the bootstrap classloader when called from a
@@ -14,15 +12,14 @@
 //!    never app-defined ones, so classes are resolved through the app's own
 //!    classloader instead.
 
-use jni::objects::{JObject, JValue};
+use jni::objects::{GlobalRef, JObject, JValue};
 use jni::{JNIEnv, JavaVM};
 
-/// Makes `ndk_context::android_context()` usable. Only after the
-/// Activity is up; see `tauri_plugin_ble_gatt::android_context`.
-pub fn ensure_bridged() -> Result<(), String> {
+/// The Application context retained by the registered plugin.
+fn resolve_context() -> Result<(JavaVM, GlobalRef), String> {
     #[cfg(feature = "ui-plane")]
     {
-        tauri_plugin_ble_gatt::android_context::ensure()
+        tauri_plugin_ble_gatt::android_context::get()
     }
     #[cfg(not(feature = "ui-plane"))]
     {
@@ -60,16 +57,6 @@ fn load_app_class<'a>(
     Ok(jni::objects::JClass::from(class_obj))
 }
 
-/// Attaches the current thread and resolves `ctx.context()` as a `JObject`,
-/// shared setup for every `call_static_*` helper below.
-fn resolve_context<'local>() -> Result<(JavaVM, JObject<'local>), String> {
-    ensure_bridged()?;
-    let ctx = ndk_context::android_context();
-    let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) }
-        .map_err(|err| format!("JavaVM::from_raw failed: {err}"))?;
-    let context_obj = unsafe { JObject::from_raw(ctx.context().cast()) };
-    Ok((vm, context_obj))
-}
 
 /// Calls an app-defined Kotlin object's `@JvmStatic fun name(context:
 /// Context): Unit` — e.g. `SyncForegroundService.start`.
@@ -78,7 +65,7 @@ fn resolve_context<'local>() -> Result<(JavaVM, JObject<'local>), String> {
 /// their own time. Errors are logged, not propagated — a failed request
 /// attempt leaves the app exactly where it already was (ungranted).
 pub fn call_static_context_void(class_binary_name: &str, method: &str) {
-    let (vm, context_obj) = match resolve_context() {
+    let (vm, application) = match resolve_context() {
         Ok(attached) => attached,
         Err(err) => {
             eprintln!("[android-context] bridge unavailable, not calling {class_binary_name}.{method}: {err}");
@@ -93,7 +80,8 @@ pub fn call_static_context_void(class_binary_name: &str, method: &str) {
         }
     };
 
-    let class = match load_app_class(&mut env, &context_obj, class_binary_name) {
+    let context_obj = application.as_obj();
+    let class = match load_app_class(&mut env, context_obj, class_binary_name) {
         Ok(class) => class,
         Err(err) => {
             eprintln!("[android-context] loading {class_binary_name} failed: {err}");
@@ -102,7 +90,7 @@ pub fn call_static_context_void(class_binary_name: &str, method: &str) {
     };
     if let Err(err) =
         env.call_static_method(class, method, "(Landroid/content/Context;)V", &[JValue::Object(
-            &context_obj,
+            context_obj,
         )])
     {
         let _ = env.exception_describe();

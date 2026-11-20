@@ -21,40 +21,38 @@ on:
     inputs:
       push_cache:
         description: >-
-          Whether this caller may push build caches to GHCR. False for
-          pull requests from forks, whose token cannot write packages.
+          Whether this run writes the GHCR layer cache. True only for a pull
+          request from a branch of this repository; release, dispatch and fork
+          runs only read the cache. The caller that gives true also gives
+          `packages: write`.
         type: boolean
-        default: true
+        default: false
       run_id_prefix:
-        description: Distinguishes one caller's E2E run directory and containers from another's.
+        description: Distinguishes one caller's E2E run directory from another's.
         type: string
         default: gate
 
-# A called workflow does not inherit the caller's `env`, so the version
-# release-tag.yml pins at its own top never reached here -- `node-version`
-# resolved to the empty string and setup-node took whatever the runner image
-# happened to ship. It shipped 24, which is why nothing broke; a runner image
-# bump would have moved the gate off the release's Node without a word. The
-# gate pins its own.
+# The Node, Rust and system packages of the gate come from the `linux` image
+# (containers/linux/Containerfile), not from the runner, so a runner image
+# bump does not move the gate off the release's toolchain. The runner gives
+# only the container engine, and the Node for `npm version` below.
 env:
-  NODE_VERSION: "24"
+  # The container engine of the CI jobs (docs/container.md, "Container engine").
+  CONTAINER_ENGINE: podman
+  # A build from scratch gains nothing from incremental files, and line tables
+  # are enough for test panics; both keep the build inside the runner's disk.
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
   quality-gates:
     name: Quality Gates
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+    runs-on: ubuntu-26.04
+    # No `permissions:` here: the job gets the ones of the caller. ci.yml gives
+    # `packages: write` for the cache; the release workflows give read only.
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
 
       # Only meaningful when the ref is a release tag. On a pull request
       # `GITHUB_REF_NAME` is a branch, and `npm version <branch>` would
@@ -77,35 +75,7 @@ jobs:
           grep -q "^version = \"$version\"" src-tauri/Cargo.lock
           grep -q "\"version\": \"$version\"" src-tauri/tauri.conf.json
 
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-
-      - name: Resolve E2E image cache settings
-        shell: bash
-        env:
-          PUSH_CACHE: ${{ inputs.push_cache && '1' || '0' }}
-          RUN_ID_PREFIX: ${{ inputs.run_id_prefix }}
-        run: |
-          set -euo pipefail
-          owner="${GITHUB_REPOSITORY_OWNER,,}"
-          echo "FINI_BE_CACHE_IMAGE_PREFIX=ghcr.io/${owner}/fini" >> "$GITHUB_ENV"
-          echo "FINI_BE_CACHE_PUSH=${PUSH_CACHE}" >> "$GITHUB_ENV"
-          echo "FINI_E2E_CACHE_IMAGE_PREFIX=ghcr.io/${owner}/fini" >> "$GITHUB_ENV"
-          echo "FINI_E2E_CACHE_PUSH=${PUSH_CACHE}" >> "$GITHUB_ENV"
-          echo "CONTAINER=docker" >> "$GITHUB_ENV"
-          echo "FINI_E2E_CI_RUN_ID=${RUN_ID_PREFIX}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
-
-      - name: Install npm dependencies
-        run: npm ci
-
-      # The backend tests compile from scratch inside Docker; the runner's
+      # The backend tests compile from scratch in the container; the runner's
       # preinstalled SDKs leave too little disk for that.
       - name: Free disk space
         uses: jlumbroso/free-disk-space@v1.3.1
@@ -115,34 +85,63 @@ jobs:
           large-packages: false
 
       - name: Compile backend tests
-        run: npm run gate:be-compile
+        uses: ./.github/actions/container-stage
+        with:
+          engine: ${{ env.CONTAINER_ENGINE }}
+          image: linux
+          stage: build
+          push-cache: ${{ inputs.push_cache }}
+          pass-env: CARGO_INCREMENTAL CARGO_PROFILE_DEV_DEBUG
+          run: cargo test --manifest-path src-tauri/Cargo.toml --no-run --features cli-plane,ui-plane,desktop-updater
 
       - name: Run backend tests
-        run: npm run gate:be-unit
+        uses: ./.github/actions/container-stage
+        with:
+          engine: ${{ env.CONTAINER_ENGINE }}
+          image: linux
+          stage: build
+          pass-env: CARGO_INCREMENTAL CARGO_PROFILE_DEV_DEBUG
+          run: cargo test --manifest-path src-tauri/Cargo.toml --features cli-plane,ui-plane,desktop-updater
 
-      - name: Build runtime container
+      - name: Build CLI container image
+        id: cli_image
+        uses: ./.github/actions/container-stage
+        with:
+          engine: ${{ env.CONTAINER_ENGINE }}
+          image: linux
+          stage: runtime
+          push-cache: ${{ inputs.push_cache }}
+
+      - name: Run CLI image smoke check
+        env:
+          IMAGE: ${{ steps.cli_image.outputs.image }}
         run: |
-          docker buildx build \
-            --target runtime \
-            --load \
-            --cache-from type=gha,scope=fini-runtime \
-            --cache-to type=gha,mode=max,scope=fini-runtime \
-            -t fini-runtime-ci \
-            .
+          "$CONTAINER_ENGINE" run --rm "$IMAGE" --help
 
-      - name: Run runtime smoke check
-        run: docker run --rm fini-runtime-ci --help
-
-      - name: Build dev-runner image
-        run: npm run gate:e2e:build-image
-
+      # The `linux` `e2e` stage gives the toolchain, Playwright, Xvfb and the
+      # GUI libraries. `gate:e2e:run` builds the e2e binaries in it and runs
+      # scripts/e2e-runner.sh (FINI_E2E_CONTAINER_RUNNER=1).
       - name: Run desktop e2e flow
-        run: npm run gate:e2e:run
+        uses: ./.github/actions/container-stage
+        env:
+          FINI_E2E_CONTAINER_RUNNER: "1"
+          FINI_E2E_CI_RUN_ID: ${{ inputs.run_id_prefix }}-${{ github.run_id }}-${{ github.run_attempt }}
+        with:
+          engine: ${{ env.CONTAINER_ENGINE }}
+          image: linux
+          stage: e2e
+          push-cache: ${{ inputs.push_cache }}
+          pass-env: CARGO_INCREMENTAL CARGO_PROFILE_DEV_DEBUG FINI_E2E_CONTAINER_RUNNER FINI_E2E_CI_RUN_ID
+          run: npm ci && npm run gate:e2e:run
 
       - name: Print E2E artifacts on failure
         if: failure()
-        run: npm run gate:e2e:artifacts
-
-      - name: Cleanup E2E containers
-        if: always()
-        run: npm run gate:e2e:cleanup
+        uses: ./.github/actions/container-stage
+        env:
+          FINI_E2E_CI_RUN_ID: ${{ inputs.run_id_prefix }}-${{ github.run_id }}-${{ github.run_attempt }}
+        with:
+          engine: ${{ env.CONTAINER_ENGINE }}
+          image: linux
+          stage: e2e
+          pass-env: FINI_E2E_CI_RUN_ID
+          run: npm run gate:e2e:artifacts

@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 
 /**
@@ -69,10 +70,15 @@ class SyncForegroundService : Service() {
     }
 
     companion object {
+        private const val TAG = "SyncForegroundService"
         private const val CHANNEL_ID = "fini.sync"
         private const val NOTIFICATION_ID = 4211
         private const val EXTRA_STATUS = "status"
         private const val DEFAULT_STATUS = "Syncing with your devices"
+
+        /// Set when Android refused `start`; see `startIfRefused`.
+        @Volatile
+        private var startRefused = false
 
         @JvmStatic
         fun start(context: Context) {
@@ -80,10 +86,34 @@ class SyncForegroundService : Service() {
             // startForegroundService is mandatory from Android 8 when the app
             // is not already in the foreground; it obliges the service to call
             // startForeground within ~5s, which onStartCommand does above.
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+                startRefused = false
+            } catch (error: IllegalStateException) {
+                // From Android 12, an app in the background may not start a
+                // foreground service (ForegroundServiceStartNotAllowedException,
+                // an IllegalStateException). Rust asks for the service once,
+                // so a refusal used to be final: on a Pixel 6 Pro, Fini sent to
+                // the background before its first start was frozen about 1 min
+                // later, its advertisement stayed on, and centrals that
+                // connected got no answer to their GATT reads.
+                // The Activity tries again when it comes to the foreground.
+                startRefused = true
+                Log.w(TAG, "foreground service start refused; trying again when the app is in the foreground", error)
+            }
+        }
+
+        /// Starts the service again if Android refused the last `start`.
+        /// For `MainActivity.onResume`: an app with a visible Activity may
+        /// start a foreground service.
+        @JvmStatic
+        fun startIfRefused(context: Context) {
+            if (startRefused) {
+                start(context.applicationContext)
             }
         }
 

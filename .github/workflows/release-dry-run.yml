@@ -9,9 +9,11 @@ on:
         default: true
         type: boolean
 
+# No `packages: write`: this run only reads the GHCR layer cache (only a pull
+# request from a branch of this repository writes it), and it publishes no
+# image.
 permissions:
   contents: read
-  packages: write
   id-token: write
 
 concurrency:
@@ -19,6 +21,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  # The container engine of the CI jobs (docs/container.md, "Container engine").
+  CONTAINER_ENGINE: podman
   NODE_VERSION: "24"
 
 jobs:
@@ -80,12 +84,14 @@ jobs:
     needs: signing-readiness
     permissions:
       contents: read
-      packages: write
     uses: ./.github/workflows/quality-gates.yml
     with:
-      push_cache: true
+      # False on a dispatch: this run only reads the cache.
+      push_cache: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
       run_id_prefix: release-prep
 
+  # The same matrix as release-tag.yml: the desktop app for x64 and arm64,
+  # and the static musl CLI for x64 only, in the `linux` `build` image.
   build-linux:
     name: Build Linux Artifact (${{ matrix.arch }})
     if: github.event_name == 'workflow_dispatch' && inputs.full_matrix == true
@@ -94,58 +100,38 @@ jobs:
       matrix:
         include:
           - arch: x64
-            runner: ubuntu-latest
+            runner: ubuntu-26.04
             rust_target: x86_64-unknown-linux-gnu
+            cli_target: x86_64-unknown-linux-musl
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-26.04-arm
             rust_target: aarch64-unknown-linux-gnu
+            cli_target: ""
     runs-on: ${{ matrix.runner }}
     needs: quality-gates
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Install Linux system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libasound2-dev \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            xdg-utils \
-            patchelf
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.rust_target }}
-
-      - name: Restore Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            src-tauri -> target
-          shared-key: release-rust-${{ matrix.rust_target }}
-
-      - name: Install npm dependencies
-        run: npm ci
-
-      - name: Prepare AppImage GTK bundler
-        run: scripts/prepare-tauri-linuxdeploy-gtk-plugin.sh
-
       - name: Build Linux bundles
+        uses: ./.github/actions/container-stage
         env:
           FINI_TAURI_UPDATER_PUBKEY: ${{ secrets.FINI_TAURI_UPDATER_PUBKEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npm run tauri build -- --features ui-plane,desktop-updater --target ${{ matrix.rust_target }} --bundles appimage,deb,rpm -- --bin fini-app
+          # The container has no FUSE; linuxdeploy extracts itself instead.
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        with:
+          engine: ${{ env.CONTAINER_ENGINE }}
+          image: linux
+          stage: build
+          # False on a dispatch: this run only reads the cache.
+          push-cache: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+          pass-env: FINI_TAURI_UPDATER_PUBKEY TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD APPIMAGE_EXTRACT_AND_RUN
+          run: |
+            npm ci
+            scripts/prepare-tauri-linuxdeploy-gtk-plugin.sh
+            npm run tauri build -- --features ui-plane,desktop-updater --target ${{ matrix.rust_target }} --bundles appimage,deb,rpm -- --bin fini-app
 
       - name: Verify AppImage host runtime boundary
         run: |
@@ -179,11 +165,18 @@ jobs:
             exit 1
           fi
 
-      - name: Build Linux CLI
+      - name: Build Linux CLI (static musl)
+        if: matrix.cli_target != ''
+        uses: ./.github/actions/container-stage
         env:
           FINI_TAURI_UPDATER_PUBKEY: ${{ secrets.FINI_TAURI_UPDATER_PUBKEY }}
           FINI_CLI_UPDATE_REPOSITORY: ${{ github.repository }}
-        run: cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin fini --features cli-plane --target ${{ matrix.rust_target }}
+        with:
+          engine: ${{ env.CONTAINER_ENGINE }}
+          image: linux
+          stage: build
+          pass-env: FINI_TAURI_UPDATER_PUBKEY FINI_CLI_UPDATE_REPOSITORY
+          run: cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin fini --features cli-plane --target ${{ matrix.cli_target }}
 
       - name: Collect Linux release files
         run: |
@@ -222,30 +215,38 @@ jobs:
             exit 1
           fi
 
-          cli_binary="src-tauri/target/${{ matrix.rust_target }}/release/fini"
+      - name: Collect Linux CLI archive
+        if: matrix.cli_target != ''
+        run: |
+          set -euo pipefail
+          short_sha="${GITHUB_SHA::7}"
+          cli_binary="src-tauri/target/${{ matrix.cli_target }}/release/fini"
           if [ ! -f "$cli_binary" ]; then
             echo "Expected Linux CLI binary was not produced: $cli_binary" >&2
             exit 1
           fi
-          tar -C "$(dirname "$cli_binary")" -czf "prep/linux/fini-prep-${short_sha}-linux-${{ matrix.rust_target }}-cli.tar.gz" fini
+          tar -C "$(dirname "$cli_binary")" -czf "prep/linux/fini-prep-${short_sha}-linux-${{ matrix.cli_target }}-cli.tar.gz" fini
 
       - name: Verify staged Linux CLI archive
+        if: matrix.cli_target != ''
         run: |
           set -euo pipefail
           short_sha="${GITHUB_SHA::7}"
           expected_version="$(sed -n -E '/^\[package\]/,/^\[/{s/^version = "([^"]+)"/\1/p}' src-tauri/Cargo.toml | head -n 1)"
           scripts/verify-linux-cli-archive.sh \
-            "prep/linux/fini-prep-${short_sha}-linux-${{ matrix.rust_target }}-cli.tar.gz" \
+            "prep/linux/fini-prep-${short_sha}-linux-${{ matrix.cli_target }}-cli.tar.gz" \
             "$expected_version" \
             "${{ matrix.arch }}"
 
+      # zipsign comes from the cargo of the runner image.
       - name: Sign staged Linux CLI archive for standalone updater
+        if: matrix.cli_target != ''
         env:
           FINI_CLI_ZIPSIGN_PRIVATE_KEY: ${{ secrets.FINI_CLI_ZIPSIGN_PRIVATE_KEY }}
         run: |
           set -euo pipefail
           short_sha="${GITHUB_SHA::7}"
-          archive="prep/linux/fini-prep-${short_sha}-linux-${{ matrix.rust_target }}-cli.tar.gz"
+          archive="prep/linux/fini-prep-${short_sha}-linux-${{ matrix.cli_target }}-cli.tar.gz"
           key_file="${RUNNER_TEMP}/fini-cli-zipsign.key"
           printf '%s' "$FINI_CLI_ZIPSIGN_PRIVATE_KEY" | base64 --decode > "$key_file"
           chmod 600 "$key_file"
@@ -307,7 +308,17 @@ jobs:
           FINI_TAURI_UPDATER_PUBKEY: ${{ secrets.FINI_TAURI_UPDATER_PUBKEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npm run tauri build -- --features ui-plane,desktop-updater,cli-plane --target ${{ matrix.rust_target }} --bundles nsis
+        run: npm run tauri build -- --features ui-plane,desktop-updater --target ${{ matrix.rust_target }} --bundles nsis -- --bin fini-app
+
+      # Install the setup.exe as a user does, then start the desktop app.
+      # A console program, or an app that stops at once, is the CLI in the
+      # installer: the desktop window does not open on Windows.
+      - name: Verify Windows desktop app
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem -Path "src-tauri/target/${{ matrix.rust_target }}/release/bundle/nsis" -Filter "*-setup.exe" | Select-Object -First 1
+          if (-not $setup) { throw "Expected Windows installer was not produced" }
+          ./scripts/verify-windows-desktop-installer.ps1 -Installer $setup.FullName
 
       - name: Build Windows CLI
         env:
@@ -371,28 +382,24 @@ jobs:
   build-android:
     name: Build Android Artifact
     if: github.event_name == 'workflow_dispatch' && inputs.full_matrix == true
-    runs-on: ubuntu-latest
+    # The JDK, the Android SDK and NDK, Rust with the Android targets and Node
+    # come from the `android` `build` image, not from the runner.
+    runs-on: ubuntu-26.04
     needs: quality-gates
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
+      # The android `build` image is about 8.4 GB, and the release APK and
+      # AAB compile from scratch in the container; the runner's preinstalled
+      # SDKs leave too little disk for that. The Android SDK of the runner is
+      # not used: the image has its own.
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
         with:
-          distribution: temurin
-          java-version: "17"
-          cache: gradle
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          # Without this the action installs its default set, `tools
-          # platform-tools`. Google has removed the legacy `tools` package from
-          # the SDK repository, so sdkmanager exits 1 and the job dies before
-          # any repo code runs. Same fix as ci.yml's emulator lane; this one was
-          # missed there and took the v0.3.9 release build down with it.
-          packages: platform-tools
+          tool-cache: false
+          docker-images: false
+          large-packages: false
 
       - name: Restore Android project cache
         uses: actions/cache@v4
@@ -403,85 +410,72 @@ jobs:
           restore-keys: |
             android-project-${{ runner.os }}-
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Add Android Rust targets
-        run: rustup target add aarch64-linux-android
-
-      - name: Restore Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            src-tauri -> target
-          shared-key: release-rust
-
-      - name: Install npm dependencies
-        run: npm ci
-
       - name: Build Android APK and AAB (arm64)
-        run: npm run tauri android build -- --features ui-plane --ci --apk --aab --target aarch64
+        uses: ./.github/actions/container-stage
+        with:
+          engine: ${{ env.CONTAINER_ENGINE }}
+          image: android
+          stage: build
+          # False on a dispatch: this run only reads the cache.
+          push-cache: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+          run: npm ci && npm run tauri android build -- --features ui-plane --ci --apk --aab --target aarch64
 
-      - name: Prepare Android keystore
+      # apksigner and jarsigner come from the same image. The keystore is
+      # written in the container only, and goes away with it.
+      - name: Sign Android artifacts
+        uses: ./.github/actions/container-stage
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/tmp"
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$HOME/tmp/release.keystore"
-
-      - name: Sign Android artifacts
-        env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: |
-          set -euo pipefail
-          unsigned_apk="$(find src-tauri/gen/android/app/build/outputs/apk -name '*-unsigned.apk' | head -n 1)"
-          if [ -z "$unsigned_apk" ]; then
-            echo "Unsigned APK not found" >&2
-            exit 1
-          fi
-          unsigned_aab="$(find src-tauri/gen/android/app/build/outputs/bundle -name '*.aab' | head -n 1)"
-          if [ -z "$unsigned_aab" ]; then
-            echo "Unsigned AAB not found" >&2
-            exit 1
-          fi
-          apksigner_path="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort | tail -n 1)"
-          if [ -z "$apksigner_path" ]; then
-            echo "apksigner not found in Android build-tools" >&2
-            exit 1
-          fi
-          if ! command -v jarsigner >/dev/null 2>&1; then
-            echo "jarsigner not found" >&2
-            exit 1
-          fi
-          short_sha="${GITHUB_SHA::7}"
-          signed_apk="fini-prep-${short_sha}-android.apk"
-          "$apksigner_path" sign \
-            --ks "$HOME/tmp/release.keystore" \
-            --ks-pass "pass:${ANDROID_KEYSTORE_PASSWORD}" \
-            --ks-key-alias "${ANDROID_KEY_ALIAS}" \
-            --key-pass "pass:${ANDROID_KEY_PASSWORD}" \
-            --out "$signed_apk" \
-            "$unsigned_apk"
-          "$apksigner_path" verify "$signed_apk"
+        with:
+          engine: ${{ env.CONTAINER_ENGINE }}
+          image: android
+          stage: build
+          pass-env: ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD
+          run: |
+            keystore=/tmp/release.keystore
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+            unsigned_apk="$(find src-tauri/gen/android/app/build/outputs/apk -name '*-unsigned.apk' | head -n 1)"
+            if [ -z "$unsigned_apk" ]; then
+              echo "Unsigned APK not found" >&2
+              exit 1
+            fi
+            unsigned_aab="$(find src-tauri/gen/android/app/build/outputs/bundle -name '*.aab' | head -n 1)"
+            if [ -z "$unsigned_aab" ]; then
+              echo "Unsigned AAB not found" >&2
+              exit 1
+            fi
+            apksigner_path="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort | tail -n 1)"
+            if [ -z "$apksigner_path" ]; then
+              echo "apksigner not found in Android build-tools" >&2
+              exit 1
+            fi
+            if ! command -v jarsigner >/dev/null 2>&1; then
+              echo "jarsigner not found" >&2
+              exit 1
+            fi
+            short_sha="${GITHUB_SHA::7}"
+            signed_apk="fini-prep-${short_sha}-android.apk"
+            "$apksigner_path" sign \
+              --ks "$keystore" \
+              --ks-pass "pass:${ANDROID_KEYSTORE_PASSWORD}" \
+              --ks-key-alias "${ANDROID_KEY_ALIAS}" \
+              --key-pass "pass:${ANDROID_KEY_PASSWORD}" \
+              --out "$signed_apk" \
+              "$unsigned_apk"
+            "$apksigner_path" verify "$signed_apk"
 
-          signed_aab="fini-prep-${short_sha}-android.aab"
-          jarsigner \
-            -keystore "$HOME/tmp/release.keystore" \
-            -storepass "${ANDROID_KEYSTORE_PASSWORD}" \
-            -keypass "${ANDROID_KEY_PASSWORD}" \
-            -signedjar "$signed_aab" \
-            "$unsigned_aab" \
-            "${ANDROID_KEY_ALIAS}"
-          jarsigner -verify "$signed_aab"
+            signed_aab="fini-prep-${short_sha}-android.aab"
+            jarsigner \
+              -keystore "$keystore" \
+              -storepass "${ANDROID_KEYSTORE_PASSWORD}" \
+              -keypass "${ANDROID_KEY_PASSWORD}" \
+              -signedjar "$signed_aab" \
+              "$unsigned_aab" \
+              "${ANDROID_KEY_ALIAS}"
+            jarsigner -verify "$signed_aab"
 
       - name: Collect Android native debug symbols
         run: |
@@ -528,41 +522,28 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # Builds the CLI runtime image (containers/linux/Containerfile, stage
+  # `runtime`) with the GHCR layer cache (read only), and pushes no image.
   build-docker-image:
     name: Build Docker Image Cache
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs: quality-gates
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Resolve image name
-        id: image
-        uses: actions/github-script@v8
+      - name: Build CLI image with cache
+        id: cli_image
+        uses: ./.github/actions/container-stage
         with:
-          result-encoding: string
-          script: |
-            return `ghcr.io/${context.repo.owner.toLowerCase()}/fini`;
+          engine: ${{ env.CONTAINER_ENGINE }}
+          image: linux
+          stage: runtime
+          # False on a dispatch: this run only reads the cache.
+          push-cache: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
 
-      - name: Generate docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ steps.image.outputs.result }}
-          tags: |
-            type=sha,format=long,prefix=prep-
-
-      - name: Build Docker image with cache
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          target: runtime
-          push: false
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=fini-image
-          cache-to: type=gha,mode=max,scope=fini-image
+      - name: Run CLI image smoke check
+        env:
+          IMAGE: ${{ steps.cli_image.outputs.image }}
+        run: |
+          "$CONTAINER_ENGINE" run --rm "$IMAGE" --help

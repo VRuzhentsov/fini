@@ -11,6 +11,12 @@ Kept terse on purpose: this file grows over time. Each rule stays one short para
 
 ## Rules
 
+**Use object-oriented programming (OOP) as the default.** Put domain behavior
+on its owning object: Rust structs or enums with `impl`, or TypeScript classes.
+Put parsing and conversion on the value type or its codec, even when pure.
+Use existing owners before adding types. Check each free helper against the
+limited exceptions in `docs/architecture/code-design.md` during code review.
+
 **Shape the code as `docs/architecture/code-design.md` says.** Read it before
 you write or change code, and do its steps in "Before you write code" for each
 change. Objects own their state and behavior; a behavior that every

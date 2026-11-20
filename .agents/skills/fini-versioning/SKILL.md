@@ -49,9 +49,9 @@ The release commit should already contain the release version metadata before th
 
 Version metadata mutation belongs in `cargo xtask` because it parses and edits multiple manifest formats.
 
-Makefile should orchestrate the release and call `cargo xtask` for the metadata update. CI may call the same `cargo xtask` command directly if it needs version verification or metadata sync.
+The Release Button workflow (`.github/workflows/release-button.yml`) calls `cargo xtask release-version <x.y.z>` for the release metadata update; releases run only in CI. The release workflows may call the same `cargo xtask` command directly if they need version verification or metadata sync. The Makefile is for local development only.
 
-Follow `fini-scripting` for details on balancing Makefile, `npm run`, and `cargo xtask`.
+Follow `fini-scripting` for details on balancing `npm run`, `cargo xtask` and the local Makefile.
 
 ## Android Versioning
 

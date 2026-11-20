@@ -85,11 +85,11 @@ For destructive actions, confirm the target from current CLI state and use the m
 
 ## Development And Runtime Checks
 
-Use Makefile targets when validating the binary from this repo:
+On your own computer, use these Makefile targets when validating the binary from this repo (Make is local only: `fini-scripting`, "Make is local only"):
 
 | Need | Command |
 |---|---|
-| Build release app binary | `make build` |
+| Build a local release-profile app binary (not a release; releases run in CI) | `make build` |
 | Validate runtime container exposes CLI | `make runtime-smoke` |
 | Build/update runtime container | `make runtime-image` |
 

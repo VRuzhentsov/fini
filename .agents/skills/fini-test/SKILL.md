@@ -19,15 +19,15 @@ Make every test claim defensible:
 
 | Surface | Runner | Entry point | Location |
 |---|---|---|---|
-| FE unit | Jest + `@vue/test-utils` + jsdom | `npm run test:unit` (no Makefile wrapper) | `src/spec/**/*.spec.ts` |
-| BE unit | `cargo test` | `npm run gate:be-unit` (local shortcut `make pr-gate-be-unit`) | inline `#[cfg(test)]` modules in `src-tauri/src/**/*.rs` |
-| E2E single-app UI | Playwright + `@srsholmes/tauri-playwright` | local: `make e2e-headed`; CI: `npm run gate:e2e:run` (project `ui`) | `specs/e2e/ui/tests/*.spec.ts` |
-| E2E multi-device | Playwright + the `testDevices` fixture (ADR-0013) | local: `make e2e-headed`; CI: `npm run gate:e2e:run` (project `multi-device`) | `specs/e2e/multi-device/tests/*.spec.ts` |
+| FE unit | Jest + `@vue/test-utils` + jsdom | local: `npm run test:unit`; CI: job `fe-unit-tests` (`ci.yml`), `npm run test:unit` in the `linux` `build` image | `src/spec/**/*.spec.ts` |
+| BE unit | `cargo test` | local: `npm run gate:be-unit` (local shortcut `make pr-gate-be-unit`); CI: job Quality Gates (`quality-gates.yml`), `cargo test` in the `linux` `build` image | inline `#[cfg(test)]` modules in `src-tauri/src/**/*.rs` |
+| E2E single-app UI | Playwright + `@srsholmes/tauri-playwright` | local: `make e2e-headed`; CI: job Quality Gates (`quality-gates.yml`), `npm run gate:e2e:run` (project `ui`) | `specs/e2e/ui/tests/*.spec.ts` |
+| E2E multi-device | Playwright + the `testDevices` fixture (ADR-0013) | local: `make e2e-headed`; CI: job Quality Gates (`quality-gates.yml`), `npm run gate:e2e:run` (project `multi-device`) | `specs/e2e/multi-device/tests/*.spec.ts` |
 | E2E device support (now: Android) | project `device-support`, virtual Android test devices | `npm run test:e2e:android`, local and CI (job `android-e2e`) | `specs/e2e/device-support/tests/*.spec.ts` |
 | E2E CLI-only | Playwright + `createCliClient()` | project `cli` in `specs/e2e/playwright.config.ts` | `specs/e2e/*.spec.ts` (e.g. `reminder-bridge.spec.ts`) |
 | Android on a physical phone | manual device automation | route to `fini-android-testing` | covered by that skill |
 
-CI parity: the workflows call `npm run gate:fe-unit`, `gate:be-compile`, `gate:be-unit`, the `gate:e2e:*` steps and `test:e2e:android` (`scripts/ci-gate.mts`, `scripts/e2e-android.mts`). The `make pr-gate-*` targets are local shortcuts to the same scripts.
+CI parity: the workflows build the same `containers/` stages with the container engine of CI (`.github/actions/container-stage`; `docs/container.md`, "Container engine") and run the same commands in them: `npm run test:unit`, `cargo test`, `npm run gate:e2e:run` and `npm run test:e2e:android`. On a developer's computer, `npm run gate:*` and `npm run test:e2e:android` (`scripts/ci-gate.mts`, `scripts/e2e-android.mts`) build and run the same stages with the local container engine; the `make pr-gate-*` targets are local shortcuts to them.
 
 ## Choose the right test category
 
@@ -78,7 +78,7 @@ Components:
 npm run test:unit
 ```
 
-Underlying command: `jest --runInBand`. CI runs the same suite with `npm run gate:fe-unit`, which builds the `fe-unit-test` Dockerfile stage.
+Underlying command: `jest --runInBand`. `npm run gate:fe-unit` (local shortcut `make pr-gate-fe-unit`) runs the same suite in the `linux` `build` image (`containers/linux/Containerfile`); CI runs `npm run test:unit` in the same image.
 
 ### Backend unit
 
@@ -86,7 +86,7 @@ Underlying command: `jest --runInBand`. CI runs the same suite with `npm run gat
 npm run gate:be-unit
 ```
 
-This runs `gate:be-compile` first, then the `be-unit-test` Dockerfile stage which executes `cargo test --manifest-path src-tauri/Cargo.toml`. To iterate locally without containers, run `cargo test --manifest-path src-tauri/Cargo.toml` directly.
+This runs `cargo test --manifest-path src-tauri/Cargo.toml --features cli-plane,ui-plane,desktop-updater` in the `linux` `build` image (`containers/linux/Containerfile`); `gate:be-compile` only compiles the tests. To iterate locally without containers, run `cargo test --manifest-path src-tauri/Cargo.toml` directly.
 
 ### E2E — visible local run (single-app UI + multi-device)
 
@@ -102,7 +102,7 @@ Builds `fini-app` with `--features ui-plane,devtools` and `fini` with `--feature
 npm run gate:e2e:build-image && npm run gate:e2e:run
 ```
 
-The dev-runner image starts the virtual Linux test devices. `make pr-gate-e2e` (or `make e2e-ci`) runs the same two steps.
+The `linux` `e2e` image starts the virtual Linux test devices. CI runs `npm run gate:e2e:run` in the job Quality Gates (`quality-gates.yml`). On a developer's computer, `make pr-gate-e2e` (or `make e2e-ci`) runs the same two steps.
 
 ### E2E — `device-support` on virtual Android
 
