@@ -386,7 +386,7 @@ pub fn run() {
             services::ble_plugin::install(app.handle());
             let app_handle = app.handle();
 
-            let db_path = app_db_path(&app_handle)?;
+            let db_path = app_db_path(app_handle)?;
             match DbPool::open(&db_path) {
                 Ok(pool) => {
                     app.manage(StartupRecoveryState(std::sync::Mutex::new(None)));
@@ -394,7 +394,7 @@ pub fn run() {
                         settings::automatic_updates_enabled(&mut *pool.get()?).unwrap_or(true);
                     app.manage(pool);
                     services::desktop_update::spawn_startup_auto_update(
-                        &app_handle,
+                        app_handle,
                         auto_updates_enabled,
                     );
                     #[cfg(target_os = "linux")]
@@ -406,7 +406,7 @@ pub fn run() {
                 }
                 Err(error) => match unsupported_schema_startup_recovery(error.clone()) {
                     Some(recovery) => {
-                        services::desktop_update::spawn_startup_auto_update(&app_handle, true);
+                        services::desktop_update::spawn_startup_auto_update(app_handle, true);
                         app.manage(StartupRecoveryState(std::sync::Mutex::new(Some(recovery))));
                         return Ok(());
                     }
@@ -417,12 +417,12 @@ pub fn run() {
             #[cfg(feature = "devtools")]
             app.manage(NotificationObserverState::new());
 
-            setup_notifications(&app_handle);
+            setup_notifications(app_handle);
 
             let pool = app.state::<DbPool>().inner().clone();
             let initial_theme = settings::theme_hint(&mut *pool.get()?);
-            settings::apply_native_theme(&app_handle, &initial_theme);
-            settings::spawn_theme_watcher(&app_handle);
+            settings::apply_native_theme(app_handle, &initial_theme);
+            settings::spawn_theme_watcher(app_handle);
 
             #[cfg(all(
                 feature = "ui-plane",
@@ -435,15 +435,15 @@ pub fn run() {
                 }
             }
 
-            reconciler::run(&app_handle, &pool);
+            reconciler::run(app_handle, &pool);
 
-            resume_watcher::spawn(&app_handle);
+            resume_watcher::spawn(app_handle);
 
             // The composition root (ADR-0010 D5, D15): the identity first,
             // then the channels, then the services that use them, and the
             // channels' link handlers last.
             use services::channel_service::{ChannelService, LinkHandlers};
-            let data_dir = app_data_dir(&app_handle);
+            let data_dir = app_data_dir(app_handle);
             let identity = repositories::DeviceRepository::new(&mut *pool.get()?)
                 .load_or_create_identity(&data_dir)?;
             let bus = std::sync::Arc::new(services::event_bus_service::EventBus::default());

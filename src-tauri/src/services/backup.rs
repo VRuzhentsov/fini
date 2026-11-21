@@ -1170,7 +1170,7 @@ fn mapped_quest(quest: &Quest, space_map: &HashMap<String, String>) -> Quest {
         title: quest.title.clone(),
         description: quest.description.clone(),
         status: quest.status.clone(),
-        energy: quest.energy.clone(),
+        energy: quest.energy,
         priority: quest.priority,
         due: quest.due.clone(),
         due_time: quest.due_time.clone(),

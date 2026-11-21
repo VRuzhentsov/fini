@@ -288,15 +288,6 @@ impl NetworkChannelService {
         self.serve(endpoint).await;
     }
 
-    /// Binds the endpoint on a free port, serves it, and returns the port.
-    #[cfg(test)]
-    pub(crate) async fn spawn_server_on_free_port(self: Arc<Self>) -> u16 {
-        let endpoint = self.bind(0).await.expect("bind the network endpoint");
-        let port = bound_port(&endpoint).expect("the network endpoint has an IPv4 socket");
-        tokio::spawn(async move { self.serve(endpoint).await });
-        port
-    }
-
     async fn serve(self: Arc<Self>, endpoint: Endpoint) {
         let Some(handlers) = self.handlers.get().cloned() else {
             log::warn!("[transport][network] no link handlers; not serving");
@@ -329,7 +320,7 @@ impl NetworkChannelService {
             }
         };
         let any_pair_on = tokio::task::block_in_place(|| {
-            !ChannelRepository::new(&mut *self.pool.connection())
+            !ChannelRepository::new(&mut self.pool.connection())
                 .peers_with_channel_enabled(ChannelKind::Network)
                 .is_empty()
         });
@@ -621,7 +612,7 @@ impl NetworkChannelService {
 
     fn pinned_key(&self, peer_id: &str) -> Option<String> {
         tokio::task::block_in_place(|| {
-            DeviceRepository::new(&mut *self.pool.connection()).pinned_key(peer_id)
+            DeviceRepository::new(&mut self.pool.connection()).pinned_key(peer_id)
         })
     }
 
@@ -685,7 +676,7 @@ impl ChannelService for NetworkChannelService {
     /// channel on and is heard.
     fn keep_serving(self: Arc<Self>) {
         let peers = tokio::task::block_in_place(|| {
-            ChannelRepository::new(&mut *self.pool.connection())
+            ChannelRepository::new(&mut self.pool.connection())
                 .peers_with_channel_enabled(ChannelKind::Network)
         });
         for peer in peers {

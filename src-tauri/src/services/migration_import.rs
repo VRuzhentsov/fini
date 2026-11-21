@@ -1,3 +1,6 @@
+// No caller yet: only the tests of this module use it.
+#![cfg_attr(not(test), allow(dead_code))]
+
 use std::fs;
 use std::path::Path;
 

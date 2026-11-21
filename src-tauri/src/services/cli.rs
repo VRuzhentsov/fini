@@ -512,6 +512,7 @@ struct SyncResolveCustomArgs {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::enum_variant_names)] // The variant names are the CLI command names.
 enum SettingsCommand {
     ThemeGet,
     ThemeSet(SettingsThemeSetArgs),
@@ -1725,14 +1726,12 @@ fn format_generic_summary(value: &Value) -> String {
         Value::Object(map) => {
             let fields: Vec<_> = map
                 .iter()
-                .filter_map(|(key, value)| match value {
+                .map(|(key, value)| match value {
                     Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
-                        Some(format!("{key}={}", format_scalar(value)))
+                        format!("{key}={}", format_scalar(value))
                     }
-                    Value::Array(items) => {
-                        Some(format!("{key}={}", format_count("item", items.len())))
-                    }
-                    Value::Object(nested) => Some(format!("{key}={} fields", nested.len())),
+                    Value::Array(items) => format!("{key}={}", format_count("item", items.len())),
+                    Value::Object(nested) => format!("{key}={} fields", nested.len()),
                 })
                 .take(4)
                 .collect();
@@ -2260,11 +2259,11 @@ mod tests {
             .get(&quest_id)
             .expect("load updated quest");
 
-        for stored_checklist in [stored_quest
-            .description
-            .as_deref()
-            .expect("quest checklist md")]
         {
+            let stored_checklist = stored_quest
+                .description
+                .as_deref()
+                .expect("quest checklist md");
             let items = crate::services::checklist::parse(stored_checklist);
             assert_eq!(items.len(), 1);
             assert_eq!(items[0].text, "headphones");

@@ -383,7 +383,7 @@ mod tests {
             "new item is unchecked"
         );
         assert!(
-            reconciled.iter().find(|it| it.id == "a2").is_none(),
+            !reconciled.iter().any(|it| it.id == "a2"),
             "removed item is dropped"
         );
     }

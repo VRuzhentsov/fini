@@ -401,6 +401,7 @@ mod tests {
         conn.run_pending_migrations(MIGRATIONS)
             .expect("run migration 28 over v0.3.17 series");
 
+        #[allow(clippy::type_complexity)]
         let quests_now: Vec<(
             String,
             String,

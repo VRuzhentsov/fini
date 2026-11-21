@@ -105,6 +105,7 @@ pub const PEER_NOT_REACHABLE: &str = "The other device is not reachable right no
 
 /// What can go through a running session's mailbox.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum SessionCommand {
     /// A frame for the peer.
     Forward(PeerFrame),
@@ -1092,7 +1093,7 @@ impl SpaceSyncService {
         for end in ends {
             SpaceMappingRepository::new(&mut conn()).end(
                 &end.from_device_id,
-                &[end.space_id.clone()],
+                std::slice::from_ref(&end.space_id),
                 &end.ended_at,
             )?;
         }
@@ -1872,7 +1873,7 @@ mod apply {
     }
 
     fn upsert_quest(conn: &mut SqliteConnection, quest: &Quest) -> Result<(), String> {
-        ensure_spaces_exist(conn, &[quest.space_id.clone()])?;
+        ensure_spaces_exist(conn, std::slice::from_ref(&quest.space_id))?;
         QuestRepository::new(conn).sync_upsert_quest(quest)
     }
 
@@ -1890,7 +1891,7 @@ mod apply {
         conn: &mut SqliteConnection,
         focus: &FocusHistoryEntry,
     ) -> Result<(), String> {
-        ensure_spaces_exist(conn, &[focus.space_id.clone()])?;
+        ensure_spaces_exist(conn, std::slice::from_ref(&focus.space_id))?;
 
         diesel::insert_into(focus_history::table)
             .values((

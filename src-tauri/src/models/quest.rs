@@ -184,17 +184,12 @@ pub struct CreateQuestInput {
     pub is_checklist: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum QuestFieldPatch<T> {
+    #[default]
     Unchanged,
     Set(T),
     Clear,
-}
-
-impl<T> Default for QuestFieldPatch<T> {
-    fn default() -> Self {
-        Self::Unchanged
-    }
 }
 
 /// A missing JSON key deserializes via `#[serde(default)]` to `Unchanged` (this impl is never
@@ -470,7 +465,7 @@ impl RepeatRule {
     /// The last date the rule allows (`end = "on_date"`), if any.
     fn end_date(&self) -> Option<NaiveDate> {
         (self.end.as_deref() == Some("on_date"))
-            .then(|| self.end_date.as_deref())
+            .then_some(self.end_date.as_deref())
             .flatten()
             .and_then(|date| NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
     }

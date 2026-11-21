@@ -682,6 +682,7 @@ fn schedule_windows_self_replacement(
     Ok(())
 }
 
+#[cfg(any(windows, test))]
 fn windows_self_replacement_script(pending_path: &Path, executable_path: &Path) -> String {
     let pending = windows_cmd_quote(pending_path);
     let target = windows_cmd_quote(executable_path);
@@ -690,6 +691,7 @@ fn windows_self_replacement_script(pending_path: &Path, executable_path: &Path) 
     )
 }
 
+#[cfg(any(windows, test))]
 fn windows_cmd_quote(path: &Path) -> String {
     let escaped = path.display().to_string().replace('\"', "\"\"");
     format!("\"{escaped}\"")

@@ -40,6 +40,7 @@ impl<'a> SpaceMappingRepository<'a> {
 
     /// Each space of this pair with its last sync and its end:
     /// `(space_id, last_synced_at, end_of_sync_at)`.
+    #[allow(clippy::type_complexity)]
     pub fn rows(
         &mut self,
         peer_device_id: &str,

@@ -355,17 +355,6 @@ pub fn update_quest_in_db(
 }
 
 #[cfg(test)]
-pub(crate) fn load_quests_for_list(
-    conn: &mut SqliteConnection,
-) -> Result<Vec<Quest>, diesel::result::Error> {
-    use diesel::prelude::*;
-    let loaded: Vec<Quest> = crate::schema::quests::table
-        .select(Quest::as_select())
-        .load(conn)?;
-    Ok(crate::services::cli::sort_quests_for_list(loaded))
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::models::QuestOccurrence;
@@ -448,22 +437,6 @@ mod tests {
             energy: None,
             priority: None,
             due: None,
-            due_time: None,
-            repeat_rule: None,
-            order_rank: None,
-            is_checklist: None,
-        }
-    }
-
-    fn due_patch(due: &str) -> UpdateQuestInput {
-        UpdateQuestInput {
-            space_id: None,
-            title: None,
-            description: None,
-            status: None,
-            energy: None,
-            priority: None,
-            due: Some(due.to_string()),
             due_time: None,
             repeat_rule: None,
             order_rank: None,

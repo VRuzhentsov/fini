@@ -203,7 +203,7 @@ impl BluetoothChannelService {
     /// The iroh key pinned for the pair, if any.
     fn pinned_key(&self, peer_id: &str) -> Option<String> {
         tokio::task::block_in_place(|| {
-            DeviceRepository::new(&mut *self.pool.connection()).pinned_key(peer_id)
+            DeviceRepository::new(&mut self.pool.connection()).pinned_key(peer_id)
         })
     }
 }
@@ -520,7 +520,7 @@ impl ChannelService for BluetoothChannelService {
         // (2026-10-13: green is a live connection). `start_exchange` skips
         // a device that has one, or whose delivery search is not due.
         let peers = tokio::task::block_in_place(|| {
-            ChannelRepository::new(&mut *self.pool.connection())
+            ChannelRepository::new(&mut self.pool.connection())
                 .peers_with_channel_enabled(ChannelKind::Bluetooth)
         });
         for peer in peers {
@@ -965,7 +965,7 @@ impl BluetoothChannelService {
         };
         // Diagnostics only: nothing connects to a stored address.
         tokio::task::block_in_place(|| {
-            ChannelRepository::new(&mut *self.pool.connection()).note_address(
+            ChannelRepository::new(&mut self.pool.connection()).note_address(
                 peer_id,
                 ChannelKind::Bluetooth,
                 address,
@@ -3029,12 +3029,6 @@ mod scanner {
         pub fn begin_pairing_step(&self) -> PairingStep {
             self.pairing_steps.send_modify(|count| *count += 1);
             PairingStep(self.pairing_steps.clone())
-        }
-
-        /// Pairing steps held right now.
-        #[cfg(test)]
-        pub(crate) fn pairing_steps_held(&self) -> usize {
-            *self.pairing_steps.borrow()
         }
 
         /// Held for the length of one candidate probe. A dial to a peer the

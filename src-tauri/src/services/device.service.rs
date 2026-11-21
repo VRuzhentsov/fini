@@ -1026,6 +1026,7 @@ impl DeviceService {
     /// pairing would. The channel that the pairing ran on is set up and on
     /// (ADR-0007): a person who chose Bluetooth does not find Network set up
     /// too.
+    #[allow(clippy::too_many_arguments)]
     pub fn save_paired_device(
         &self,
         conn: &mut SqliteConnection,

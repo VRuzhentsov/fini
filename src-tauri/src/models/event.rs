@@ -10,6 +10,7 @@ use crate::models::{Quest, Reminder};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
+#[allow(clippy::large_enum_variant)]
 pub enum Event {
     /// A session on one channel to one paired device started or ended: the
     /// channel row turns green or grey.
