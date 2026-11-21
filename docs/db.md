@@ -98,3 +98,33 @@ considered. PHP runs one request at a time in its process; Fini does not.
 One shared connection needs a lock, and a transaction across repositories
 needs that lock to be re-entrant (`parking_lot::ReentrantMutex`). That was
 rejected: more code of our own, and every read waits for every write.
+
+## Schema migrations
+
+Fini is in open alpha ([`development.md`](development.md), "No legacy in
+alpha"). Treat the current schema as the only supported schema: do not add
+legacy mappings, conversion paths, compatibility tables, backup
+normalization, or rollback compatibility unless the user explicitly asks for
+them.
+
+Use direct SQLite schema mutations (`ALTER TABLE ... ADD COLUMN`, `DROP COLUMN`, or `RENAME COLUMN`) whenever SQLite supports the required change. Do not use replacement tables for normal Fini schema work. If a required change cannot be made with direct SQLite mutations, it needs an explicit user decision; do not silently introduce a rebuild or compatibility layer.
+
+### Migration contract
+
+1. Define the final schema first: types, nullability, defaults, constraints, indexes, and foreign keys.
+2. Implement the new contract directly; do not map old values. Use defaults for fields that are newly introduced or intentionally reset.
+3. Preserve unaffected columns and relationships.
+4. Decide reversibility deliberately. A migration may be explicitly irreversible; do not recreate a legacy contract merely to provide rollback.
+
+### Boundaries
+
+- Database migrations change persisted shape and data only; product lifecycle rules belong in services.
+- Diesel persistence for critical models belongs in the repository layer.
+- Do not create durable database objects solely for migration convenience.
+
+### Migration tests
+
+- A migration test upgrades a real prior-version database through the migration and asserts the final schema and defaults.
+- Migrations use direct SQLite mutations only and leave no replacement, backup, shadow, `_old`, or `_backup` tables.
+- Diesel schema/model code agrees with the final schema.
+- Use `SimpleConnection::batch_execute` for complete migration SQL scripts in tests. Do not split SQLite migration scripts on semicolons.

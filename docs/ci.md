@@ -5,7 +5,7 @@ developer's computer. The images and their stages are in
 [`container.md`](container.md).
 
 CI calls `npm run` scripts, `cargo xtask` and the workflow jobs. The rule for
-`make` is in `.agents/skills/fini-scripting/SKILL.md`, "Make is local only".
+`make` is in [`development.md`](development.md), "Make is local only".
 The "Local development" column below names Make targets only for a developer
 at their own computer.
 
