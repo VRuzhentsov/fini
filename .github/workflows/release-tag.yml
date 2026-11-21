@@ -344,6 +344,18 @@ jobs:
             "${GITHUB_REF_NAME#v}" \
             "${{ matrix.arch }}"
 
+      # `fini update` of a CLI at v0.3.19 or older looks only for an asset
+      # name with its own target, `x86_64-unknown-linux-gnu`
+      # (cli_update.rs, `cli_asset_target_substrings`). A copy of the musl
+      # archive under that old name lets these CLIs update. The copy gets its
+      # own signature below: the signature context is the asset name.
+      - name: Copy Linux CLI archive to the old asset name
+        if: matrix.cli_target != ''
+        run: |
+          set -euo pipefail
+          cp "release/linux/fini-${GITHUB_REF_NAME}-linux-${{ matrix.cli_target }}-cli.tar.gz" \
+            "release/linux/fini-${GITHUB_REF_NAME}-linux-${{ matrix.rust_target }}-cli.tar.gz"
+
       # zipsign comes from the cargo of the runner image.
       - name: Sign staged Linux CLI archive for standalone updater
         if: matrix.cli_target != ''
@@ -351,14 +363,16 @@ jobs:
           FINI_CLI_ZIPSIGN_PRIVATE_KEY: ${{ secrets.FINI_CLI_ZIPSIGN_PRIVATE_KEY }}
         run: |
           set -euo pipefail
-          archive="release/linux/fini-${GITHUB_REF_NAME}-linux-${{ matrix.cli_target }}-cli.tar.gz"
           key_file="${RUNNER_TEMP}/fini-cli-zipsign.key"
+          trap 'rm -f "$key_file"' EXIT
           printf '%s' "$FINI_CLI_ZIPSIGN_PRIVATE_KEY" | base64 --decode > "$key_file"
           chmod 600 "$key_file"
           cargo install zipsign --locked
-          zipsign sign tar "$archive" "$key_file"
-          rm -f "$key_file"
-          zipsign verify tar "$archive" src-tauri/keys/fini-cli-zipsign.pub
+          for target in "${{ matrix.cli_target }}" "${{ matrix.rust_target }}"; do
+            archive="release/linux/fini-${GITHUB_REF_NAME}-linux-${target}-cli.tar.gz"
+            zipsign sign tar "$archive" "$key_file"
+            zipsign verify tar "$archive" src-tauri/keys/fini-cli-zipsign.pub
+          done
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4

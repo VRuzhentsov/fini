@@ -137,6 +137,9 @@ archive for the wrong ABI:
 
 The Linux CLI is a static musl binary with no Bluetooth, for x86_64 only. The
 release has no arm64 Linux CLI; the arm64 Linux desktop app is still released.
+For `fini update` of a CLI at v0.3.19 or older, the release also has a copy of
+the Linux x64 archive under the old name
+`fini-vX.Y.Z-linux-x86_64-unknown-linux-gnu-cli.tar.gz`.
 
 `fini update` explicitly downloads, zipsign-verifies, validates, and installs the
 matching standalone archive. `fini update --dry-run` checks the matching release

@@ -59,7 +59,7 @@ read needs no GHCR login.
 | `ci.yml` | `android-e2e` | Calls `android-e2e.yml` |
 | `quality-gates.yml` | Quality Gates | The backend tests in the `linux` `build` image; the CLI image (`linux`, `runtime`) and its smoke check; the desktop e2e (`npm run gate:e2e:run`) in the `linux` `e2e` image |
 | `android-e2e.yml` | Android E2E | `npm run build:android:e2e` in the `android` `build` image; `npm run test:e2e:android` in the `android` `e2e` image; no setup-java, setup-android or Rust steps |
-| `release-tag.yml` | `build-linux` | The `linux` `build` image; a static musl CLI for x86_64 only, with the asset name `fini-<tag>-linux-x86_64-unknown-linux-musl-cli.tar.gz`. The arm64 matrix entry builds the arm64 desktop app only, and the release has no arm64 Linux CLI |
+| `release-tag.yml` | `build-linux` | The `linux` `build` image; a static musl CLI for x86_64 only, with the asset name `fini-<tag>-linux-x86_64-unknown-linux-musl-cli.tar.gz`, and a copy under the old name `fini-<tag>-linux-x86_64-unknown-linux-gnu-cli.tar.gz` for the CLI at v0.3.19 or older ([`container.md`](container.md), "CLI"). The arm64 matrix entry builds the arm64 desktop app only, and the release has no arm64 Linux CLI |
 | `release-tag.yml` | `build-android` | `npm run tauri android build` and the signing in the `android` `build` image |
 | `release-tag.yml` | `build-docker-image` | The build of the `linux` `runtime` stage, then push to GHCR (`redhat-actions/push-to-registry`, which pushes from the podman image store) |
 | `release-tag.yml` | `build-windows` | `windows-latest` and `windows-11-arm`; no container |

@@ -234,9 +234,15 @@ The results:
   with the musl triple: `fini-<tag>-linux-x86_64-unknown-linux-musl-cli.tar.gz`.
   The release has no `SHA256SUMS` file. The CLI update checks the zipsign
   signature of the asset, and that is sufficient.
-- The CLI update looks for the musl triple
-  (`cli_asset_target_substrings` in `src-tauri/src/services/cli_update.rs`).
-  A person installs a CLI from before this change again by hand, one time.
+- The musl CLI looks for the musl triple: `fini update` uses the target of
+  its own build (`self_update::get_target()` in
+  `src-tauri/src/services/cli_update.rs`).
+- A CLI at v0.3.19 or older is a glibc build. Its `fini update` looks only
+  for its own triple, `x86_64-unknown-linux-gnu`. For these CLIs, the release
+  also publishes a copy of the musl archive under the old name
+  `fini-<tag>-linux-x86_64-unknown-linux-gnu-cli.tar.gz`. The copy has its
+  own zipsign signature, because the signature context is the asset name.
+  After one update, the CLI is the musl build and finds the musl asset.
 - The Windows CLI stays as it is today: `ci.yml` builds it, and the release
   ships it. This change adds nothing for it.
 - A macOS CLI is not in this change.
