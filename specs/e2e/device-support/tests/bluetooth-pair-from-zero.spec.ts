@@ -12,8 +12,9 @@ import { supportsChannel } from '../supported-devices.ts';
  *
  * The 10 s standard (`docs/architecture/communication.md`) is the target for
  * the listing: from the moment both devices search until each lists the other.
- * A listing that takes longer gives a warning, not a failure; the test fails
- * only if a device is not listed in STEP_TIMEOUT_MS. The other steps have no fixed limit; their times are recorded as test
+ * A listing that takes longer gives a warning, not a failure (the decision of
+ * the user); the test fails only if a device is not listed in STEP_TIMEOUT_MS.
+ * The other steps have no fixed limit; their times are recorded as test
  * annotations, so a run shows how long a person waits at each step.
  *
  * Needs two Bluetooth stacks: it runs on two virtual Android test devices
@@ -119,9 +120,9 @@ test('a new pair over Bluetooth, from zero to green', async ({ testDeviceA, test
   await Promise.all([dialogA.waitForPaired(), dialogB.waitForPaired()]);
   recordStepTime('code -> Paired on both', codeTyped);
 
-  // The first session uses the link of the pairing, so the channel becomes
-  // green while the dialogs still show Paired. The test reads the Rust side,
-  // because the row is behind the dialog.
+  // The first session uses the link of the pairing, with no answer-first
+  // wait, so the channel becomes green while the dialogs still show Paired.
+  // The test reads the Rust side, because the row is behind the dialog.
   const paired = Date.now();
   await Promise.all([
     waitForGreen(testDeviceA, identityB.device_id).then(() => recordStepTime(`Paired -> ${testDeviceA.slug} green`, paired)),

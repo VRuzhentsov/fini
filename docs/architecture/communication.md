@@ -151,7 +151,10 @@ has the channel on. It does not know what goes through the connection.
 ### States of a channel
 
 One channel of one pair, as one device sees it. The colour is the colour of
-the row on the Device page. Both devices can connect on either channel.
+the row on the Device page. Both devices can connect on either channel. On
+Bluetooth, the device with the larger device id answers first: before each
+connect it waits up to 8 s (`ANSWER_FIRST_WAIT`) for the session that the
+peer opens, and connects only when no session came (see "Crossing").
 
 ```mermaid
 stateDiagram-v2
@@ -218,7 +221,9 @@ After code 1 or 2, the next Bluetooth connect waits `REJECTED_WAIT_TIME`
 
 After a recent code 2 rejection, switch-on starts a connect here
 (`BluetoothChannelService::connect_once_after_switch_on`). The peer can
-still be in its rejection wait. App start also starts eligible exchanges.
+still be in its rejection wait, and then it does not connect. So this
+connect does not wait `ANSWER_FIRST_WAIT`, also on the device that answers
+first. App start also starts eligible exchanges.
 
 ### Bluetooth links after a session
 
@@ -240,9 +245,22 @@ still be in its rejection wait. App start also starts eligible exchanges.
 The BLE core resolves crossed carrier attempts. The separate Fini session
 rule applies to both channels: each device keeps
 the connection that the device with the smaller id started. A device's own
-connection counts for 3 s after its session starts
-(`CROSSING_WINDOW`). A connection from the peer after that time means the
-peer started again: the new session replaces the old one.
+connection counts while it is made and for 3 s after its session starts
+(`CROSSING_WINDOW`). On Bluetooth, only the session connect counts, not an
+exchange that searches or waits. A connection from the peer after that time
+means the peer started again: the new session replaces the old one.
+
+On Bluetooth, two connects that cross ended each other on hardware, so
+only one device connects first (`BluetoothChannelService::answers_first`):
+
+- The device with the smaller device id connects at once.
+- The device with the larger device id answers first. Before each connect
+  of an exchange it waits up to `ANSWER_FIRST_WAIT` (8 s) for a session
+  that the peer opens. The `SessionChanged` event ends the wait at once.
+  When a session came, this device does not connect. When none came (the
+  peer has no work, or does not hear this device), it connects itself.
+- The connect after switch-on (`connect_once_after_switch_on`) and the
+  first session over the link of a pairing do not wait.
 
 ## SpaceSync
 

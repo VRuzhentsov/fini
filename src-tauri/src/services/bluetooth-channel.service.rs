@@ -501,7 +501,7 @@ impl ChannelService for BluetoothChannelService {
         tokio::task::block_in_place(|| self.refresh_advertising(&mut self.pool.connection()));
     }
 
-    /// Linux and Android: the only builds with a Bluetooth channel.
+    /// Linux, Windows and Android: the only builds with a Bluetooth channel.
     fn available(&self) -> bool {
         true
     }
@@ -963,7 +963,7 @@ impl BluetoothChannelService {
         peer_id: &str,
         address: &str,
     ) -> Result<Box<dyn DataLink>, String> {
-        let _dialing = self.scanner.begin_dial(peer_id);
+        let _connect_mark = self.scanner.begin_session_connect(peer_id);
         let connect = tokio::time::timeout(
             CONNECT_CANDIDATE_TIMEOUT,
             self.connect_session(peer_id, address, SYNC_ALPN),
@@ -3031,8 +3031,6 @@ mod endpoint {
                 .map(|(_, _, channel)| channel)
         }
 
-        /// Like `close_links_to`, for a link the peer opened from `address`,
-        /// which this device never connected to.
         /// An identify step answered with the peer's key: its plain link goes to
         /// the iroh transport, so that the pairing connection that follows runs
         /// on it. A second BLE connection cost about 5 s (pair-1: 2 s waiting
@@ -3259,15 +3257,20 @@ mod scanner {
         searches: Vec<Request>,
     }
 
-    /// A session dial in progress (`Scanner::begin_dial`); unmarked on drop.
-    pub(super) struct DialMark<'a> {
+    /// A session connect in progress (`Scanner::begin_session_connect`);
+    /// unmarked on drop.
+    pub(super) struct SessionConnectMark<'a> {
         scanner: &'a Scanner,
         peer_id: String,
     }
 
-    impl Drop for DialMark<'_> {
+    impl Drop for SessionConnectMark<'_> {
         fn drop(&mut self) {
-            self.scanner.dialing.lock().unwrap().remove(&self.peer_id);
+            self.scanner
+                .session_connects
+                .lock()
+                .unwrap()
+                .remove(&self.peer_id);
         }
     }
 
@@ -3300,9 +3303,9 @@ mod scanner {
         scan_running: AtomicBool,
         /// Peers with an exchange attempt in flight -- one at a time per peer.
         exchanges: StdMutex<HashSet<String>>,
-        /// Peers this device is dialling a session to right now (the connect
-        /// step of an exchange, not its search or its wait).
-        dialing: StdMutex<HashSet<String>>,
+        /// Peers this device is connecting a session to right now (the
+        /// connect step of an exchange, not its search or its wait).
+        session_connects: StdMutex<HashSet<String>>,
         /// When this device's own connection to each peer became a session
         /// (`note_connected`).
         connected_at: StdMutex<HashMap<String, Instant>>,
@@ -3364,7 +3367,7 @@ mod scanner {
                 scan_lock: Mutex::new(()),
                 scan_running: AtomicBool::new(false),
                 exchanges: StdMutex::new(HashSet::new()),
-                dialing: StdMutex::new(HashSet::new()),
+                session_connects: StdMutex::new(HashSet::new()),
                 connected_at: StdMutex::new(HashMap::new()),
                 connections: Arc::new(watch::channel(0).0),
                 requests: StdMutex::new(Requests::default()),
@@ -3447,16 +3450,17 @@ mod scanner {
             self.scan_running.load(Ordering::SeqCst)
         }
 
-        /// Whether this device is dialling the peer right now, or its own
-        /// connection became a session within `session::CROSSING_WINDOW`.
+        /// Whether this device is connecting a session to the peer right now,
+        /// or its own connection became a session within
+        /// `session::CROSSING_WINDOW`.
         ///
-        /// The dial, not the whole exchange: an exchange that is searching or
-        /// waiting has no connection to keep. Counting it made a deadlock on
-        /// hardware: ble-gatt kept the phone's link and ended each PC dial, while
-        /// the PC, still in its exchange, refused the phone's session as a
-        /// crossing in which its own connection is kept.
+        /// The connect, not the whole exchange: an exchange that is searching
+        /// or waiting has no connection to keep. Counting it made a deadlock on
+        /// hardware: ble-gatt kept the phone's link and ended each PC connect,
+        /// while the PC, still in its exchange, refused the phone's session as
+        /// a crossing in which its own connection is kept.
         pub fn connecting(&self, peer_id: &str) -> bool {
-            self.dialing.lock().unwrap().contains(peer_id)
+            self.session_connects.lock().unwrap().contains(peer_id)
                 || self
                     .connected_at
                     .lock()
@@ -3467,10 +3471,13 @@ mod scanner {
                     })
         }
 
-        /// Marks a session dial to `peer_id` until the returned guard drops.
-        pub(super) fn begin_dial(&self, peer_id: &str) -> DialMark<'_> {
-            self.dialing.lock().unwrap().insert(peer_id.to_string());
-            DialMark {
+        /// Marks a session connect to `peer_id` until the returned mark drops.
+        pub(super) fn begin_session_connect(&self, peer_id: &str) -> SessionConnectMark<'_> {
+            self.session_connects
+                .lock()
+                .unwrap()
+                .insert(peer_id.to_string());
+            SessionConnectMark {
                 scanner: self,
                 peer_id: peer_id.to_string(),
             }

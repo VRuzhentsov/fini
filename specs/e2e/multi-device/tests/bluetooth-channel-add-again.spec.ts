@@ -7,13 +7,16 @@ import { ChannelColor, ChannelKind } from '../../../../src/utils/channel.ts';
  * switch on each device. The second test device (testDeviceB) switches
  * Bluetooth off; it rejects the session, and the row of the first test device
  * (testDeviceA), still on, turns grey. testDeviceB switches it on again, and
- * the row turns green on both.
+ * the row turns green on both. testDeviceA is then in its rejection wait
+ * (`REJECTED_WAIT_TIME`, 30 s) and does not connect, so testDeviceB connects
+ * to it once (`connect_once_after_switch_on`), with no answer-first wait, also
+ * when testDeviceB has the larger device id.
  *
  * The 10 s standard (`docs/architecture/communication.md`) is the target from
  * the moment testDeviceB switches on until each row is green. A row that takes
- * longer gives a warning, not a failure; the test fails only if a row is not
- * green in STEP_TIMEOUT_MS. The times of
- * the other steps are recorded as annotations.
+ * longer gives a warning, not a failure (the decision of the user); the test
+ * fails only if a row is not green in STEP_TIMEOUT_MS. The times of the other
+ * steps are recorded as annotations.
  *
  * Starts from a pair that has Bluetooth on (run `bluetooth-pair-from-zero`
  * first, or pair by hand). Needs two Bluetooth stacks; run as in that spec
