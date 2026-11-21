@@ -235,9 +235,20 @@ const REJECTED_WAIT_TIME: Duration = Duration::from_secs(30);
 const FAILED_CONNECT_WAIT_TIME: Duration = Duration::from_secs(2);
 
 /// How long the device with the higher device id waits for the peer's session
-/// before it dials itself (`answers_first`). A dial and its handshake took
-/// 1-5 s on hardware.
+/// before it connects itself (`answers_first`). A connect and its handshake
+/// took 1-5 s on hardware.
 const ANSWER_FIRST_WAIT: Duration = Duration::from_secs(8);
+
+/// Whether an exchange of the device that answers first waits
+/// `ANSWER_FIRST_WAIT` before each connect (`peer_connected_first`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AnswerFirst {
+    /// Wait for the peer's session first: the usual exchange.
+    Wait,
+    /// Connect at once: the peer is in its rejection wait and does not
+    /// connect (`connect_once_after_switch_on`).
+    Skip,
+}
 
 /// Per paired device: how many delivery searches in a row found nothing,
 /// and when the next one is due; and until when a rejection stops the next
@@ -700,6 +711,10 @@ impl BluetoothChannelService {
     /// or being attempted (ADR-0008 D10). Called when there is work for the
     /// peer.
     pub fn start_exchange(&self, peer_id: &str) {
+        self.start_exchange_with(peer_id, AnswerFirst::Wait);
+    }
+
+    fn start_exchange_with(&self, peer_id: &str, answer_first: AnswerFirst) {
         if self.stopping()
             || self.has_session(peer_id)
             || !self.delivery.delivery_due(&self.scanner, peer_id)
@@ -721,13 +736,15 @@ impl BluetoothChannelService {
             tokio::select! {
                 biased;
                 () = bluetooth.wait_until_stopping() => {},
-                () = bluetooth.exchange_with(&peer_id) => {},
+                () = bluetooth.exchange_with(&peer_id, answer_first) => {},
             }
             bluetooth.scanner.end_exchange(&peer_id);
         });
     }
 
     /// Connect after switch-on when the peer can still be in its rejection wait.
+    /// This connect does not wait `ANSWER_FIRST_WAIT`: the peer does not connect
+    /// during its `REJECTED_WAIT_TIME`, so a wait here only made green later.
     pub fn connect_once_after_switch_on(&self, peer_id: &str) {
         let refused_recently = self
             .refused_at
@@ -742,7 +759,7 @@ impl BluetoothChannelService {
             "[transport][ble] {peer_id} was rejected a short time ago; connecting to it once"
         );
         self.delivery.forget_delivery_misses(peer_id);
-        self.start_exchange(peer_id);
+        self.start_exchange_with(peer_id, AnswerFirst::Skip);
     }
 
     /// This device rejected `peer_id`'s session: the channel is off here.
@@ -756,7 +773,7 @@ impl BluetoothChannelService {
     /// it was last heard; otherwise a delivery search of up to
     /// `SEARCH_WINDOW` connects the moment the peer is heard. Then
     /// authenticate and run the exchange to its idle end.
-    async fn exchange_with(&self, peer_id: &str) {
+    async fn exchange_with(&self, peer_id: &str, answer_first: AnswerFirst) {
         if !self.is_on(peer_id) {
             return;
         }
@@ -786,7 +803,7 @@ impl BluetoothChannelService {
         let mut last_error = None;
 
         if let Some(address) = self.scanner.last_heard_address(peer_id) {
-            if self.peer_connected_first(peer_id).await {
+            if self.peer_connected_first(peer_id, answer_first).await {
                 return;
             }
             let guard = self.scanner.acquire_connect().await;
@@ -835,7 +852,7 @@ impl BluetoothChannelService {
             // the work, and a dial now would only cross it.
             if !self.is_on(peer_id)
                 || self.has_session(peer_id)
-                || self.peer_connected_first(peer_id).await
+                || self.peer_connected_first(peer_id, answer_first).await
             {
                 return;
             }
@@ -850,44 +867,52 @@ impl BluetoothChannelService {
         }
     }
 
-    /// Crossed session dials: when both paired devices have work, both start
-    /// an exchange and dial at once. On hardware the two links then ended
-    /// each other: ble-gatt's arbitration kept one managed attempt, but the
-    /// iroh path of the other side moved to the losing link and its handshake
-    /// was aborted, so neither side turned green (peer-sync-over-ble). Only
-    /// one side dials first: the device with the lower device id, whose
-    /// connection the session accept keeps on a crossing anyway
-    /// (`space_sync_service`, "the connection from the smaller device id is
-    /// kept"). The other
-    /// answers first: it waits `ANSWER_FIRST_WAIT` for the session that dial
-    /// opens, and dials itself only when none came (the peer has no work, or
-    /// cannot hear this device). Either side can still start a session.
+    /// Crossed session connects: when both paired devices have work, both
+    /// start an exchange and connect at once. On hardware the two links then
+    /// ended each other: ble-gatt's arbitration kept one managed attempt, but
+    /// the iroh path of the other side moved to the losing link and its
+    /// handshake was aborted, so neither side turned green
+    /// (peer-sync-over-ble). Only one side connects first: the device with the
+    /// smaller device id, whose connection the session accept keeps on a
+    /// crossing anyway (`space_sync_service`, "the connection from the smaller
+    /// device id is kept"). The other answers first: it waits
+    /// `ANSWER_FIRST_WAIT` for the session that the peer's connect opens, and
+    /// connects itself only when none came (the peer has no work, or cannot
+    /// hear this device). Either side can still start a session. The connect
+    /// after switch-on (`connect_once_after_switch_on`) does not wait.
     fn answers_first(&self, peer_id: &str) -> bool {
         self.identity.device_id.as_str() > peer_id
     }
 
-    /// Before each dial of the device that answers first: waits up to
+    /// Before each connect of the device that answers first: waits up to
     /// `ANSWER_FIRST_WAIT` for the session the peer opens. True when one runs,
-    /// so this device does not dial. The wait is per dial, not once per
+    /// so this device does not connect. The wait is per connect, not once per
     /// exchange: on hardware the phone's exchange started 12 s before the PC
-    /// app was up, and a wait at its start had ended when the PC dialled.
-    async fn peer_connected_first(&self, peer_id: &str) -> bool {
-        if !self.answers_first(peer_id) {
+    /// app was up, and a wait at its start had ended when the PC connected.
+    /// `AnswerFirst::Skip` connects at once.
+    async fn peer_connected_first(&self, peer_id: &str, answer_first: AnswerFirst) -> bool {
+        if answer_first == AnswerFirst::Skip || !self.answers_first(peer_id) {
             return false;
         }
         let connected = self.wait_for_peer_session(peer_id).await;
         if connected {
-            log::info!("[transport][ble] {peer_id} connected first; no dial from here");
+            log::info!("[transport][ble] {peer_id} connected first; no connect from here");
         }
         connected
     }
 
     /// Waits up to `ANSWER_FIRST_WAIT` for a session with `peer_id` that the
-    /// peer opened. True when one runs.
+    /// peer opened. True when one runs. Wakes on each event of the bus, for
+    /// example `SessionChanged`, which SpaceSync sends after it records the
+    /// session.
     async fn wait_for_peer_session(&self, peer_id: &str) -> bool {
+        let mut events = self.bus.subscribe();
         let wait = async {
             while !self.has_session(peer_id) {
-                tokio::time::sleep(Duration::from_millis(250)).await;
+                // Any event, or an overrun, reads the sessions again.
+                if let Err(tokio::sync::broadcast::error::RecvError::Closed) = events.recv().await {
+                    std::future::pending::<()>().await;
+                }
             }
         };
         tokio::select! {
@@ -1068,6 +1093,169 @@ mod tests {
             );
         }
         assert_ne!(fingerprint_of("peer-a"), fingerprint_of("peer-b"));
+    }
+
+    const PEER: &str = "peer-a";
+    const PEER_ADDRESS: &str = "AA:00:00:00:00:20";
+    /// Larger than `PEER`: this device answers first (`answers_first`).
+    const LARGER_DEVICE_ID: &str = "zz-this-device";
+
+    /// Sessions that the test starts by hand.
+    #[derive(Default)]
+    struct TestSessions(std::sync::atomic::AtomicBool);
+
+    #[async_trait]
+    impl crate::services::channel_service::SessionHandler for TestSessions {
+        fn has_session(&self, _peer_device_id: &str, _kind: ChannelKind) -> bool {
+            self.0.load(Ordering::SeqCst)
+        }
+
+        async fn hold<'a>(
+            &'a self,
+            link: Box<dyn DataLink>,
+            _peer_device_id: &'a str,
+            _kind: ChannelKind,
+            _on_held: Box<dyn FnOnce() + Send + 'a>,
+        ) -> Result<Option<u32>, Box<dyn DataLink>> {
+            Err(link)
+        }
+
+        async fn accept(&self, _link: Box<dyn DataLink>) {}
+    }
+
+    struct NoPeerLinks;
+
+    #[async_trait]
+    impl crate::services::channel_service::PeerLinkHandler for NoPeerLinks {
+        async fn accept(&self, _link: Box<dyn DataLink>) {}
+    }
+
+    struct Fixture {
+        service: Arc<BluetoothChannelService>,
+        sessions: Arc<TestSessions>,
+        db_path: std::path::PathBuf,
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.db_path);
+        }
+    }
+
+    /// A Bluetooth channel with `device_id` on a temporary database, paired
+    /// with `PEER`, Bluetooth on. The pair has no pinned key, so a session
+    /// connect to `PEER` fails at once and marks its address as failed: the
+    /// mark shows that a connect ran.
+    fn fixture(label: &str, device_id: &str) -> Fixture {
+        use crate::schema::paired_devices;
+        use diesel::prelude::*;
+
+        let db_path =
+            std::env::temp_dir().join(format!("fini-test-bluetooth-{label}-{}.db", Uuid::new_v4()));
+        let mut conn = crate::services::db::open_db_at_path(&db_path);
+        diesel::insert_into(paired_devices::table)
+            .values((
+                paired_devices::peer_device_id.eq(PEER),
+                paired_devices::display_name.eq("Peer A"),
+                paired_devices::paired_at.eq("2026-04-07T00:00:00Z"),
+                paired_devices::last_seen_at.eq(Option::<String>::None),
+                paired_devices::pair_state.eq("paired"),
+            ))
+            .execute(&mut conn)
+            .unwrap();
+        ChannelRepository::new(&mut conn)
+            .configure(PEER, ChannelKind::Bluetooth, true, None)
+            .unwrap();
+        let secret_key = iroh::SecretKey::generate();
+        let identity = Identity {
+            device_id: device_id.to_string(),
+            hostname: "host".to_string(),
+            endpoint_id: secret_key.public().to_string(),
+            secret_key,
+        };
+        let service = BluetoothChannelService::new(
+            identity,
+            DbPool::open_for_test(&db_path),
+            Arc::new(EventBus::default()),
+        );
+        let sessions = Arc::new(TestSessions::default());
+        service.handlers.set(LinkHandlers {
+            peer: Arc::new(NoPeerLinks),
+            session: sessions.clone(),
+        });
+        Fixture {
+            service,
+            sessions,
+            db_path,
+        }
+    }
+
+    async fn wait_until(what: &str, within: Duration, done: impl Fn() -> bool) {
+        let wait = async {
+            while !done() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        };
+        tokio::time::timeout(within, wait)
+            .await
+            .unwrap_or_else(|_| panic!("{what} within {within:?}"));
+    }
+
+    /// The device with the larger id does not connect while it waits for the
+    /// peer's session, and when that session starts, its exchange ends with
+    /// no connect, before `ANSWER_FIRST_WAIT` has passed.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_device_that_answers_first_waits_for_the_peer_session() {
+        let fixture = fixture("answer-first", LARGER_DEVICE_ID);
+        let service = &fixture.service;
+        service.scanner.record_paired_heard(PEER, PEER_ADDRESS);
+
+        service.start_exchange(PEER);
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert!(
+            !service.scanner.connect_recently_failed(PEER_ADDRESS),
+            "no connect while it waits for the peer's session"
+        );
+
+        fixture.sessions.0.store(true, Ordering::SeqCst);
+        service.bus.publish(Event::SessionChanged {
+            peer_device_id: PEER.to_string(),
+            kind: ChannelKind::Bluetooth,
+            established: true,
+        });
+        wait_until("the exchange ends", Duration::from_secs(2), || {
+            let ended = service.scanner.begin_exchange(PEER);
+            if ended {
+                service.scanner.end_exchange(PEER);
+            }
+            ended
+        })
+        .await;
+        assert!(
+            !service.scanner.connect_recently_failed(PEER_ADDRESS),
+            "the peer's session carries the work: no connect from here"
+        );
+        service.shutdown().await.unwrap();
+    }
+
+    /// After switch-on, the connect to a peer that this device rejected a
+    /// short time ago starts at once, also on the device with the larger id:
+    /// the peer is in its rejection wait and does not connect.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_connect_after_switch_on_does_not_wait_for_the_peer() {
+        let fixture = fixture("connect-once", LARGER_DEVICE_ID);
+        let service = &fixture.service;
+        service.scanner.record_paired_heard(PEER, PEER_ADDRESS);
+        service.note_refused(PEER);
+
+        service.connect_once_after_switch_on(PEER);
+        wait_until(
+            "a connect to the peer starts",
+            Duration::from_secs(2),
+            || service.scanner.connect_recently_failed(PEER_ADDRESS),
+        )
+        .await;
+        service.shutdown().await.unwrap();
     }
 }
 
@@ -2988,7 +3176,7 @@ mod scanner {
         }
 
         /// Records that `peer_id` was heard advertising at `address`.
-        fn record_paired_heard(&self, peer_id: &str, address: &str) {
+        pub(super) fn record_paired_heard(&self, peer_id: &str, address: &str) {
             let newly_present = match self.paired_heard.lock() {
                 Ok(mut heard) => heard
                     .insert(peer_id.to_string(), (Instant::now(), address.to_string()))
@@ -3323,7 +3511,7 @@ mod scanner {
             self.scan_starts.lock().unwrap().push_back(Instant::now());
         }
 
-        fn connect_recently_failed(&self, address: &str) -> bool {
+        pub(super) fn connect_recently_failed(&self, address: &str) -> bool {
             let mut failed = self.failed_connects.lock().unwrap();
             failed.retain(|_, at| at.elapsed() < FAILED_CONNECT_COOLDOWN);
             failed.contains_key(address)
