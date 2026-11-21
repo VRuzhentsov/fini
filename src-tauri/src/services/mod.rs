@@ -26,7 +26,6 @@ pub mod device_service;
 pub mod due_time;
 #[path = "event-bus.service.rs"]
 pub mod event_bus_service;
-pub mod migration_import;
 #[cfg(test)]
 mod migrations_tests;
 #[path = "network-channel.service.rs"]
