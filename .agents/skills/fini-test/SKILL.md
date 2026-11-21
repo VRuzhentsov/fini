@@ -1,6 +1,6 @@
 ---
 name: fini-test
-description: "Single source of truth for testing the Fini app: how to run unit, integration, and end-to-end tests, and how to write new ones. Use when the user asks to run tests, write a test, add coverage, debug a failing test, choose a test category, set up a multi-device scenario (TestDevice fixture, virtual Android phones), or understand fixtures and harnesses. For Android-only behavior, load `fini-android-testing` instead. For CLI semantics referenced from CLI e2e tests, also load `fini-cli`. For Makefile/CI/script changes around tests, also load `fini-scripting`."
+description: "Single source of truth for testing the Fini app: the stabilize phase of Spike and Stabilize, how to run unit, integration, and end-to-end tests, and how to write new ones. Use after a feature is done and manually verified, or when the user asks to run tests, write a test, add coverage, debug a failing test, choose a test category, set up a multi-device scenario (TestDevice fixture, virtual Android phones), or understand fixtures and harnesses. For Android-only behavior, load `fini-android-testing` instead. For CLI semantics referenced from CLI e2e tests, also load `fini-cli`. For Makefile/CI/script changes around tests, also load `fini-scripting`."
 ---
 
 # Fini Testing
@@ -43,9 +43,14 @@ Decide before writing the test:
 
 If a behavior fits more than one surface, pick the cheapest to run and the most isolated. Multi-device is expensive, and `device-support` on virtual Android the most expensive — use them only for behaviors that need two apps.
 
-## When to run tests
+## Stabilize
 
-Run unit tests and e2e projects in a PR's wrap-up stage, after its happy flow has been proven and the PR has left draft (`fini-dev`, "PR Lifecycle"). While a PR is a draft, prove behaviour on the running HMR apps instead.
+This is the process for the stabilize phase of Spike and Stabilize (`fini-dev`, "Development Pattern: Spike and Stabilize"). Start it only after the feature is done and you verified it manually against the requirements. Until then, prove behaviour on the running HMR apps (`fini-dev`, "PR Lifecycle").
+
+1. Update or add tests so that they describe the final, verified behaviour. Write them characterization-style, from the requirements and the manual checks with their results: assert what the feature does, not how the code does it. Delete the tests for behaviour that you removed.
+2. Run only the affected tests: the spec files and Playwright projects that cover the changed code ("Running tests", "Targeting a single Playwright project"). Leave the full suite to CI, which runs on the PR.
+3. For how to run e2e and device tests, use `docs/e2e.md`, `docs/e2e-android.md` and `fini-android-testing`. Get the approval of the user before each run on a physical device.
+4. Report each run as "Evidence requirement" says.
 
 ## Driving the running apps
 

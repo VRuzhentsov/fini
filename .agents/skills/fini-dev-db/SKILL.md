@@ -27,7 +27,7 @@ Before commit:
 1. Test a real prior-version database upgraded through the migration; assert the final schema and defaults.
 2. Confirm migrations use direct SQLite mutations only and leave no replacement, backup, shadow, `_old`, or `_backup` tables.
 3. Update Diesel schema/model code consistently with the final schema.
-4. Run the focused Rust migration test, scoped formatting, and `git diff --check`.
+4. Run scoped formatting and `git diff --check`. Run the focused Rust migration test in the stabilize phase (`fini-test`, "Stabilize").
 
 Use `SimpleConnection::batch_execute` for complete migration SQL scripts in tests. Do not split SQLite migration scripts on semicolons.
 

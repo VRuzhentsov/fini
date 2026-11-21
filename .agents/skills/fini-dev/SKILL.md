@@ -19,6 +19,16 @@ Keep every development session consistent:
 - Write in STE from the first draft: names, comments, log and assertion messages, test titles, docs, commit and PR text (see "Use STE"). Do the STE check yourself; the user does not ask for it.
 - Verify with concrete evidence before reporting success.
 
+## Development Pattern: Spike and Stabilize
+
+Fini uses Spike and Stabilize (Dan North) as its main development pattern. Do the steps in this order:
+
+1. **Spike.** Implement the requested feature first, with no tests. Iterate on the running HMR apps ("Command Selection").
+2. **Verify manually.** Check the feature against the requirements on the running apps, through `fini-cli` and the devtools bridge (`fini-android-testing`). Keep a list of the checks and their results. Continue only when the feature works as the requirements say.
+3. **Stabilize.** Refactor the code (`fini-code-style`, `docs/architecture/code-design.md`), then bring the tests up to date: load `fini-test` and do its "Stabilize" steps.
+
+"PR Lifecycle" below puts these steps on the PR: steps 1 and 2 are stages 1 and 2, step 3 is stage 3.
+
 ## No-Legacy Policy
 
 Fini is in open alpha and has not been publicly released. Treat the current source and schema as the only supported contract: do not add, preserve, or test legacy compatibility for prior Energy/Priority values, sync payloads, backup formats, migrations, or rollback paths unless the user explicitly directs it.
@@ -33,7 +43,7 @@ Before implementation, debugging, QA, Android, design-to-code, release, or docum
 2. State the target outcome, in-scope work, out-of-scope work, and success checks in the user's terms.
 3. Read only the context needed for the task: `AGENTS.md`, `docs/naming.md` and `docs/glossary.md` (for each task that writes code or text), the relevant page in `docs/architecture/`, the relevant folder `README.md` and companion `.md` specs where they still exist (they move to `docs/` when touched; see `fini-documentation`), `docs/adr/`, and targeted source files.
 4. Choose any specialized skill from the routing table below before doing the domain-specific work.
-5. Pick the smallest useful verification command before editing so the success standard is clear.
+5. Pick the manual checks against the requirements before editing ("Spike and Stabilize", step 2) so the success standard is clear.
 
 For GitHub issue work, keep the branch rule lightweight: reuse an existing branch if it already contains the issue number, and pause before switching branches if the worktree has conflicting uncommitted changes.
 
@@ -240,7 +250,7 @@ A pull request moves through three stages. Use each stage's checks and no others
    - Leave test files alone during the draft. A test that fails after a planned behaviour change stays failing until stage 3; do not edit its expectation to match the new code, and do not run or fix the suites per step — the next step can change the behaviour again. The only allowed edit is a compile adaptation (a changed function signature), named in the report.
    - Keep a list of the manual bridge checks you ran; stage 3 turns it into test proposals.
 2. **Gate to leave draft: the happy flow works.** Prove the feature's happy flow end to end on the running apps or real hardware, and put the evidence in the PR description: what was run, on which devices, and the result. For Bluetooth, that means pairing both ways, the session going green, and a quest syncing both ways. Then mark the PR ready for review; that starts CI.
-3. **Wrap-up: make it mergeable.** Once the system works as designed: run the unit tests and the relevant e2e projects (see `fini-test`), and do the STE check of the full branch diff ("Use STE", step 7); for each failing test, report what it expects and which decision changed that behaviour, then fix, clean up or delete it as the user decides. Then show the user the test cases you propose to add, based on the manual bridge checks from stage 1, and add the ones they choose. Get CI green, and bring the PR title and description up to date with everything the branch now contains.
+3. **Wrap-up (Stabilize): make it mergeable.** Once the system works as designed: refactor, then update the tests and run only the affected tests (`fini-test`, "Stabilize"), and do the STE check of the full branch diff ("Use STE", step 7); for each failing test, report what it expects and which decision changed that behaviour, then fix, clean up or delete it as the user decides. Then show the user the test cases you propose to add, based on the manual bridge checks from stage 1, and add the ones they choose. Get CI green, and bring the PR title and description up to date with everything the branch now contains.
 
 The user reviews and merges. One worker keeps one branch and one PR for all of its work (`git-workflow`).
 
@@ -255,7 +265,7 @@ Use this loop for implementation and fixes:
 5. Avoid broad refactors and compatibility layers unless they prevent a concrete defect. Putting a behavior on the existing interface or object that owns it is not a broad refactor: do it. Remove the code that your change makes unused.
 6. Preserve user or other-agent changes in the worktree.
 7. Update companion docs/specs when behavior or structure changes.
-8. Verify with the smallest useful check, then escalate only as needed.
+8. Verify manually against the requirements on the running apps; the tests come in the stabilize phase (`fini-test`, "Stabilize").
 9. Report the exact evidence collected and any remaining risk.
 
 Resolve compiler warnings by improving code structure, feature boundaries, visibility, or imports. Treat broad suppression such as crate-level `allow(dead_code, unused_imports)` as a user-owned exception: add it only after explicit user approval, keep its scope as narrow as possible, and call it out in the report.
@@ -264,10 +274,10 @@ Resolve compiler warnings by improving code structure, feature boundaries, visib
 
 Choose verification based on touched area:
 
-- Frontend-only logic or UI: run the narrowest available unit/type/build check; use browser/QA skill when visual behavior matters.
+- Frontend-only logic or UI: run the narrowest available type/build check (`npm run build`); use browser/QA skill when visual behavior matters.
 - Backend Rust or Tauri command changes: run the narrowest Rust or app build check available; include command output evidence.
 - Cross-process, sync, or persistence changes: verify write path, storage/outbox/database effects, and read path.
-- E2E-sensitive flows: use `make e2e-headed` for local visible debugging. For CI-parity evidence, run what CI runs: `npm run gate:e2e:build-image` and `npm run gate:e2e:run`.
+- E2E-sensitive flows: in the stabilize phase, run the affected e2e projects (`fini-test`, "Stabilize"). Use `make e2e-headed` for local visible debugging. For CI-parity evidence, run what CI runs: `npm run gate:e2e:build-image` and `npm run gate:e2e:run`.
 - Android behavior: load `fini-android-testing`; use `make android-devices`, one bounded `make android-connect` attempt when needed, and `make android-dev` for dev-runtime verification, or `make android-release-deploy-debugsigned` when an installed APK check is needed. Use `make android-debug-deploy` (separate `com.fini.app.debug` id) instead when diagnosing silent plugin failures — this enables Tauri Kotlin logging (`BuildConfig.DEBUG=true`, suppressed in the release profile) and is safe to install alongside a Play Store `com.fini.app` without conflict.
 - Test execution or test authoring across any surface (FE Jest, BE cargo, e2e cli/ui/multi-device/device-support): load `fini-test` for the canonical command + authoring guide.
 - Manual feature verification or scenario setup: drive state via `fini-cli`; reserve the UI for visual confirmation of the result.

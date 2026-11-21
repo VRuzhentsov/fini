@@ -91,7 +91,7 @@ Keep the parent responsible for form/lifecycle orchestration and pass narrow sta
 
 ## Testing Expectations
 
-When adding or changing render flags:
+In the stabilize phase (`fini-test`, "Stabilize"), when the change added or changed render flags:
 
 - Add or update component tests for both visible and hidden states when the condition is product/platform behavior.
 - Prefer assertions on user-visible labels or test IDs, not internal computed names.
