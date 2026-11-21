@@ -118,8 +118,47 @@ async fn run_startup_auto_update(app: tauri::AppHandle) -> Result<(), String> {
         .map_err(|error| format!("failed to install update: {error}"))?;
 
     eprintln!("[desktop-updater] update installed; restarting");
+    shutdown_bluetooth(&app).await;
     app.restart();
 }
+
+/// The BLE shutdown of the `RunEvent::Exit` path in `lib.rs`, before a
+/// restart. `AppHandle::restart` does not send `RunEvent::Exit` when it runs
+/// on the main thread, and then the adapter keeps the advertisement and the
+/// links of this process. `shutdown` runs once only, so a later Exit event
+/// gets the same result at once.
+#[cfg(all(
+    feature = "desktop-updater",
+    any(target_os = "linux", target_os = "windows"),
+    not(debug_assertions)
+))]
+async fn shutdown_bluetooth(app: &tauri::AppHandle) {
+    use crate::services::bluetooth_channel_service::BluetoothChannelService;
+    use tauri::Manager;
+
+    /// The longest time the restart waits for the BLE shutdown.
+    const BLUETOOTH_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    let Some(bluetooth) = app.try_state::<std::sync::Arc<BluetoothChannelService>>() else {
+        return;
+    };
+    match tokio::time::timeout(BLUETOOTH_SHUTDOWN_TIMEOUT, bluetooth.shutdown()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => log::error!("[transport][ble] shutdown before restart failed: {err}"),
+        Err(_) => log::error!(
+            "[transport][ble] shutdown before restart timed out after {}s",
+            BLUETOOTH_SHUTDOWN_TIMEOUT.as_secs()
+        ),
+    }
+}
+
+/// No BLE channel on macOS.
+#[cfg(all(
+    feature = "desktop-updater",
+    target_os = "macos",
+    not(debug_assertions)
+))]
+async fn shutdown_bluetooth(_app: &tauri::AppHandle) {}
 
 #[cfg(all(
     feature = "desktop-updater",
