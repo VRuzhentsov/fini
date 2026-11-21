@@ -121,7 +121,6 @@ has the channel on. It does not know what goes through the connection.
   While wanted is true and it has no owner, `AdapterChanged` wakes it after recovery.
   Shared owner publication sends this event, also when the scanner initializes first.
   An event bus overrun makes it read owner and adapter state again.
-  These events do not repeat a failed metadata operation on an existing owner.
   Before a `Driver` exists, this path does not watch the system
   for adapter changes. Recovery needs an existing availability event
   or a later call to `peer_link()`.
@@ -130,8 +129,13 @@ has the channel on. It does not know what goes through the connection.
   The core retains its own service data. Native advertisement and readable
   metadata writes are separate operations, not one atomic change.
   A failed write or visibility change reports its error and attempts a hide
-  fence. A later state change must complete a hidden update before show.
-  A failed hide is not a completed fence. There is no timed retry loop.
+  fence. The next update must complete a hidden update before show.
+  A failed hide is not a completed fence. While an update has failed,
+  `run_server` tries the update again after 1 s, doubles the wait after each
+  failure up to 30 s (`advertising_retry_wait`), and tries again at once on
+  `AdapterChanged` or an event bus overrun. A change of the Add Device or
+  wanted state also tries again at once. A successful update stops the
+  retries.
 - Desktop `RunEvent::Exit` calls `BluetoothChannelService::shutdown`.
   Shutdown stops new work and lazy initialization. It drains only existing
   endpoint and held uses, then attempts managed owner close even after a

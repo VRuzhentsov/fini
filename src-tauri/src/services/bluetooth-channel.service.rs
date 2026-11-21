@@ -250,6 +250,21 @@ enum AnswerFirst {
     Skip,
 }
 
+/// After a failed advertisement update, `run_server` tries again after this
+/// wait, doubled after each failure in a row, up to
+/// `ADVERTISING_RETRY_MAX_WAIT`.
+const ADVERTISING_RETRY_WAIT: Duration = Duration::from_secs(1);
+const ADVERTISING_RETRY_MAX_WAIT: Duration = Duration::from_secs(30);
+
+/// The wait before the next advertisement update after `failed_updates`
+/// failed updates in a row: 1, 2, 4, 8 and 16 s, then always 30 s.
+fn advertising_retry_wait(failed_updates: u32) -> Duration {
+    let doublings = failed_updates.saturating_sub(1).min(5);
+    ADVERTISING_RETRY_WAIT
+        .saturating_mul(1 << doublings)
+        .min(ADVERTISING_RETRY_MAX_WAIT)
+}
+
 /// Per paired device: how many delivery searches in a row found nothing,
 /// and when the next one is due; and until when a rejection stops the next
 /// connection. In memory only, as ADR-0008 decided: a started app tries at
@@ -565,6 +580,7 @@ impl BluetoothChannelService {
         let mut events = self.bus.subscribe();
         let mut link = None;
         let mut uncertain = false;
+        let mut failed_updates: u32 = 0;
         loop {
             let visible = *wanted.borrow_and_update();
             let _ = *add_mode.borrow_and_update();
@@ -588,7 +604,16 @@ impl BluetoothChannelService {
                         log::warn!("[transport][ble] advertisement update failed: {err}");
                     },
                 }
+                failed_updates = if uncertain {
+                    failed_updates.saturating_add(1)
+                } else {
+                    0
+                };
             }
+            // A failed update leaves the advertisement hidden or old: try it
+            // again after a wait that grows, or when the adapter changes.
+            let retry = tokio::time::sleep(advertising_retry_wait(failed_updates));
+            tokio::pin!(retry);
             loop {
                 tokio::select! {
                     biased;
@@ -601,7 +626,8 @@ impl BluetoothChannelService {
                         if result.is_err() { return; }
                         break;
                     },
-                    event = events.recv(), if visible && link.is_none() => {
+                    () = &mut retry, if uncertain => break,
+                    event = events.recv(), if (visible && link.is_none()) || uncertain => {
                         match event {
                             Ok(Event::AdapterChanged) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                                 if self.peer_link.get().is_some() || !BluetoothAdapter::this_device().is_unavailable() {
@@ -1256,6 +1282,181 @@ mod tests {
         )
         .await;
         service.shutdown().await.unwrap();
+    }
+
+    /// A mock radio that refuses the first start of the advertisement.
+    struct FirstAdvertiseFails {
+        driver: Arc<dyn ble_gatt::Driver>,
+        /// Calls of `advertise`, the refused one too.
+        advertise_calls: std::sync::atomic::AtomicUsize,
+        /// Starts of the advertisement that the radio accepted.
+        started: std::sync::atomic::AtomicUsize,
+    }
+
+    impl FirstAdvertiseFails {
+        fn new() -> Self {
+            use ble_gatt::drivers::mock::{MockDriver, MockNetwork};
+            Self {
+                driver: Arc::new(MockDriver::new(
+                    PeerAddress("AA:00:00:00:00:30".to_string()),
+                    MockNetwork::new(),
+                    ble_gatt::CapabilityReport {
+                        central: true,
+                        peripheral: true,
+                    },
+                )),
+                advertise_calls: Default::default(),
+                started: Default::default(),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ble_gatt::Driver for FirstAdvertiseFails {
+        async fn capabilities(&self) -> ble_gatt::CapabilityReport {
+            self.driver.capabilities().await
+        }
+
+        async fn scan(
+            &self,
+            service: ServiceUuid,
+        ) -> ble_gatt::Result<ble_gatt::BoxStream<ble_gatt::Result<ble_gatt::DiscoveredPeer>>>
+        {
+            self.driver.scan(service).await
+        }
+
+        async fn connect(
+            &self,
+            peer: &PeerAddress,
+        ) -> ble_gatt::Result<Box<dyn ble_gatt::GattConnection>> {
+            self.driver.connect(peer).await
+        }
+
+        async fn advertise(&self, service: ble_gatt::GattServiceSpec) -> ble_gatt::Result<()> {
+            if self.advertise_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Err(ble_gatt::BleError::AdapterUnavailable(
+                    "the test radio refuses the first advertisement".into(),
+                ));
+            }
+            self.driver.advertise(service).await?;
+            self.started.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn update_advertisement(
+            &self,
+            service: ble_gatt::GattServiceSpec,
+        ) -> ble_gatt::Result<()> {
+            self.driver.update_advertisement(service).await
+        }
+
+        fn served_service(&self) -> Option<ble_gatt::GattServiceSpec> {
+            self.driver.served_service()
+        }
+
+        async fn set_characteristic_value(
+            &self,
+            characteristic: CharacteristicUuid,
+            value: Vec<u8>,
+        ) -> ble_gatt::Result<()> {
+            self.driver
+                .set_characteristic_value(characteristic, value)
+                .await
+        }
+
+        async fn set_advertising_enabled(&self, enabled: bool) -> ble_gatt::Result<()> {
+            self.driver.set_advertising_enabled(enabled).await
+        }
+
+        async fn stop_advertising(&self) -> ble_gatt::Result<()> {
+            self.driver.stop_advertising().await
+        }
+
+        async fn close(&self) -> ble_gatt::Result<()> {
+            self.driver.close().await
+        }
+
+        async fn notify(
+            &self,
+            characteristic: CharacteristicUuid,
+            value: Vec<u8>,
+        ) -> ble_gatt::Result<()> {
+            self.driver.notify(characteristic, value).await
+        }
+
+        async fn notify_peer(
+            &self,
+            peer: &PeerAddress,
+            session: Option<u64>,
+            characteristic: CharacteristicUuid,
+            value: Vec<u8>,
+        ) -> ble_gatt::Result<()> {
+            self.driver
+                .notify_peer(peer, session, characteristic, value)
+                .await
+        }
+
+        async fn disconnect_peer(
+            &self,
+            peer: &PeerAddress,
+            session: Option<u64>,
+        ) -> ble_gatt::Result<()> {
+            self.driver.disconnect_peer(peer, session).await
+        }
+
+        async fn notify_max_len(&self, peer: &PeerAddress, session: Option<u64>) -> Option<usize> {
+            self.driver.notify_max_len(peer, session).await
+        }
+
+        fn events(&self) -> ble_gatt::BoxStream<ble_gatt::GattEvent> {
+            self.driver.events()
+        }
+
+        fn lifecycle_events(&self) -> ble_gatt::BoxStream<ble_gatt::GattEvent> {
+            self.driver.lifecycle_events()
+        }
+
+        async fn radio_status(&self) -> ble_gatt::RadioStatus {
+            self.driver.radio_status().await
+        }
+    }
+
+    /// A failed advertisement update is tried again with no change of state:
+    /// the radio refused the first start, and the next one is accepted.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_advertisement_update_is_tried_again() {
+        let fixture = fixture("advertising-retry", LARGER_DEVICE_ID);
+        let service = fixture.service.clone();
+        let driver = Arc::new(FirstAdvertiseFails::new());
+        let link = PeerLink::with_driver(
+            driver.clone(),
+            PeerLinkConfig::new(service.advertiser.advertised_config()),
+        );
+        let _incoming = link.incoming().unwrap();
+        assert!(service.peer_link.set(link).is_ok());
+        service.advertiser.set_wanted(true);
+
+        tokio::spawn({
+            let service = service.clone();
+            async move { service.run_server().await }
+        });
+        wait_until(
+            "the advertisement starts after the refused start",
+            Duration::from_secs(5),
+            || driver.started.load(Ordering::SeqCst) > 0,
+        )
+        .await;
+        assert!(driver.advertise_calls.load(Ordering::SeqCst) >= 2);
+        let _ = service.shutdown().await;
+    }
+
+    /// The wait between advertisement retries grows, and has a limit.
+    #[test]
+    fn advertisement_retries_wait_longer_up_to_a_limit() {
+        let waits: Vec<u64> = (1..=8)
+            .map(|failed| advertising_retry_wait(failed).as_secs())
+            .collect();
+        assert_eq!(waits, vec![1, 2, 4, 8, 16, 30, 30, 30]);
     }
 }
 
