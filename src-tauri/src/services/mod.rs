@@ -5,7 +5,7 @@ pub mod android_context;
 pub mod backup;
 #[cfg(all(target_os = "android", feature = "ui-plane"))]
 pub mod ble_plugin;
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(all(feature = "ui-plane", any(target_os = "linux", target_os = "android")))]
 #[path = "bluetooth-channel.service.rs"]
 pub mod bluetooth_channel_service;
 #[path = "channel.service.rs"]
@@ -39,10 +39,11 @@ pub mod settings;
 pub mod space;
 pub mod update_recovery;
 
-/// The Bluetooth channel on a system without `ble-gatt` (Windows, macOS):
-/// the same name as the real one, so that the other services need no
-/// platform branches. It reports that Bluetooth is not supported.
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+/// The Bluetooth channel when `ble-gatt` is not compiled in (on Windows and
+/// macOS, and without `ui-plane`, for example in the CLI): the same name as
+/// the real one, so that the other services need no platform branches. It
+/// reports that Bluetooth is not supported.
+#[cfg(not(all(feature = "ui-plane", any(target_os = "linux", target_os = "android"))))]
 pub mod bluetooth_channel_service {
     use std::sync::Arc;
 

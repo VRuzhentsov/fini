@@ -1,14 +1,6 @@
-[target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "link-arg=-Wl,-rpath,/var/home/will/.local/lib/sherpa-onnx"]
-
+# The voice input (sherpa-onnx) links the C++ runtime of the NDK on Android.
+# The folders of the sherpa-onnx libraries come from SHERPA_ONNX_LIB_DIR and
+# SHERPA_ONNX_LIB_DIR_ANDROID* (src-tauri/patches/sherpa-onnx-sys/build.rs),
+# not from this file, so that no build has the paths of one computer.
 [target.aarch64-linux-android]
-rustflags = ["-L/var/home/will/projects/fini/src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a", "-C", "link-arg=-lc++_shared"]
-
-[target.armv7-linux-androideabi]
-rustflags = ["-L/var/home/will/projects/fini/src-tauri/gen/android/app/src/main/jniLibs/armeabi-v7a"]
-
-[target.i686-linux-android]
-rustflags = ["-L/var/home/will/projects/fini/src-tauri/gen/android/app/src/main/jniLibs/x86"]
-
-[target.x86_64-linux-android]
-rustflags = ["-L/var/home/will/projects/fini/src-tauri/gen/android/app/src/main/jniLibs/x86_64"]
+rustflags = ["-C", "link-arg=-lc++_shared"]
