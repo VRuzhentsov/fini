@@ -28,8 +28,7 @@ path = "src/desktop.rs"
 required-features = ["ui-plane"]
 
 [lints.clippy]
-# The default clippy set; CI runs clippy with `-D warnings`. The Rust entries
-# of the pre-commit hook come after #202 and this pull request are merged.
+# The default clippy set; CI runs clippy with `-D warnings`.
 all = "warn"
 
 [patch.crates-io]
