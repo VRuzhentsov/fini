@@ -3082,6 +3082,9 @@ mod endpoint {
                     Ok((_, transport)) => Some(transport.attach_after(channel, first)),
                     Err(err) => {
                         log::warn!("[transport][ble] cannot take a session: {err}");
+                        if let Err(err) = channel.release().await {
+                            log::warn!("[transport][ble] incoming channel release failed: {err}");
+                        }
                         None
                     }
                 }
