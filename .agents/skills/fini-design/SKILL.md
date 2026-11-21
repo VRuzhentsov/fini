@@ -35,18 +35,8 @@ If `../fini-design/` is missing, stop and tell the user — design work cannot p
 
 ### Bundle layout
 
-| Path | Purpose |
-|---|---|
-| `README.md` | Authoritative handoff directives. Re-read on every session. |
-| `chats/*.md` | Design intent transcripts. Read FIRST. |
-| `project/README.md` | Design system reference: tone, vocabulary, principles, voice. |
-| `project/preview/*.html` | Per-surface prototypes (`quest-card`, `reminder`, `composer`, `nav`, `settings-section`, `device-list`, `device-view`, etc.). |
-| `project/preview/_*.{css,html,js}` | Shared partials imported by prototype pages. |
-| `project/colors_and_type.css` | Token definitions (color, type, scale). |
-| `project/ui_kits/app/` | Assembled kit (`Fini App.html`, `index.html`, `kit.css`, `Components.jsx`, `_theme.js`). |
-| `project/assets/` | Icons, app icon. |
-| `project/uploads/` | Supplemental references (pasted images, grilling notes). |
-| `project/tmp/` | Scratch screenshots. Ignore unless the chat cites them. |
+The bundle layout table is in `docs/development.md`, "Design source". Read it
+before the intake below.
 
 ## Required intake order
 

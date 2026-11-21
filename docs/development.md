@@ -18,6 +18,28 @@ How to write code: [`code-style.md`](code-style.md) and
 [`architecture/code-design.md`](architecture/code-design.md). Tests:
 [`testing.md`](testing.md).
 
+## Design source
+
+The design source of Fini is the sibling repo `../fini-design/`. It is an
+HTML/CSS/JS handoff bundle exported from claude.ai/design, and it is the
+source of truth for design. Figma follows the bundle. The agent process for
+design work is the `fini-design` skill.
+
+The bundle layout:
+
+| Path | Purpose |
+|---|---|
+| `README.md` | Authoritative handoff directives. Re-read on every session. |
+| `chats/*.md` | Design intent transcripts. Read FIRST. |
+| `project/README.md` | Design system reference: tone, vocabulary, principles, voice. |
+| `project/preview/*.html` | Per-surface prototypes (`quest-card`, `reminder`, `composer`, `nav`, `settings-section`, `device-list`, `device-view`, etc.). |
+| `project/preview/_*.{css,html,js}` | Shared partials imported by prototype pages. |
+| `project/colors_and_type.css` | Token definitions (color, type, scale). |
+| `project/ui_kits/app/` | Assembled kit (`Fini App.html`, `index.html`, `kit.css`, `Components.jsx`, `_theme.js`). |
+| `project/assets/` | Icons, app icon. |
+| `project/uploads/` | Supplemental references (pasted images, grilling notes). |
+| `project/tmp/` | Scratch screenshots. Ignore unless the chat cites them. |
+
 ## No legacy in alpha
 
 Fini is in open alpha and has not been publicly released. Treat the current source and schema as the only supported contract: do not add, preserve, or test legacy compatibility for prior Energy/Priority values, sync payloads, backup formats, migrations, or rollback paths unless the user explicitly directs it.
@@ -240,3 +262,88 @@ Keep repo-local skills, scripts, prompts, and generated artifacts portable acros
 - If a script needs a repository, prefer `FINI_REPO`; otherwise infer the GitHub `owner/repo` from the current checkout's `origin` remote.
 - If a prompt needs a greeting or addressee, use `FINI_DAILY_RECIPIENT` when it is set; otherwise write a neutral report with no personal salutation.
 - Mention bot behavior generically. Do not include concrete bot handles in repo-local skills.
+
+## Agent work
+
+The agent process is in the skills `fini-daily`, `fini-dev-agent`,
+`fini-dev-agent-install` and `fini-dev-telegram`. This section holds the facts
+that they share.
+
+### Ticket readiness
+
+Each candidate or delegated ticket has one of these readiness states:
+
+- `ready-to-start`: the ticket has a clear goal, bounded scope, expected
+  behavior, and a practical verification path.
+- `needs-clarification`: the ticket is potentially useful, but scope, product
+  intent, expected behavior, or verification is ambiguous. It is actionable
+  only after the missing scope, product, behavior, or verification decision is
+  answered.
+- `needs-human-review`: the ticket touches security, privacy, data migration,
+  release behavior, broad architecture, user-visible product direction, or
+  another high-risk area. It does not proceed without explicit maintainer
+  direction.
+
+### Dev agent jobs
+
+The Fini repo defines the portable job contract only. The scheduler, the
+host crontab, the credentials, the locks and the runtime state are in the
+private agent environment.
+
+Daily triage report:
+
+- Job ID: `fini-daily-issue-report`
+- Schedule: `0 8 * * *`
+- Timezone: local timezone, or `FINI_DAILY_TZ` when configured
+- Session: isolated
+- Prompt: load `fini-daily`, run from the local Fini checkout, use `triage` when available or `fini-daily`'s fallback ranking otherwise, query open GitHub issues and pull requests from `FINI_REPO` or the checkout's `origin` remote, include GitHub URLs, call out stale or near-ready PRs, and send the final report to `FINI_DAILY_TG_TARGET`
+- Delivery: Telegram `Daily` topic parsed from `FINI_DAILY_TG_TARGET`
+
+Branch fetch:
+
+- Job ID: `fini-fetch-all-branches`
+- Schedule: every `5m`
+- Session: isolated, light context
+- Prompt: run `git fetch --all --prune` from the local Fini checkout and report only failures
+- Delivery: none
+- Tool boundary: exec-only or equivalent least-privilege command execution
+
+Merged PR topic reconciliation (`fini-merged-pr-topic-reconcile`):
+
+- Optional local agent automation, not a Fini repo implementation.
+- May run every `5m` in the private agent environment.
+- Should query merged pull requests from `FINI_REPO` or the checkout's `origin` remote.
+- Should update only locally ignored issue-topic sync state.
+- Should not require source-controlled credentials, host paths, cron IDs, lock paths, or trust policy.
+
+### Issue topic sync file
+
+The issue topic sync file is a local JSON file. It records the dynamic Fini
+Dev issue topics. Its path is `FINI_ISSUE_TOPIC_SYNC_FILE`, then the legacy
+`FINI_ISSUE_TG_TOPIC_MAP`. When both are unset, the path is
+`issue-topic-sync.json` at the Fini checkout root.
+
+The file is runtime state and must stay untracked. Fini commits may document
+the shape, but must not commit real topic IDs, chat IDs, tokens, local paths,
+or author allowlists.
+
+The fields of an issue entry:
+
+- `issue`: GitHub issue number
+- `title`: issue title or topic title source
+- `issueTarget`: Telegram target in `<group-id>:topic:<thread-id>` form when available
+- `topicId`: messenger topic/thread ID when stored separately
+- `createdAt`, `mappedAt`, `startedAt`, or `topicCreatedAt`: entry-level mapping timestamp for stale-merge protection
+- `pullRequest`: optional related PR URL
+- `status`: local lifecycle state such as `open` or `closed`
+- `closedAt`: timestamp for local topic closure state
+- `closedByPullRequest`: PR URL that caused closure
+- `finalTopicNoteStatus`: local notification state such as `pending` or `sent`
+- `finalTopicNoteSentAt`: timestamp for final topic note delivery
+- `topicTitle`: last reconciled topic title
+
+When an agent creates an issue topic, it records the issue number, the title,
+the GitHub issue URL, `topicId`, `issueTarget` and `createdAt`. When the pull
+request of the issue is merged, it records `status: "closed"`, `closedAt`,
+`closedByPullRequest`, `topicTitle`, `finalTopicNoteStatus: "sent"` and
+`finalTopicNoteSentAt`.

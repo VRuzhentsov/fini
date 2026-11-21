@@ -1,5 +1,5 @@
 // Quest value sets, with no runtime imports so specs and e2e helpers can
-// import them (fini-code-style, "No magic strings").
+// import them (docs/code-style.md, "No magic strings").
 
 /** The status of a quest, or of one day of a repeating quest. */
 export const QuestStatus = {

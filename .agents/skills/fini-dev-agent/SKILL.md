@@ -56,11 +56,7 @@ If the task comes from a GitHub issue, follow `dev` branch guidance before editi
 
 ## Issue Readiness And Review Contract
 
-Treat the configured tracker ticket as the authoritative work source for delegated Fini implementation. The current Fini instance uses GitHub issues and pull requests, but tracker providers and communication channels belong to the agent environment. Before implementation, classify the delegated ticket in Fini-facing terms:
-
-- `ready-to-start`: the ticket has a clear goal, bounded scope, expected behavior, and a practical verification path.
-- `needs-clarification`: the ticket is actionable only after a missing scope, product, behavior, or verification decision is answered.
-- `needs-human-review`: the ticket touches security, privacy, data migration, release behavior, broad architecture, user-visible product direction, or another high-risk area that should not proceed without explicit maintainer direction.
+Treat the configured tracker ticket as the authoritative work source for delegated Fini implementation. The current Fini instance uses GitHub issues and pull requests, but tracker providers and communication channels belong to the agent environment. Before implementation, classify the delegated ticket with a readiness state: `ready-to-start`, `needs-clarification`, or `needs-human-review`. The states are defined in `docs/development.md`, "Ticket readiness".
 
 Treat the Fini `no-auto` label as a hard exclusion from autonomous pickup. Include `no-auto` tickets in reports and handoffs for visibility, but do not classify them as `ready-to-start` or begin branch, commit, push, or review-artifact work unless the maintainer explicitly overrides that ticket's exclusion for the current task.
 

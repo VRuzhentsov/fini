@@ -38,52 +38,11 @@ Do not add host-specific install scripts to this repository. If a local agent ne
 
 ## Expected Jobs
 
-Daily triage report:
-
-- Job ID: `fini-daily-issue-report`
-- Schedule: `0 8 * * *`
-- Timezone: local timezone, or `FINI_DAILY_TZ` when configured
-- Session: isolated
-- Prompt: load `fini-daily`, run from the local Fini checkout, use `triage` when available or `fini-daily`'s fallback ranking otherwise, query open GitHub issues and pull requests from `FINI_REPO` or the checkout's `origin` remote, include GitHub URLs, call out stale or near-ready PRs, and send the final report to `FINI_DAILY_TG_TARGET`
-- Delivery: Telegram `Daily` topic parsed from `FINI_DAILY_TG_TARGET`
-
-Branch fetch:
-
-- Job ID: `fini-fetch-all-branches`
-- Schedule: every `5m`
-- Session: isolated, light context
-- Prompt: run `git fetch --all --prune` from the local Fini checkout and report only failures
-- Delivery: none
-- Tool boundary: exec-only or equivalent least-privilege command execution
-
-Merged PR topic reconciliation:
-
-- Optional local agent automation, not a Fini repo implementation.
-- May run every `5m` in the private agent environment.
-- Should query merged pull requests from `FINI_REPO` or the checkout's `origin` remote.
-- Should update only locally ignored issue-topic sync state.
-- Should not require source-controlled credentials, host paths, cron IDs, lock paths, or trust policy.
+The jobs to install (the daily triage report, the branch fetch, and the optional merged PR topic reconciliation) are defined in `docs/development.md`, "Dev agent jobs". Install each job as it is defined there.
 
 ## Issue Topic Sync Contract
 
-Dynamic Fini Dev issue topics may be recorded in a local JSON file. The default local path is `issue-topic-sync.json` at the Fini checkout root unless `FINI_ISSUE_TOPIC_SYNC_FILE` or legacy `FINI_ISSUE_TG_TOPIC_MAP` points elsewhere.
-
-The file is runtime state and must stay untracked. Fini commits may document the shape, but should not commit real topic IDs, chat IDs, tokens, local paths, or author allowlists.
-
-Expected issue entry fields:
-
-- `issue`: GitHub issue number
-- `title`: issue title or topic title source
-- `issueTarget`: Telegram target in `<group-id>:topic:<thread-id>` form when available
-- `topicId`: messenger topic/thread ID when stored separately
-- `createdAt`, `mappedAt`, `startedAt`, or `topicCreatedAt`: entry-level mapping timestamp for stale-merge protection
-- `pullRequest`: optional related PR URL
-- `status`: local lifecycle state such as `open` or `closed`
-- `closedAt`: timestamp for local topic closure state
-- `closedByPullRequest`: PR URL that caused closure
-- `finalTopicNoteStatus`: local notification state such as `pending` or `sent`
-- `finalTopicNoteSentAt`: timestamp for final topic note delivery
-- `topicTitle`: last reconciled topic title
+The issue topic sync file (its path, the untracked rule, and the issue entry fields) is defined in `docs/development.md`, "Issue topic sync file". Keep the file untracked, and do not commit real topic IDs, chat IDs, tokens, local paths, or author allowlists.
 
 ## Prerequisites
 
