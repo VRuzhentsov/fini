@@ -93,10 +93,12 @@ class SyncForegroundService : Service() {
                     context.startService(intent)
                 }
                 startRefused = false
-            } catch (error: IllegalStateException) {
+            } catch (error: Exception) {
                 // From Android 12, an app in the background may not start a
                 // foreground service (ForegroundServiceStartNotAllowedException,
-                // an IllegalStateException). Rust asks for the service once,
+                // an IllegalStateException). Android can also refuse with
+                // another exception, for example a SecurityException, so each
+                // exception counts as a refusal. Rust asks for the service once,
                 // so a refusal used to be final: on a Pixel 6 Pro, Fini sent to
                 // the background before its first start was frozen about 1 min
                 // later, its advertisement stayed on, and centrals that

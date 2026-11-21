@@ -1658,20 +1658,46 @@ impl SessionHandler for SpaceSyncService {
 /// Starts the Android foreground service that keeps this process alive in
 /// the background, once. Only with the Nearby Devices permission: Android
 /// 14 and later need it for a `connectedDevice` service, and the start
-/// would end the process without it. Without the permission the next tick
-/// tries again.
+/// would end the process without it. Without the permission, or when the
+/// call does not get to Kotlin, the next tick tries again. When Android
+/// refuses the start, Kotlin tries again (`SyncForegroundService.startIfRefused`).
 #[cfg(target_os = "android")]
 fn start_sync_service_once() {
     if !crate::services::ble_plugin::permission_granted() {
         return;
     }
-    static STARTED: std::sync::Once = std::sync::Once::new();
-    STARTED.call_once(|| {
+    static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    run_until_success(&STARTED, || {
         crate::services::android_context::call_static_context_void(
             "com.fini.app.SyncForegroundService",
             "start",
-        );
+        )
     });
+}
+
+/// Runs `start` while `done` is false, and sets `done` only when `start`
+/// succeeds, so that a failed start runs again on the next call. Two calls
+/// at the same time do not both run `start`.
+#[cfg(any(target_os = "android", test))]
+fn run_until_success(
+    done: &std::sync::atomic::AtomicBool,
+    start: impl FnOnce() -> Result<(), String>,
+) -> bool {
+    use std::sync::atomic::Ordering;
+    if done
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return false;
+    }
+    match start() {
+        Ok(()) => true,
+        Err(err) => {
+            log::warn!("[space-sync] foreground service start failed; trying again on the next tick: {err}");
+            done.store(false, Ordering::Release);
+            false
+        }
+    }
 }
 
 /// Applying what a peer sent: changes to quests and spaces, and the
@@ -3510,7 +3536,35 @@ mod tests {
     use crate::schema::{pair_space_mappings, paired_devices, quests};
     use crate::services::db::open_db_at_path;
     use std::path::PathBuf;
+    use std::sync::atomic::AtomicBool;
     use uuid::Uuid;
+
+    /// The foreground service start: a call that did not get to Kotlin runs
+    /// again on the next tick, and a call that got there does not run again.
+    #[test]
+    fn foreground_service_start_runs_again_only_after_a_failure() {
+        let started = AtomicBool::new(false);
+        let mut calls = 0;
+
+        let ran = run_until_success(&started, || {
+            calls += 1;
+            Err("loading com.fini.app.SyncForegroundService failed".to_string())
+        });
+        assert!(!ran, "a failed start must not count as started");
+
+        let ran = run_until_success(&started, || {
+            calls += 1;
+            Ok(())
+        });
+        assert!(ran, "the start after a failure must run");
+
+        let ran = run_until_success(&started, || {
+            calls += 1;
+            Ok(())
+        });
+        assert!(!ran, "a start after a success must not run");
+        assert_eq!(calls, 2);
+    }
 
     struct Fixture {
         service: Arc<SpaceSyncService>,

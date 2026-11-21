@@ -64,34 +64,23 @@ fn load_app_class<'a>(
 
 /// Calls an app-defined Kotlin object's `@JvmStatic fun name(context:
 /// Context): Unit` — e.g. `SyncForegroundService.start`.
-/// Fire-and-forget: there is no synchronous result to return, only the
-/// eventual system permission dialog outcome, which the user resolves in
-/// their own time. Errors are logged, not propagated — a failed request
-/// attempt leaves the app exactly where it already was (ungranted).
-pub fn call_static_context_void(class_binary_name: &str, method: &str) {
-    let (vm, application) = match resolve_context() {
-        Ok(attached) => attached,
-        Err(err) => {
-            eprintln!("[android-context] bridge unavailable, not calling {class_binary_name}.{method}: {err}");
-            return;
-        }
-    };
-    let mut env = match vm.attach_current_thread_as_daemon() {
-        Ok(env) => env,
-        Err(err) => {
-            eprintln!("[android-context] JNI attach failed, not calling {class_binary_name}.{method}: {err}");
-            return;
-        }
-    };
+/// Gives `Ok` when the Kotlin method ran and returned, and an error when the
+/// call did not get to Kotlin (no context, no JNI attach, no class) or the
+/// method threw. The caller decides whether to try again.
+pub fn call_static_context_void(class_binary_name: &str, method: &str) -> Result<(), String> {
+    let (vm, application) = resolve_context().map_err(|err| {
+        format!("bridge unavailable, not calling {class_binary_name}.{method}: {err}")
+    })?;
+    let mut env = vm.attach_current_thread_as_daemon().map_err(|err| {
+        format!("JNI attach failed, not calling {class_binary_name}.{method}: {err}")
+    })?;
 
     let context_obj = application.as_obj();
-    let class = match load_app_class(&mut env, context_obj, class_binary_name) {
-        Ok(class) => class,
-        Err(err) => {
-            eprintln!("[android-context] loading {class_binary_name} failed: {err}");
-            return;
-        }
-    };
+    let class = load_app_class(&mut env, context_obj, class_binary_name).map_err(|err| {
+        // Clear the Java exception, so the next call on this thread can run.
+        let _ = env.exception_clear();
+        format!("loading {class_binary_name} failed: {err}")
+    })?;
     if let Err(err) = env.call_static_method(
         class,
         method,
@@ -100,6 +89,7 @@ pub fn call_static_context_void(class_binary_name: &str, method: &str) {
     ) {
         let _ = env.exception_describe();
         let _ = env.exception_clear();
-        eprintln!("[android-context] {class_binary_name}.{method} failed: {err}");
+        return Err(format!("{class_binary_name}.{method} failed: {err}"));
     }
+    Ok(())
 }
