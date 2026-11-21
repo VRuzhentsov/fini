@@ -1,71 +1,27 @@
 ---
 name: fini-versioning
-description: "Shared foundation for Fini app version metadata and version invariants. Use when changing package versions, About version display, CLI version output, Android version naming, Tauri/Cargo/npm metadata, or CI release version sync. For operational releases, release tags, and release workflow runbooks, use fini-release and load this skill only for metadata semantics. Depends on fini-scripting when implementation touches Makefile, npm scripts, cargo xtask, or CI command architecture."
+description: "Process for changes to Fini app version metadata and version invariants. Use when changing package versions, About version display, CLI version output, Android version naming, Tauri/Cargo/npm metadata, or CI release version sync. For operational releases, release tags, and release workflow runbooks, use fini-release and load this skill only for metadata semantics. Depends on fini-scripting when implementation touches Makefile, npm scripts, cargo xtask, or CI command architecture."
 ---
 
-# Fini Versioning Foundation
+# Fini versioning
 
-Use this skill when work touches app version metadata, package manifests, visible app version labels, CLI version output, Android versioning, or CI release version sync.
+Use this skill when work touches app version metadata, package manifests,
+visible app version labels, CLI version output, Android versioning, or CI
+release version sync. Use `fini-release` for operational releases. If the
+implementation changes Makefile targets, npm scripts, `cargo xtask`, or CI
+command architecture, also follow `fini-scripting`.
 
-Use `fini-release` for operational release commands, signed release tags, release workflow runbooks, and release CI verification.
+The invariants, the version surfaces, the release and automation boundaries,
+and Android versioning are in `docs/release.md`, "Versioning".
 
-If the implementation changes Makefile targets, npm scripts, `cargo xtask`, or CI command architecture, also follow `fini-scripting`.
-
-## Outcome
-
-Keep every shipped artifact and visible app version aligned with the release:
-
-- The signed `v*` tag is the deployment trigger.
-- The tagged commit is the source of truth for package metadata.
-- The release commit must already contain the release version files.
-- The app About version must match the package metadata in the tagged source.
-- CI should build from the tagged source without inventing a different release version.
-
-## Version Surfaces
-
-Treat these as app version surfaces:
-
-| Surface | Purpose |
-|---|---|
-| `package.json` | Frontend/package metadata and current Settings/About source |
-| `package-lock.json` | npm lockfile root package version |
-| `src-tauri/Cargo.toml` | Rust crate and CLI version metadata |
-| `src-tauri/Cargo.lock` | Resolved root crate version |
-| `src-tauri/tauri.conf.json` | Tauri app/bundle version metadata |
-| `src/views/settings/SettingsView.vue` | About version read path |
-| `src-tauri/src/services/cli.rs` | CLI version read path through Clap package metadata |
-| Android build variables | Android `versionName` and `versionCode` behavior |
-| `.github/workflows/release-tag.yml` | Release CI build and packaging behavior |
-
-When changing versioning, trace the write path, persisted metadata, and read path before claiming the version is fixed.
-
-## Release Boundary
-
-Operational releases are owned by `fini-release`. Versioning guidance here only defines which metadata must be aligned and how it is updated.
-
-The release commit should already contain the release version metadata before the signed tag is pushed. CI may still sync metadata from the tag as a defensive build step, but the committed source should not intentionally lag the release tag.
-
-## Automation Boundary
-
-Version metadata mutation belongs in `cargo xtask` because it parses and edits multiple manifest formats.
-
-The Release Button workflow (`.github/workflows/release-button.yml`) calls `cargo xtask release-version <x.y.z>` for the release metadata update; releases run only in CI. The release workflows may call the same `cargo xtask` command directly if they need version verification or metadata sync. The Makefile is for local development only.
-
-Follow `fini-scripting` for details on balancing `npm run`, `cargo xtask` and the local Makefile.
-
-## Android Versioning
-
-Android local deploys may use git-derived dev metadata for `versionName` (latest reachable tag plus short SHA), but `versionCode` always comes from the project's own metadata (`tauri.properties`). Do not override it, with epoch seconds or anything else: an inflated code makes every other build of the same version, including `make android-dev`, fail to install with `INSTALL_FAILED_VERSION_DOWNGRADE`.
-
-Release Android artifacts should align with the tagged release metadata unless a platform-specific store requirement explicitly requires a separate monotonic code.
-
-## Verification
-
-For versioning changes, collect evidence for:
-
-- Write path: command or code that updates version metadata.
-- Persisted data: exact files and fields changed.
-- Read path: About UI, CLI version, Tauri metadata, or Android metadata as applicable.
-- Release safety: defer operational branch, tag, push, and CI workflow evidence to `fini-release`.
-
-Use safe checks first. Do not create commits, push branches, or push tags unless the user explicitly requested a real release.
+1. Read `docs/release.md`, "Versioning", and find each version surface that
+   the change touches.
+2. Put version metadata mutation in `cargo xtask`.
+3. Trace the write path, persisted metadata, and read path before claiming
+   the version is fixed. Collect evidence for:
+   - Write path: command or code that updates version metadata.
+   - Persisted data: exact files and fields changed.
+   - Read path: About UI, CLI version, Tauri metadata, or Android metadata as applicable.
+   - Release safety: defer operational branch, tag, push, and CI workflow evidence to `fini-release`.
+4. Use safe checks first. Do not create commits, push branches, or push tags
+   unless the user explicitly requested a real release.

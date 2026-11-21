@@ -1,65 +1,93 @@
 ---
 name: fini-dev
-description: "Always use this at the start of development work in the Fini repo. Orchestrates which repo-local or gstack skill to load, which Makefile command to prefer, what context to read, and what evidence is required before claiming implementation, debugging, QA, Android, design-to-code, release, or documentation work is complete."
+description: "Always use this at the start of development work in the Fini repo. Gives the dev process (Spike and Stabilize) and orchestrates which repo-local or gstack skill to load, which Makefile command to prefer, what context to read, and what evidence is required before claiming implementation, debugging, QA, Android, design-to-code, release, or documentation work is complete."
 ---
 
-# Fini Development Orchestrator
+# Fini development
 
-Use this skill as the first step for development work in this repository. It is a routing and evidence checklist, not a replacement for specialized skills.
+The development pattern is **Spike and Stabilize** (Dan North). Spike:
+implement the requested feature first, with no tests, then verify it manually
+against the requirements. Stabilize: only then refactor and bring the tests up
+to date. Follow the steps below in order. `AGENTS.md` holds the project
+instructions; `docs/development.md` holds the commands and the development
+rules.
 
-## Outcome
+Write in STE from the first draft ("Use STE" below), and verify with concrete
+evidence before you report success.
 
-Keep every development session consistent:
+## 1. Understand the change
 
-- Run the first-checkout install bootstrap once before normal routing.
-- Pick the right specialized skill before doing domain work.
-- Use the repo's documented context path instead of guessing.
-- Prefer Makefile targets over raw commands.
-- Make the smallest correct change.
-- Write in STE from the first draft: names, comments, log and assertion messages, test titles, docs, commit and PR text (see "Use STE"). Do the STE check yourself; the user does not ask for it.
-- Verify with concrete evidence before reporting success.
+1. Run the first-checkout install bootstrap once before normal routing.
+2. If the work is driven by a GitHub issue, create or switch to a branch whose name includes the issue number before editing, such as `issue-123-short-topic` or `fix/123-short-topic`. Reuse an existing branch if it already contains the issue number, and pause before switching branches if the worktree has conflicting uncommitted changes.
+3. Inspect the ticket labels. When a Fini ticket has the `design` label, load `fini-design` before planning, updating, closing, or implementing it.
+4. State the target outcome, in-scope work, out-of-scope work, and success checks in the user's terms.
+5. Read only the context needed for the task: `AGENTS.md`, `docs/development.md`, `docs/naming.md` and `docs/glossary.md` (for each task that writes code or text), the relevant page in `docs/architecture/`, the relevant folder `README.md` and companion `.md` specs where they still exist, `docs/adr/`, and targeted source files.
+6. Choose the scoped skill from "Skill routing" below.
+7. If the user explicitly asks to think, plan, brainstorm, or review without implementation, do that mode first and do not edit files until execution is requested.
 
-## Development Pattern: Spike and Stabilize
+## 2. Decide the design
 
-Fini uses Spike and Stabilize (Dan North) as its main development pattern. Do the steps in this order:
+1. For any planning stage, load `grill-me` before finalizing the plan: explicit think/plan/brainstorm requests, ticket scoping, architecture plans, design plans, release plans, QA strategy, and any pre-implementation decision work. Use it as an overlay on the domain skill. Gather evidence from the repo, specs, ADRs, or source files first; ask the user only for decisions evidence cannot resolve, one question at a time, with the recommended answer. Stop when the remaining questions are non-blocking or explicitly deferred.
+2. Shape the change as `docs/architecture/code-design.md` says: find the object that owns the data and the interface it implements, search for code that does the job already, and put the change there.
+3. Apply "No legacy in alpha" in `docs/development.md`.
+4. When the user must choose, follow "Asking the user for a decision" in `AGENTS.md`.
+5. Pick the manual checks against the requirements before editing (step 4), so the success standard is clear.
 
-1. **Spike.** Implement the requested feature first, with no tests. Iterate on the running HMR apps ("Command Selection").
-2. **Verify manually.** Check the feature against the requirements on the running apps, through `fini-cli` and the devtools bridge (`fini-android-testing`). Keep a list of the checks and their results. Continue only when the feature works as the requirements say.
-3. **Stabilize.** Refactor the code (`fini-code-style`, `docs/architecture/code-design.md`), then bring the tests up to date: load `fini-test` and do its "Stabilize" steps.
+## 3. Spike: write the code
 
-"PR Lifecycle" below puts these steps on the PR: steps 1 and 2 are stages 1 and 2, step 3 is stage 3.
+1. Before you write or review code, read `docs/code-style.md`.
+2. Start the HMR processes and iterate on them (`docs/development.md`, "Development runs on HMR; the user builds artefacts"). Prefer the Makefile targets in "Make targets and what CI runs"; do not invent targets.
+3. Implement the requested feature. Do not write tests yet.
+4. Establish evidence for the current behavior first: code path, spec, failing output, test result, log, or reproducible step. Trace write path, persisted data, and read path when data behavior is involved.
+5. Make the smallest scoped change that addresses the root cause or requested behavior. Avoid broad refactors and compatibility layers unless they prevent a concrete defect. Putting a behavior on the existing interface or object that owns it is not a broad refactor: do it. Remove the code that your change makes unused.
+6. Preserve user or other-agent changes in the worktree.
+7. Keep paths and instructions portable (`docs/development.md`, "Portable files").
+8. Keep the PR a draft while the work is in progress. CI skips drafts (`.github/workflows/ci.yml`).
+9. Prove each step with a compile check (`cargo check`, `npm run build`) and manual checks through the devtools bridge (`docs/android.md`, "The devtools bridge"): the happy path and the basic edge cases of that step. Commit and push each step that passes.
+10. Leave test files alone during the draft. A test that fails after a planned behaviour change stays failing until step 5; do not edit its expectation to match the new code, and do not run or fix the suites per step — the next step can change the behaviour again. The only allowed edit is a compile adaptation (a changed function signature), named in the report.
 
-## No-Legacy Policy
+## 4. Spike: verify manually
 
-Fini is in open alpha and has not been publicly released. Treat the current source and schema as the only supported contract: do not add, preserve, or test legacy compatibility for prior Energy/Priority values, sync payloads, backup formats, migrations, or rollback paths unless the user explicitly directs it.
+1. Check the feature against the requirements on the running apps. Seed and query state through `fini-cli` (`docs/development.md`, "Dev data"); use the UI for visual confirmation only. Use `fini` instead when the dev task maps directly to an end-user action (e.g. "create a quest titled X due Friday in Family"). Drive the apps as `docs/testing.md`, "Drive the running apps" says.
+2. Keep a list of the checks and their results; step 5 turns it into test proposals. Continue only when the feature works as the requirements say.
+3. Gate to leave draft: prove the feature's happy flow end to end on the running apps or real hardware, and put the evidence in the PR description: what was run, on which devices, and the result. For Bluetooth, that means pairing both ways, the session going green, and a quest syncing both ways. Then mark the PR ready for review; that starts CI.
 
-When a contract changes during alpha, implement the new contract directly. Remove obsolete adapters and mappings rather than carrying a compatibility layer for an unreleased predecessor.
+Verification for each area:
 
-## Start Of Work
+- Frontend-only logic or UI: run the narrowest available type/build check (`npm run build`); use browser/QA skill when visual behavior matters.
+- Backend Rust or Tauri command changes: run the narrowest Rust or app build check available; include command output evidence. After a Rust change, confirm that the running app has it.
+- Cross-process, sync, or persistence changes: verify write path, storage/outbox/database effects, and read path.
+- E2E-sensitive flows: in the stabilize phase, run the affected e2e projects (`fini-test`, "Stabilize"). Use `make e2e-headed` for local visible debugging. For CI-parity evidence, run what CI runs: `npm run gate:e2e:build-image` and `npm run gate:e2e:run`.
+- Android behavior: load `fini-android-testing`; the deploy targets and when to use each are in `docs/android.md`.
+- Fini CLI or app binary behavior: load `fini-cli`; use `make runtime-smoke` for runtime container CLI checks or `make build` for a local release-profile binary. Use the CLI for all programmatic interaction with the app; do not use webview or IPC MCP tooling to drive the app.
+- Runtime/container behavior beyond the CLI surface: use `make runtime-smoke` or the relevant image target.
+- Release work: load `fini-release`. Releases run only in CI, through the Release Button that the user starts. Do not create or push tags.
 
-Before implementation, debugging, QA, Android, design-to-code, release, or documentation changes:
+If a command cannot be run, say why, what evidence is missing, and the exact command the user can run.
 
-1. If the work is driven by a GitHub issue, create or switch to a branch whose name includes the issue number before editing, such as `issue-123-short-topic` or `fix/123-short-topic`.
-2. State the target outcome, in-scope work, out-of-scope work, and success checks in the user's terms.
-3. Read only the context needed for the task: `AGENTS.md`, `docs/naming.md` and `docs/glossary.md` (for each task that writes code or text), the relevant page in `docs/architecture/`, the relevant folder `README.md` and companion `.md` specs where they still exist (they move to `docs/` when touched; see `fini-documentation`), `docs/adr/`, and targeted source files.
-4. Choose any specialized skill from the routing table below before doing the domain-specific work.
-5. Pick the manual checks against the requirements before editing ("Spike and Stabilize", step 2) so the success standard is clear.
+## 5. Stabilize
 
-For GitHub issue work, keep the branch rule lightweight: reuse an existing branch if it already contains the issue number, and pause before switching branches if the worktree has conflicting uncommitted changes.
+1. Once the system works as designed, refactor. Review the diff against the "Review checklist" in `docs/code-style.md`, and the scoped skill's checklist.
+2. Bring the tests up to date: load `fini-test` and do its "Stabilize" steps. For each failing test, report what it expects and which decision changed that behaviour, then fix, clean up or delete it as the user decides.
+3. Show the user the test cases you propose to add, based on the manual checks from step 4, and add the ones they choose.
+4. Do the STE check of the full branch diff ("Use STE", step 7).
+5. Get CI green, and bring the PR title and description up to date with everything the branch now contains.
 
-If the user explicitly asks to think, plan, brainstorm, or review without implementation, do that mode first and do not edit files until execution is requested.
+## 6. Update docs and hand off
 
-## Planning Grill
+1. Update the docs that describe the changed behavior or structure, and `docs/glossary.md` for new terms. Load `fini-documentation` for each doc change.
+2. Commit and push to the active PR branch (`AGENTS.md`, "Workflow"). The user reviews and merges. One worker keeps one branch and one PR for all of its work (`git-workflow`).
+3. Report, concisely:
+   - What changed, with file references.
+   - Verification evidence, with commands and outcomes.
+   - The STE check: that you read the diff for STE, and each new term that needs the approval of the user.
+   - Any limits, skipped checks, or residual risks.
 
-For any planning stage, load `grill-me` before finalizing the plan. Treat planning broadly: explicit think/plan/brainstorm requests, ticket scoping, architecture plans, design plans, release plans, QA strategy, and any pre-implementation decision work.
+Lead with evidence when the user explicitly asks for proof.
 
-Use `grill-me` as an overlay, not a replacement for domain skills. First gather evidence from the repo, specs, ADRs, or source files when evidence can answer the question; ask the user only for decisions evidence cannot resolve. Ask one question at a time, include the recommended answer, and stop when remaining questions are non-blocking or explicitly deferred.
+## Skill routing
 
-## Skill Routing
-
-Load the specialized skill when its condition applies:
-
-For GitHub issue or ticket work, inspect the ticket labels before choosing the domain skill. When a Fini ticket has the `design` label, load `fini-design` before planning, updating, closing, or implementing the ticket, even if the title/body does not explicitly mention the design bundle.
+Load the scoped skill when its condition applies. When no skill fits, continue with this skill's process.
 
 | Condition | Skill |
 |---|---|
@@ -67,10 +95,9 @@ For GitHub issue or ticket work, inspect the ticket labels before choosing the d
 | Use, validate, or reason about the Fini app binary, CLI mode, app launch mode, or runtime container CLI behavior | `fini-cli` |
 | Populate data, seed state, or exercise a feature against the running/installed app for dev or testing | `fini-cli` |
 | Validate Android behavior, prove Android navigation/state, or debug Android-only behavior | `fini-android-testing` |
-| Run, write, debug, or organize unit, integration, or e2e tests across frontend Jest, Rust cargo tests, single-app UI e2e, multi-device and device-support e2e (virtual Linux and virtual Android test devices), or CLI e2e. For Android on a physical phone, use `fini-android-testing` instead | `fini-test` |
+| Run, write, debug, or organize unit, integration, or e2e tests (step 5). For Android on a physical phone, use `fini-android-testing` instead | `fini-test` |
 | Ticket has GitHub label `design`, or work designs/refines native Figma components, variants, screens, visual systems, or Fini UI surfaces | `fini-design` |
 | Change Vue frontend code under `src/`, especially view components, templates, conditional rendering, lists, or frontend tests | `fini-frontend`; also load `fini-test` for test authoring/execution |
-| Any code change (Rust, TypeScript, Vue, tests or e2e helpers) — always, not only when style seems to matter | `fini-code-style`, alongside whichever domain skill governs the surface being touched |
 | Change SQLite schema, Diesel schema, data migrations, migration rollback, or database migration tests | `fini-dev-db`; also load `fini-test` for migration coverage |
 | Add or change Makefile targets, npm scripts, `xtask`, CI command orchestration, build tooling, packaging tooling, or repo-local automation architecture | `fini-scripting` |
 | Make a release, bump a release version for shipping, push a release tag, inspect release readiness, fix release automation, or verify release CI | `fini-release`; also load `fini-versioning` for metadata semantics and `fini-scripting` when automation changes are needed |
@@ -90,131 +117,14 @@ For GitHub issue or ticket work, inspect the ticket labels before choosing the d
 | Planning, scoping, or decision-tree clarification before implementation | `grill-me`, plus the relevant domain skill |
 | Create, start, or draft tickets | `fini-create-ticket`, `start-ticket`, or `ticket-markdown` |
 | Add, move, or change docs, specs, READMEs, ADRs, the glossary, or architecture pages | `fini-documentation` |
-
-When no specialized skill fits, continue with this skill's project workflow.
-
-## No User-Specific Paths
-
-Never write absolute paths containing a username, home directory, or machine-specific prefix into any source file, config, permission entry, or generated artifact. This includes paths like `/home/<user>/`, `/var/home/<user>/`, or `/Users/<user>/`.
-
-- Use paths relative to the project root for anything inside the repo (`src-tauri/target/debug/fini`, not `/home/<user>/projects/fini/src-tauri/...`).
-- Use `~` for paths relative to the user's home directory (`~/.local/share/fini/fini.db`, not `/home/<user>/.local/...`).
-- Use a task-appropriate scoped scratch path, such as the repository's ignored `tmp/` directory or a platform-provided runtime directory. Do not prescribe a global scratch path.
-- When adding permission entries to `.claude/settings.local.json`, use relative or `~`-anchored paths only. The local config is project-specific and minimal; do not accumulate machine-specific one-off entries there.
-
-## User-Agnostic Agent Instructions
-
-Keep repo-local skills, scripts, prompts, and generated artifacts portable across Fini users and agent hosts.
-
-- Do not hard-code a person's name, an agent nickname, a bot username or handle, a chat ID, a topic ID, or a repository owner in source-controlled instructions.
-- Refer to configured values instead, such as `FINI_REPO`, `FINI_DAILY_RECIPIENT`, `FINI_DAILY_TG_TARGET`, `FINI_PROGRESS_TG_TARGET`, and `FINI_DEV_TG_CHANNEL_ID`.
-- If a script needs a repository, prefer `FINI_REPO`; otherwise infer the GitHub `owner/repo` from the current checkout's `origin` remote.
-- If a prompt needs a greeting or addressee, use `FINI_DAILY_RECIPIENT` when it is set; otherwise write a neutral report with no personal salutation.
-- Mention bot behavior generically. Do not include concrete bot handles in repo-local skills.
-
-## Instruction Authoring Style
-
-When writing or editing any repo-local skill, `AGENTS.md`/`CLAUDE.md`, spec, or companion doc, describe the behavior an agent should follow, not the behavior it should avoid.
-
-- Write instructions as affirmative, actionable defaults: "Do X", "Use Y", "Prefer Z" — not "Don't do X".
-- State the expected behavior and default first, so the desired outcome is explicit before any exception.
-- Pair a real limitation with what to do instead, in the same instruction, rather than leaving a bare prohibition.
-- Reserve prohibition wording ("never", "do not") for hard safety, security, or compliance constraints — the kind of boundary that has no affirmative substitute.
-- When reviewing or reformatting an existing instruction, prefer rewriting a standalone negative into its affirmative form over adding a second negative sentence next to it.
-
-## Project Context Rules
-
-Use the repo structure as the default map:
-
-- Frontend: `src/`, Vue 3, TypeScript, Vite, Tailwind CSS, DaisyUI, Pinia.
-- Backend: `src-tauri/`, Rust, Tauri 2, Diesel, SQLite.
-- Domain specs and companion specs: `specs/`, folder `README.md` files, and sidecar `.md` files next to source files.
-- Repo automation: `Makefile` is the primary human execution entrypoint, `npm run` owns JS/TS package tasks, and `xtask/` owns non-trivial automation logic. See `fini-scripting`.
-
-For Vue templates and CSS/class work, prefer the existing UI framework before writing local styles:
-
-- Use DaisyUI component classes first when they express the control or surface.
-- Use Tailwind utilities for layout, spacing, sizing, state, and small visual adjustments.
-- Add scoped custom CSS/classes only when DaisyUI/Tailwind cannot produce a high-quality result, when a reusable semantic component class already exists locally, or when a narrow interaction/layout behavior would be unreadable as utilities.
-- Keep custom CSS concise and justify it through the component/spec context; do not create parallel style systems, broad one-off class taxonomies, or copied prototype class names.
-
-Before changing a significant source file, read its companion `.md` spec when present. Write code to match the spec, or update docs/specs deliberately when the behavior changes.
-
-For product semantics and decision history, read `specs/` and `docs/adr/`.
-
-## Dev Data Population And Feature Exercise
-
-When setting up data for manual testing, QA, or feature exercise:
-
-- Load `fini-cli` for binary mechanics. Use `fini quest create`, `fini reminder create`, `fini space list`, etc. to seed and query state.
-- CLI is the only supported automation surface against the running app. Do not drive data population through the UI or through webview/IPC MCP tools (`mcp___hypothesi_tauri-mcp-server__*`). Those tools are not available in this repo's workflow.
-- Use CLI for: seeding a reminder due soon to trigger a notification, building a history dataset across multiple spaces, completing or abandoning quests to verify state transitions, listing state as evidence after a write.
-- Use the UI (via `make dev`) for visual confirmation of the result only — not for setup.
-- `fini` (user-facing skill) is appropriate when the dev task maps directly to an end-user action (e.g. "create a quest titled X due Friday in Family"). For dev-only data patterns, route directly to `fini-cli`.
-
-## Command Selection
-
-### Development runs on HMR; the user builds artefacts
-
-For any development or iteration run, start the **HMR processes** and leave
-them running:
-
-| Side | Use | Not |
-|---|---|---|
-| Desktop | `make desktop-debug-dev` | `make desktop-debug` (builds a binary first) |
-| Phone | `make android-dev` | `make android-debug-deploy` (builds and installs an APK) |
-
-A frontend edit then reaches both apps immediately. Building an artefact for
-an iteration costs minutes per change and is the user's call, not a default:
-reach for one only when the artefact itself is the thing under test — a
-release check, or something that must run against an installed package.
-
-Two limits to state rather than work around silently:
-
-- **HMR covers the frontend only.** A Rust change needs a rebuild, and
-  `tauri dev` does not always pick one up on its own. After editing Rust,
-  confirm the running app actually has the change (query the behaviour, do
-  not assume) and restart the dev process when it does not.
-- **Bluetooth-only proof can retain Wi-Fi and HMR.** Keep both paired Network
-  channels off and verify that Bluetooth carries the session and test data
-  (`make e2e-devices-ble`). Use an installed package only when the test needs
-  independence from HMR. Change radio settings only with specific user approval.
-
-On your own computer, prefer these Makefile targets over raw `npm`, `tauri`, or container commands. Make is for local development only (`fini-scripting`, "Make is local only"): for CI, a release, a container or CI-parity evidence, use what the last column names.
-
-| Need | Local command | What CI runs |
-|---|---|---|
-| Desktop dev app | `make dev` | – |
-| Local release-profile desktop build (not a release) | `make build` | `npm run tauri build` in the `linux` `build` image (`release-tag.yml`, `build-linux`) |
-| Visible local two-app E2E | `make e2e` or `make e2e-headed` | – |
-| Containerized E2E, as CI runs it | `make e2e-ci` | `npm run gate:e2e:run` in the `linux` `e2e` image (job Quality Gates) |
-| Build/update E2E images | `make e2e-image` | `.github/actions/container-stage`, `linux` `e2e` |
-| Full containerized E2E | `make pr-gate-e2e` | `npm run gate:e2e:run` (job Quality Gates) |
-| Runtime container image | `make runtime-image` | `linux` `runtime` stage (job Quality Gates; `release-tag.yml`, `build-docker-image`) |
-| Runtime CLI smoke | `make runtime-smoke` | `<engine> run --rm <image> --help` (job Quality Gates) |
-| Android device list | `make android-devices` | – |
-| Android Wi-Fi connect | `make android-connect` once after `make android-devices`; if it times out, stop and ask the user to re-authorize wireless debugging or use USB/emulator | – |
-| Android hot reload | `make android-dev` | – |
-| Android build | `make android-build` | `npm run tauri android build` in the `android` `build` image (`release-tag.yml`, `build-android`) |
-| Android debug-signed release deploy (shares `com.fini.app`'s id) | `make android-release-deploy-debugsigned` | – |
-| Android debug deploy (separate `com.fini.app.debug` id, Tauri logs enabled) | `make android-debug-deploy` | – |
-| Android local release deploy | `make android-release-deploy-local` | – |
-
-A release has no Make target. Releases run only in CI: the user starts the Release Button GitHub Action (`.github/workflows/release-button.yml`), and its tag push starts `release-tag.yml` (`fini-release`).
-
-Use package scripts directly only when no Makefile target exists or when a narrower check is clearly better, such as `npm run build` for frontend type/build validation.
-
-Use `fini-scripting` for command architecture details. Default to Makefile for human entrypoints, `npm run` for JS/TS package scripts, and `xtask/` for non-trivial repo automation logic.
-
-Do not invent generic targets such as `make test`, `make lint`, or `make check` unless they exist in the current `Makefile`. If a desired target is missing, name the closest existing target from the table or state that no Makefile target exists for that check.
-
-## Naming
-
-Two files. `docs/glossary.md` is what the words **mean**: go there to choose *which* word. `docs/naming.md` is how Fini **writes**: STE, the dictionary check for each word, and how names are formed. Read the relevant one before you name or rename a table, module, type, command or DOM hook. Either file wins over what the code says now. Load `fini-code-style` with them for the rules that are not about names.
+| Work as an autonomous, remote, or delegated agent | `fini-dev-agent` |
+| Work in the Fini Dev Telegram group, or route work across its topics | `fini-dev-telegram` |
+| Write the daily Fini issue and pull request report | `fini-daily` |
+| Install, repair, or verify local Fini dev-agent schedules | `fini-dev-agent-install` |
 
 ## Use STE
 
-Fini writes in ASD-STE100 Simplified Technical English (STE): names in code, comments, log messages, docs, screen text, commit messages, PR text, agent instructions, and what you write to the user.
+Fini writes in ASD-STE100 Simplified Technical English (STE): names in code, comments, log messages, docs, screen text, commit messages, PR text, agent instructions, and what you write to the user. Do the STE check yourself; the user does not ask for it.
 
 1. Read `docs/naming.md` before you write any of these.
 2. For each new name, comment and log message, do the check in `docs/naming.md`, "Check a name before you write it". Look up each word in the STE dictionary.
@@ -227,73 +137,3 @@ Fini writes in ASD-STE100 Simplified Technical English (STE): names in code, com
 9. Talk to the user in STE too. Tell the meaning of each term before you use it.
 
 During the change to STE, change the names, comments, and text of each file that you change. Leave other files as they are.
-
-## Code Reuse
-
-Before adding a new constant, function, type, or utility, search for an existing one:
-
-- Check `src/stores/` for domain constants and helpers (e.g. `BUILTIN_SPACE_IDS`, `isBuiltinSpace` in `space.ts`).
-- Check `src/utils/` for general-purpose utilities.
-- Check `src/composables/` for shared Vue composables.
-- Use `grep -r` or the Explore agent when the location is not obvious.
-
-If an equivalent already exists, import and reuse it. Do not duplicate logic in a view, component, or test that belongs in a store or utility. If the existing name is slightly different but semantically identical, prefer renaming the call site over adding a wrapper.
-
-When writing tests that mock an entire module (`jest.mock`), re-export all named constants and functions the component under test imports from that module — omitting them silently produces `undefined` at runtime.
-
-## PR Lifecycle
-
-A pull request moves through three stages. Use each stage's checks and no others:
-
-1. **Draft: build it.** Keep the PR a draft while the work is in progress. Iterate on the running HMR apps (desktop and phone), and prove behaviour by exercising it there. CI skips drafts (`.github/workflows/ci.yml`), and unit tests and e2e lanes wait for stage 3: tests on code that does not work yet are wasted runs.
-   - Prove each step with a compile check (`cargo check`, `npm run build`) and manual checks through the devtools bridge (`fini-android-testing`): the happy path and the basic edge cases of that step. Commit and push each step that passes.
-   - Leave test files alone during the draft. A test that fails after a planned behaviour change stays failing until stage 3; do not edit its expectation to match the new code, and do not run or fix the suites per step — the next step can change the behaviour again. The only allowed edit is a compile adaptation (a changed function signature), named in the report.
-   - Keep a list of the manual bridge checks you ran; stage 3 turns it into test proposals.
-2. **Gate to leave draft: the happy flow works.** Prove the feature's happy flow end to end on the running apps or real hardware, and put the evidence in the PR description: what was run, on which devices, and the result. For Bluetooth, that means pairing both ways, the session going green, and a quest syncing both ways. Then mark the PR ready for review; that starts CI.
-3. **Wrap-up (Stabilize): make it mergeable.** Once the system works as designed: refactor, then update the tests and run only the affected tests (`fini-test`, "Stabilize"), and do the STE check of the full branch diff ("Use STE", step 7); for each failing test, report what it expects and which decision changed that behaviour, then fix, clean up or delete it as the user decides. Then show the user the test cases you propose to add, based on the manual bridge checks from stage 1, and add the ones they choose. Get CI green, and bring the PR title and description up to date with everything the branch now contains.
-
-The user reviews and merges. One worker keeps one branch and one PR for all of its work (`git-workflow`).
-
-## Development Loop
-
-Use this loop for implementation and fixes:
-
-1. Establish evidence for the current behavior: code path, spec, failing output, test result, log, or reproducible step.
-2. Trace write path, persisted data, and read path when data behavior is involved.
-3. Shape the change as `docs/architecture/code-design.md` says: find the object that owns the data and the interface it implements, search for code that does the job already (see Code Reuse above), and put the change there.
-4. Make the smallest scoped change that addresses the root cause or requested behavior.
-5. Avoid broad refactors and compatibility layers unless they prevent a concrete defect. Putting a behavior on the existing interface or object that owns it is not a broad refactor: do it. Remove the code that your change makes unused.
-6. Preserve user or other-agent changes in the worktree.
-7. Update companion docs/specs when behavior or structure changes.
-8. Verify manually against the requirements on the running apps; the tests come in the stabilize phase (`fini-test`, "Stabilize").
-9. Report the exact evidence collected and any remaining risk.
-
-Resolve compiler warnings by improving code structure, feature boundaries, visibility, or imports. Treat broad suppression such as crate-level `allow(dead_code, unused_imports)` as a user-owned exception: add it only after explicit user approval, keep its scope as narrow as possible, and call it out in the report.
-
-## Verification Defaults
-
-Choose verification based on touched area:
-
-- Frontend-only logic or UI: run the narrowest available type/build check (`npm run build`); use browser/QA skill when visual behavior matters.
-- Backend Rust or Tauri command changes: run the narrowest Rust or app build check available; include command output evidence.
-- Cross-process, sync, or persistence changes: verify write path, storage/outbox/database effects, and read path.
-- E2E-sensitive flows: in the stabilize phase, run the affected e2e projects (`fini-test`, "Stabilize"). Use `make e2e-headed` for local visible debugging. For CI-parity evidence, run what CI runs: `npm run gate:e2e:build-image` and `npm run gate:e2e:run`.
-- Android behavior: load `fini-android-testing`; use `make android-devices`, one bounded `make android-connect` attempt when needed, and `make android-dev` for dev-runtime verification, or `make android-release-deploy-debugsigned` when an installed APK check is needed. Use `make android-debug-deploy` (separate `com.fini.app.debug` id) instead when diagnosing silent plugin failures — this enables Tauri Kotlin logging (`BuildConfig.DEBUG=true`, suppressed in the release profile) and is safe to install alongside a Play Store `com.fini.app` without conflict.
-- Test execution or test authoring across any surface (FE Jest, BE cargo, e2e cli/ui/multi-device/device-support): load `fini-test` for the canonical command + authoring guide.
-- Manual feature verification or scenario setup: drive state via `fini-cli`; reserve the UI for visual confirmation of the result.
-- Fini CLI or app binary behavior: load `fini-cli`; use `make runtime-smoke` for runtime container CLI checks or `make build` for a local release-profile binary (a release runs only in CI: `fini-release`). Use CLI for all programmatic interaction with the app; do not use webview or IPC MCP tooling to drive the app.
-- Runtime/container behavior beyond the CLI surface: use `make runtime-smoke` or the relevant image target.
-- Release work: load `fini-release`. Releases run only in CI, through the Release Button that the user starts. Verify them with `gh run list` and `gh run view` on `release-button.yml` and `release-tag.yml`. Follow the release tag rules in `AGENTS.md`, and do not create or push tags.
-
-If a command cannot be run, say why, what evidence is missing, and the exact command the user can run.
-
-## Reporting Pattern
-
-Final responses for development work should include:
-
-- What changed, with file references.
-- Verification evidence, with commands and outcomes.
-- The STE check: that you read the diff for STE, and each new term that needs the approval of the user.
-- Any limits, skipped checks, or residual risks.
-
-Keep this concise. Lead with evidence when the user explicitly asks for proof.

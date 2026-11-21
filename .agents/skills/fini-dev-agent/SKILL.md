@@ -106,30 +106,11 @@ When invoked from Fini Dev:
 4. Stay quiet when the message is ordinary human discussion and no useful action or correction is needed.
 5. Never expose private workspace, credential, or unrelated personal context into the group while using prior messages.
 
-### Dynamic Issue Topics
+### Issue Topics
 
-Every GitHub issue that an autonomous Fini agent is actively working on should have its own Fini Dev Telegram forum topic.
-
-Before sending progress for issue work:
-
-1. Check the issue/topic sync file at `FINI_ISSUE_TOPIC_SYNC_FILE`, then legacy `FINI_ISSUE_TG_TOPIC_MAP`, or, if both are unset, `issue-topic-sync.json` at the local Fini checkout root.
-2. If the issue already has an `issueTarget`, use that for all issue-specific progress, blockers, verification evidence, and PR-ready handoff.
-3. If no mapping exists and Telegram topic creation is available, create a topic named `#<issue> <short title>` in the Fini Dev group.
-4. Record the mapping immediately with the issue number, title, GitHub URL, topic id, `<group-id>:topic:<thread-id>` target, and `createdAt` timestamp.
-5. Send a short starting message inside the new issue topic so future readers know the branch, PR, and current phase.
-
-Use the shared `In Progress` topic only for generic status, scheduler work, or work that is not tied to one GitHub issue. Do not put detailed implementation updates for a specific issue in `Daily` or the root Fini Dev topic once its dynamic issue topic exists.
-
-### Closing Issue Topics
-
-When a pull request for a mapped issue is merged, the issue-specific Telegram topic should be marked closed:
-
-1. Close the related GitHub issue if GitHub did not close it automatically.
-2. Rename the Telegram forum topic so the title begins `closed #<issue>`.
-3. Send one short final note inside the issue topic with the merged PR URL and issue close status.
-4. Update the topic map entry with `status: "closed"`, `closedAt`, `closedByPullRequest`, `topicTitle`, `finalTopicNoteStatus: "sent"`, and `finalTopicNoteSentAt`.
-
-If the optional `fini-merged-pr-topic-reconcile` local automation is installed, it may perform this idempotently on its own schedule. When that automation is unavailable or unknown, agents should perform the closure steps during merge handoff and preserve the same map fields and title convention.
+For each GitHub issue that you actively work on, create or reuse its dynamic
+issue topic, and close it when its pull request is merged. Follow
+`fini-dev-telegram`, "Dynamic Issue Topics" and "Closing Issue Topics".
 
 ### Create Topic Intake
 

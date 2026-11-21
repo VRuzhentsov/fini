@@ -36,15 +36,8 @@ Do not run quest, space, reminder, focus, or app commands until preflight succee
 
 ## Binary Modes
 
-`fini` is the single app binary. Its behavior depends on invocation:
-
-| Invocation | Use |
-|---|---|
-| `fini` | Return the current Focus quest using CLI default behavior |
-| `fini focus get` | Explicitly return the current Focus quest |
-| `fini quest ...` | List, get, create, update, complete, abandon, delete, or inspect quest history |
-| `fini space ...` | List, create, update, or delete spaces |
-| `fini reminder ...` | List, create, or delete reminders |
+The invocations of `fini`, the built-in spaces, and the Make targets that
+validate the binary are in `docs/development.md`, "Fini CLI".
 
 Use the desktop launcher or `fini-app` when the user asks to open or launch the graphical app. Use CLI commands when the user asks for data, state changes, or automation.
 
@@ -69,15 +62,7 @@ Before commands that need a space ID, run:
 fini space list --json
 ```
 
-Resolve IDs from fresh CLI state rather than assuming built-in names still exist. Built-in spaces default to:
-
-| ID | Default name |
-|---|---|
-| `1` | Personal |
-| `2` | Family |
-| `3` | Work |
-
-Users may rename built-ins or create custom spaces, so prefer the fresh `space list` result over hard-coded names.
+Resolve IDs from fresh CLI state rather than assuming built-in names still exist (built-in spaces: `docs/development.md`, "Fini CLI"). Users may rename built-ins or create custom spaces, so prefer the fresh `space list` result over hard-coded names.
 
 Before commands that update, complete, abandon, or delete an existing quest, get enough current state to confirm the target is unambiguous. Use `--json` when matching by title, status, space, due date, or other fields.
 
@@ -85,13 +70,7 @@ For destructive actions, confirm the target from current CLI state and use the m
 
 ## Development And Runtime Checks
 
-On your own computer, use these Makefile targets when validating the binary from this repo (Make is local only: `fini-scripting`, "Make is local only"):
-
-| Need | Command |
-|---|---|
-| Build a local release-profile app binary (not a release; releases run in CI) | `make build` |
-| Validate runtime container exposes CLI | `make runtime-smoke` |
-| Build/update runtime container | `make runtime-image` |
+On your own computer, validate the binary from this repo with the Makefile targets in `docs/development.md`, "Fini CLI" (Make is local only: `docs/development.md`, "Make is local only").
 
 Do not invent generic targets such as `make test`, `make lint`, or `make check` unless they exist in the current `Makefile`.
 

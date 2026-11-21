@@ -77,12 +77,9 @@ If the target tracker has fields, map sections naturally: title, description/bod
 
 ## Fini Defaults
 
-Prefer Fini's current terminology and architecture:
+Prefer Fini's current terminology (`docs/glossary.md`) and architecture (`docs/development.md`, "Project map"; `docs/architecture/`):
 
-- Frontend: Vue 3 in `src/`.
-- Backend: Rust + Tauri in `src-tauri/`.
-- Persistence: Diesel over SQLite.
-- Testing: prefer Makefile targets when available; use E2E only when behavior spans windows, test devices, sync, or user flows.
+- Testing: prefer Makefile targets when available; use E2E only when behavior spans windows, test devices, sync, or user flows (`docs/testing.md`, "Choose the test category").
 - Product nouns: Quest, Space, Reminder, Focus, DeviceConnection, SpaceSync, QuestOccurrence, MCP, CLI.
 - Sync/device tickets should distinguish device pairing consent from SpaceSync consent.
 - Reminder tickets should treat `quest.due` and `quest.due_time` as the scheduling source of truth unless newer evidence supersedes it.

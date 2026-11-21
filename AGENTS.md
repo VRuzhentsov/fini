@@ -5,13 +5,17 @@
 - Frontend (Vue 3): `src/` — see `src/README.md`
 - Backend (Rust + Tauri): `src-tauri/` — see `src-tauri/README.md`
 - Domain and feature specs: `specs/`
-- Repo automation: `Makefile` + `npm run` + `xtask/` — see `fini-scripting` skill
+- Repo automation: `Makefile` + `npm run` + `xtask/` — see `docs/development.md`, "Repo automation"
+- Development guidelines, commands and project map: `docs/development.md`.
+- Code style: `docs/code-style.md`; code design: `docs/architecture/code-design.md`.
+- Tests: `docs/testing.md`. Release and versioning: `docs/release.md`.
+- Where each document is: `docs/documentation.md`.
 
 ## Workflow
 
-- Always load the `fini-dev` skill at the start of development work in this repo.
+- Always load the `fini-dev` skill at the start of development work in this repo. It gives the dev process (Spike and Stabilize).
 - Use `fini-dev` to choose which repo-local or gstack skill applies, which Makefile target to run, and what evidence is required before reporting success.
-- `fini-dev` orchestrates workflow only; use the specialized skill for the actual domain work when it applies.
+- Skills in `.agents/skills/` hold the agent process only; the project knowledge is in `docs/`. Use the specialized skill for the actual domain work when it applies.
 - Write all code names, comments, messages, docs, commits and PR text in STE (`docs/naming.md`, words from `docs/glossary.md`). Check each diff for STE before you commit and before you report a PR as ready (`fini-dev`, "Use STE"). Do not wait for the user to ask for this check.
 - Use the pull request as the normal user review and verification surface for ticket/worktree implementation. After local checks pass, commit and push implementation changes to the active PR branch so they are reviewable there; do not leave verified implementation only in local working-tree state unless the user explicitly asks for local-only work.
 - If the user explicitly asks to manually verify a local build before review, pause before committing implementation changes and report the exact local state and verification command.
@@ -36,7 +40,4 @@
 
 ## Release tags
 
-- Release pipeline should be triggered by tag push only (`v*`); main pushes should not start release workflows.
-- Release tags must be annotated and GPG-signed with the configured release key.
-- Release flow should first push the version-bump commit to `origin/main`, then create and push the release tag that points to that exact commit.
-- Release tag is the deployment trigger; the tagged commit is the source of truth for package metadata and must already contain the release version files.
+- Follow `docs/release.md`, "Release tags". Releases run only in CI; do not create or push release tags by hand.
