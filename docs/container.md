@@ -236,7 +236,15 @@ The results:
   signature of the asset, and that is sufficient.
 - The CLI update looks for the musl triple
   (`cli_asset_target_substrings` in `src-tauri/src/services/cli_update.rs`).
-  A person installs a CLI from before this change again by hand, one time.
+- A CLI at v0.3.19 or older is a glibc build. Its `fini update` looks first
+  for its own triple, `x86_64-unknown-linux-gnu`. Without it, the CLI takes
+  the first asset with `linux`, `x86_64` and `cli` in its name (the fallback
+  of `asset_for` in `self_update`), and the result then depends on the order
+  of the assets. For these CLIs, the release also publishes a copy of the
+  musl archive under the old name
+  `fini-<tag>-linux-x86_64-unknown-linux-gnu-cli.tar.gz`. The copy has its
+  own zipsign signature, because the signature context is the asset name.
+  After one update, the CLI is the musl build and finds the musl asset.
 - The Windows CLI stays as it is today: `ci.yml` builds it, and the release
   ships it. This change adds nothing for it.
 - A macOS CLI is not in this change.

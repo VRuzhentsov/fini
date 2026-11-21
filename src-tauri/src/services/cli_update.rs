@@ -981,6 +981,36 @@ mod tests {
         assert_eq!(asset.name, archive);
     }
 
+    /// A CLI at v0.3.19 or older is a glibc build, and its `fini update`
+    /// looks first for its own target, `x86_64-unknown-linux-gnu`. The
+    /// release has a copy of the musl archive under that old name for it
+    /// (release-tag.yml, "Copy Linux CLI archive to the old asset name"), so
+    /// that it does not depend on the fallback of `asset_for`.
+    #[test]
+    fn old_glibc_cli_finds_the_copy_under_the_old_asset_name() {
+        let next_patch = next_patch_version();
+        let musl = versioned_cli_asset_name(&next_patch);
+        let old_name = format!("fini-{next_patch}-linux-x86_64-unknown-linux-gnu-cli.tar.gz");
+        let release = release_with_assets(&next_patch, &[musl.as_str(), old_name.as_str()]);
+
+        let old_cli = cli_asset_for_release(&release, "x86_64-unknown-linux-gnu")
+            .expect("the glibc target selects the copy under the old name");
+        let musl_cli = cli_asset_for_release(&release, "x86_64-unknown-linux-musl")
+            .expect("the musl target selects the musl archive");
+        let label = cli_asset_for_release(&release, "cli-linux-x86_64")
+            .expect("the Linux x64 label selects the musl archive");
+
+        assert_eq!(old_cli.name, old_name);
+        assert_eq!(musl_cli.name, musl);
+        assert_eq!(label.name, musl);
+        assert_eq!(
+            compatible_cli_release(&[release], "x86_64-unknown-linux-gnu")
+                .expect("the glibc target finds the release")
+                .version,
+            next_patch
+        );
+    }
+
     #[test]
     fn compatible_release_selection_skips_releases_without_matching_cli_asset() {
         let next_patch = next_patch_version();
