@@ -978,9 +978,10 @@ mod tests {
     }
 
     /// A CLI at v0.3.19 or older is a glibc build, and its `fini update`
-    /// looks for its own target, `x86_64-unknown-linux-gnu`. The release
-    /// has a copy of the musl archive under that old name for it
-    /// (release-tag.yml, "Copy Linux CLI archive to the old asset name").
+    /// looks first for its own target, `x86_64-unknown-linux-gnu`. The
+    /// release has a copy of the musl archive under that old name for it
+    /// (release-tag.yml, "Copy Linux CLI archive to the old asset name"), so
+    /// that it does not depend on the fallback of `asset_for`.
     #[test]
     fn old_glibc_cli_finds_the_copy_under_the_old_asset_name() {
         let next_patch = next_patch_version();
@@ -1004,13 +1005,6 @@ mod tests {
                 .version,
             next_patch
         );
-    }
-
-    #[test]
-    fn old_glibc_cli_does_not_find_a_musl_asset_alone() {
-        let release = release_with_versioned_cli_asset(&next_patch_version());
-
-        assert!(cli_asset_for_release(&release, "x86_64-unknown-linux-gnu").is_none());
     }
 
     #[test]

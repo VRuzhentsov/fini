@@ -237,9 +237,12 @@ The results:
 - The musl CLI looks for the musl triple: `fini update` uses the target of
   its own build (`self_update::get_target()` in
   `src-tauri/src/services/cli_update.rs`).
-- A CLI at v0.3.19 or older is a glibc build. Its `fini update` looks only
-  for its own triple, `x86_64-unknown-linux-gnu`. For these CLIs, the release
-  also publishes a copy of the musl archive under the old name
+- A CLI at v0.3.19 or older is a glibc build. Its `fini update` looks first
+  for its own triple, `x86_64-unknown-linux-gnu`. Without it, the CLI takes
+  the first asset with `linux`, `x86_64` and `cli` in its name (the fallback
+  of `asset_for` in `self_update`), and the result then depends on the order
+  of the assets. For these CLIs, the release also publishes a copy of the
+  musl archive under the old name
   `fini-<tag>-linux-x86_64-unknown-linux-gnu-cli.tar.gz`. The copy has its
   own zipsign signature, because the signature context is the asset name.
   After one update, the CLI is the musl build and finds the musl asset.
