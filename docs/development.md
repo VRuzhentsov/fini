@@ -2,7 +2,7 @@
 
 The development guidelines of Fini: the project map, the commands, the repo
 automation, and the rules for each change. The agent process that uses them
-is the `fini-dev` skill (`.agents/skills/fini-dev/SKILL.md`).
+is the `dev` skill (`.agents/skills/dev/SKILL.md`).
 
 ## Project map
 

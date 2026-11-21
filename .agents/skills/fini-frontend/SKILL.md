@@ -7,7 +7,7 @@ description: "Fini Vue frontend process for views, templates, rendering decision
 
 Use this skill when creating or changing Vue frontend code under `src/`,
 especially view components, templates, conditional rendering, lists, and
-frontend tests. It adds to `fini-dev`; follow that process first.
+frontend tests. It adds to `dev`; follow that process first.
 
 The frontend rules are in `docs/code-style.md`, "Vue frontend":
 DaisyUI and Tailwind first, `renderFlags`, `renderLists`, one named handler for

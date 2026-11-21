@@ -7,7 +7,7 @@ description: "Process for changes to Fini repo automation. Use when adding or ch
 
 Use this skill when work touches repo automation, command surfaces, package
 scripts, CI command orchestration, build tooling, packaging tooling, or release
-tooling implementation. It adds to `fini-dev`; follow that process first.
+tooling implementation. It adds to `dev`; follow that process first.
 
 The rules (Make is local only, the command surface, the Makefile, npm run and
 `cargo xtask` rules, and the script policy) are in `docs/development.md`,

@@ -5,9 +5,9 @@ description: "The Fini testing process: the stabilize phase of Spike and Stabili
 
 # Fini testing
 
-This is the stabilize phase of Spike and Stabilize (`fini-dev`, step 5). Start
-it only after the feature is done and you verified it manually against the
-requirements. Until then, prove behaviour on the running HMR apps (`fini-dev`,
+This is the stabilize phase of Spike and Stabilize (`dev`, step 5). Start it
+only after the feature is done and you verified it manually against the
+requirements. Until then, prove behaviour on the running HMR apps (`dev`,
 steps 3 and 4).
 
 The test surfaces, the commands, and how to write each kind of test are in

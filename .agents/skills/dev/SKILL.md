@@ -1,5 +1,5 @@
 ---
-name: fini-dev
+name: dev
 description: "Always use this at the start of development work in the Fini repo. Gives the dev process (Spike and Stabilize) and orchestrates which repo-local or gstack skill to load, which Makefile command to prefer, what context to read, and what evidence is required before claiming implementation, debugging, QA, Android, design-to-code, release, or documentation work is complete."
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: fini-dev-agent
-description: "Use this when an autonomous coding agent, remote agent, or other delegated agent is asked to implement, debug, verify, or report progress on Fini repository work. This is a behavior overlay for agents: load `fini-dev` for Fini development mechanics, then use this skill to organize scope, autonomy, Telegram topic coordination, progress updates, blockers, verification evidence, and handoff discipline. If work arrives from the Telegram `Create` topic, always route it through `fini-create-ticket` as ticket intake before treating it as implementation work."
+description: "Use this when an autonomous coding agent, remote agent, or other delegated agent is asked to implement, debug, verify, or report progress on Fini repository work. This is a behavior overlay for agents: load `dev` for Fini development mechanics, then use this skill to organize scope, autonomy, Telegram topic coordination, progress updates, blockers, verification evidence, and handoff discipline. If work arrives from the Telegram `Create` topic, always route it through `fini-create-ticket` as ticket intake before treating it as implementation work."
 metadata:
   openclaw:
     envVars:
@@ -26,13 +26,13 @@ metadata:
 
 # Fini Autonomous Dev Agent
 
-Use this skill as a behavior overlay for autonomous coding agents working on Fini. It does not replace `fini-dev`; it adds delegation, progress, and handoff discipline around it.
+Use this skill as a behavior overlay for autonomous coding agents working on Fini. It does not replace `dev`; it adds delegation, progress, and handoff discipline around it.
 
 When the work is happening in the Fini Dev Telegram group, also load `fini-dev-telegram` for group-topic routing, Fini Self Improvement handling, and issue-topic coordination.
 
 ## First Step
 
-Load `fini-dev` before changing Fini code, tests, docs, automation, release files, or designs.
+Load `dev` before changing Fini code, tests, docs, automation, release files, or designs.
 
 Then apply this skill for autonomous-agent behavior:
 
@@ -52,7 +52,7 @@ Start each delegated task by establishing:
 - success checks and smallest useful verification command
 - expected progress channel, if Telegram is available
 
-If the task comes from a GitHub issue, follow `fini-dev` branch guidance before editing. If the issue is ambiguous, inspect the issue body, labels, linked design/spec/wiki context, and source code before asking the user.
+If the task comes from a GitHub issue, follow `dev` branch guidance before editing. If the issue is ambiguous, inspect the issue body, labels, linked design/spec/wiki context, and source code before asking the user.
 
 ## Issue Readiness And Review Contract
 
@@ -114,7 +114,7 @@ issue topic, and close it when its pull request is merged. Follow
 
 ### Create Topic Intake
 
-When the task source, channel, or thread is the Telegram `Create` topic, load `fini-create-ticket` after `fini-dev` and treat the work as ticket intake, issue drafting, scope capture, or follow-up creation. Do not treat `Create` topic messages as implementation delegation until a ticket or explicit implementation scope exists. Send ticket-creation status updates to `FINI_CREATE_TG_TARGET` when configured.
+When the task source, channel, or thread is the Telegram `Create` topic, load `fini-create-ticket` after `dev` and treat the work as ticket intake, issue drafting, scope capture, or follow-up creation. Do not treat `Create` topic messages as implementation delegation until a ticket or explicit implementation scope exists. Send ticket-creation status updates to `FINI_CREATE_TG_TARGET` when configured.
 
 ### Per-Task Topic Binding
 
@@ -179,7 +179,7 @@ Do not send progress after every command or minor edit.
 
 ## Autonomous Work Loop
 
-Use this loop after `fini-dev` routing chooses the domain skill:
+Use this loop after `dev` routing chooses the domain skill:
 
 1. Build the evidence chain before editing: trigger path, current behavior, relevant spec/wiki/source, and expected behavior.
 2. Create or update a concise todo list for tasks with three or more meaningful steps.
@@ -247,4 +247,4 @@ For PR-ready work, include:
 
 ## Non-Goals
 
-This skill does not define Fini product semantics, test commands, release rules, design bundle protocol, Android workflow, or CLI behavior. Load the specialized Fini skill for those areas through `fini-dev`.
+This skill does not define Fini product semantics, test commands, release rules, design bundle protocol, Android workflow, or CLI behavior. Load the specialized Fini skill for those areas through `dev`.

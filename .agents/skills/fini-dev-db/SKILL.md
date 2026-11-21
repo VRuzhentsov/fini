@@ -7,7 +7,7 @@ description: Guide safe, low-debt SQLite and Diesel schema migrations in Fini. U
 
 Use this skill for Fini SQLite schema changes, Diesel schema updates, data
 migrations, migration rollback decisions, and database migration tests. It adds
-to `fini-dev`; follow that process first.
+to `dev`; follow that process first.
 
 The rules are in `docs/db.md`: "Rules" for database access, and "Schema
 migrations" for the migration contract, the boundaries and the tests.

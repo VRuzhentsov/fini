@@ -11,7 +11,7 @@ are in `docs/release.md`.
 
 Load these alongside this skill when relevant:
 
-- `fini-dev` first for repo workflow and safety rules.
+- `dev` first for repo workflow and safety rules.
 - `fini-versioning` when changing version metadata surfaces or version invariants.
 - `fini-scripting` when changing `xtask`, package scripts, or CI release workflow structure.
 - `fini-release-prep` for Play Store screenshots, listing assets, or marketplace prep.

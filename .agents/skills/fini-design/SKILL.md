@@ -107,6 +107,6 @@ This skill owns:
 Hand off when:
 - Multi-file Vue implementation work begins → pair with `frontend-design` for code generation patterns.
 - Direct Figma-to-code generation against a Figma node → `figma:figma-implement-design`.
-- Production code review of the resulting Vue → standard repo review flow via `fini-dev`.
+- Production code review of the resulting Vue → standard repo review flow via `dev`.
 
-Per `fini-dev` routing, design-to-code work loads this skill first.
+Per `dev` routing, design-to-code work loads this skill first.

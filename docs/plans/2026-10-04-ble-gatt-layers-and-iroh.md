@@ -53,7 +53,7 @@ transport). Release v0.3.14 shipped.
   tool appends. Commits are authored as Vitalii Ruzhentsov.
 - Never merge a PR. Never comment on a PR unless asked. Releases only through
   the Release Button action.
-- Prefer Makefile targets. Load `fini-dev` (and `fini-test` for tests) before
+- Prefer Makefile targets. Load `dev` (and `fini-test` for tests) before
   Fini work.
 - Ask decisions with the question tool, following the "Asking the user for a
   decision" rules in `AGENTS.md`. Answer in the user's language.

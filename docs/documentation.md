@@ -11,8 +11,8 @@ agent process and link to the documents.
 - [`glossary.md`](glossary.md): what each word means.
 - This file: where each kind of document goes, how to write it, and which
   changes need approval.
-- The `fini-dev` skill, "Use STE"
-  ([`SKILL.md`](../.agents/skills/fini-dev/SKILL.md)): the STE check of each
+- The `dev` skill, "Use STE"
+  ([`SKILL.md`](../.agents/skills/dev/SKILL.md)): the STE check of each
   diff before you commit.
 
 ## Where documents go

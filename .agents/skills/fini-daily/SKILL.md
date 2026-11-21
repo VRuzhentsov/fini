@@ -205,7 +205,7 @@ Do not spam. Send progress updates at meaningful phase transitions, not after ev
 ## Boundaries
 
 - The daily report is read-only: do not edit issues, labels, code, or docs unless the user explicitly delegates implementation or maintenance.
-- If implementing a delegated issue, follow `fini-dev` first and obey the repo workflow.
+- If implementing a delegated issue, follow `dev` first and obey the repo workflow.
 - Do not merge PRs or push directly to `main`.
 - Do not expose tokens or secret file contents.
 - If Telegram delivery is unavailable, return the report text and state the delivery blocker.
