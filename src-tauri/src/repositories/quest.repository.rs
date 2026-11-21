@@ -4,10 +4,10 @@ use diesel::sqlite::SqliteConnection;
 use std::collections::HashMap;
 
 use crate::models::{
-    clamp_order_rank, is_overdue, parse_utc_timestamp, period_key_of, validate_metadata, validate_optional_metadata,
-    CreateFocusHistoryInput, CreateQuestInput, EditScope, Quest, QuestFieldPatch, QuestOccurrence, QuestUpdatePatch,
-    RepeatRule, RepeatingQuest, Space, UpdateQuestInput, UpdateQuestInputBuilder, OCCURRENCE_ABANDONED,
-    OCCURRENCE_COMPLETED,
+    clamp_order_rank, is_overdue, parse_utc_timestamp, period_key_of, validate_metadata,
+    validate_optional_metadata, CreateFocusHistoryInput, CreateQuestInput, EditScope, Quest,
+    QuestFieldPatch, QuestOccurrence, QuestUpdatePatch, RepeatRule, RepeatingQuest, Space,
+    UpdateQuestInput, UpdateQuestInputBuilder, OCCURRENCE_ABANDONED, OCCURRENCE_COMPLETED,
 };
 #[cfg(any(feature = "ui-plane", test))]
 use crate::repositories::OutboxRepository;
@@ -110,13 +110,20 @@ impl<'a> QuestRepository<'a> {
     /// Every mark, oldest date first.
     pub fn all_occurrences(&mut self) -> Result<Vec<QuestOccurrence>, String> {
         quest_occurrences::table
-            .order((quest_occurrences::quest_id.asc(), quest_occurrences::period_key.asc()))
+            .order((
+                quest_occurrences::quest_id.asc(),
+                quest_occurrences::period_key.asc(),
+            ))
             .select(QuestOccurrence::as_select())
             .load(self.conn)
             .map_err(|error| error.to_string())
     }
 
-    pub fn find_occurrence(&mut self, quest_id: &str, period_key: &str) -> Result<Option<QuestOccurrence>, String> {
+    pub fn find_occurrence(
+        &mut self,
+        quest_id: &str,
+        period_key: &str,
+    ) -> Result<Option<QuestOccurrence>, String> {
         quest_occurrences::table
             .find((quest_id, period_key))
             .select(QuestOccurrence::as_select())
@@ -126,7 +133,10 @@ impl<'a> QuestRepository<'a> {
     }
 
     /// Writes a mark whole: inserts it, or replaces the stored one.
-    pub fn save_occurrence(&mut self, occurrence: &QuestOccurrence) -> Result<QuestOccurrence, String> {
+    pub fn save_occurrence(
+        &mut self,
+        occurrence: &QuestOccurrence,
+    ) -> Result<QuestOccurrence, String> {
         diesel::insert_into(quest_occurrences::table)
             .values(occurrence)
             .on_conflict((quest_occurrences::quest_id, quest_occurrences::period_key))
@@ -438,7 +448,6 @@ impl<'a> QuestRepository<'a> {
     }
 }
 
-
 // ── Quests as a person sees and changes them (ADR-0012) ─────────────────────
 
 /// The Focus fallback order (src/views/FocusView.md): overdue first, then
@@ -446,11 +455,16 @@ impl<'a> QuestRepository<'a> {
 fn fallback_order(mut quests: Vec<Quest>) -> Vec<Quest> {
     let now = Utc::now();
     // A `created_at` that does not read as a time goes last.
-    let created = |quest: &Quest| parse_utc_timestamp(&quest.created_at).unwrap_or(DateTime::<Utc>::MAX_UTC);
+    let created =
+        |quest: &Quest| parse_utc_timestamp(&quest.created_at).unwrap_or(DateTime::<Utc>::MAX_UTC);
     quests.sort_by(|a, b| {
         is_overdue(b, &now)
             .cmp(&is_overdue(a, &now))
-            .then_with(|| a.order_rank.partial_cmp(&b.order_rank).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| {
+                a.order_rank
+                    .partial_cmp(&b.order_rank)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .then_with(|| b.priority.cmp(&a.priority))
             .then_with(|| created(a).cmp(&created(b)))
             .then_with(|| a.id.cmp(&b.id))
@@ -511,7 +525,10 @@ impl<'a> QuestRepository<'a> {
         let newest = candidates
             .iter()
             .filter_map(|quest| {
-                let moment = [set_focus_at.get(&quest.id).copied(), quest.due_at()].into_iter().flatten().max()?;
+                let moment = [set_focus_at.get(&quest.id).copied(), quest.due_at()]
+                    .into_iter()
+                    .flatten()
+                    .max()?;
                 Some((moment, quest))
             })
             .max_by_key(|(moment, _)| *moment)
@@ -552,7 +569,11 @@ impl<'a> QuestRepository<'a> {
     /// The open occurrence that the reminders are armed for (ADR-0012 D9):
     /// the first one from today on whose reminder moment is still to come
     /// (`fires_later`), as a quest of that day.
-    pub fn reminder_occurrence(&mut self, id: &str, fires_later: impl Fn(&Quest) -> bool) -> Result<Option<Quest>, String> {
+    pub fn reminder_occurrence(
+        &mut self,
+        id: &str,
+        fires_later: impl Fn(&Quest) -> bool,
+    ) -> Result<Option<Quest>, String> {
         let quest = self.get(id)?;
         let marks = self.occurrences(id)?;
         let Some(repeating) = RepeatingQuest::new(&quest, &marks) else {
@@ -572,7 +593,11 @@ impl<'a> QuestRepository<'a> {
     /// has come (`fired`): the one a missed reminder is for, as a quest of
     /// that day. For a quest that does not repeat: the quest itself.
     #[cfg(any(feature = "ui-plane", test))]
-    pub fn missed_reminder_occurrence(&mut self, quest: &Quest, fired: impl Fn(&Quest) -> bool) -> Result<Option<Quest>, String> {
+    pub fn missed_reminder_occurrence(
+        &mut self,
+        quest: &Quest,
+        fired: impl Fn(&Quest) -> bool,
+    ) -> Result<Option<Quest>, String> {
         let marks = self.occurrences(&quest.id)?;
         let Some(repeating) = RepeatingQuest::new(quest, &marks) else {
             return Ok(fired(quest).then(|| quest.clone()));
@@ -606,7 +631,10 @@ impl<'a> QuestRepository<'a> {
         let repeats = RepeatRule::parse(input.repeat_rule.as_deref()).is_some();
         let input = if repeats && input.due.is_none() {
             // A repeating quest's rule starts at its date (ADR-0012 D2).
-            CreateQuestInput { due: Some(period_key_of(Local::now().date_naive())), ..input }
+            CreateQuestInput {
+                due: Some(period_key_of(Local::now().date_naive())),
+                ..input
+            }
         } else {
             input
         };
@@ -617,13 +645,33 @@ impl<'a> QuestRepository<'a> {
     // ---- Writing ----
 
     /// Completes the quest; for a repeating quest its shown day (ADR-0012 D7).
-    pub fn complete(&mut self, id: &str, origin_device_id: Option<&str>) -> Result<QuestChange, String> {
-        self.update(id, status_patch(OCCURRENCE_COMPLETED), EditScope::All, None, origin_device_id)
+    pub fn complete(
+        &mut self,
+        id: &str,
+        origin_device_id: Option<&str>,
+    ) -> Result<QuestChange, String> {
+        self.update(
+            id,
+            status_patch(OCCURRENCE_COMPLETED),
+            EditScope::All,
+            None,
+            origin_device_id,
+        )
     }
 
     /// Abandons the quest; for a repeating quest its shown day.
-    pub fn abandon(&mut self, id: &str, origin_device_id: Option<&str>) -> Result<QuestChange, String> {
-        self.update(id, status_patch(OCCURRENCE_ABANDONED), EditScope::All, None, origin_device_id)
+    pub fn abandon(
+        &mut self,
+        id: &str,
+        origin_device_id: Option<&str>,
+    ) -> Result<QuestChange, String> {
+        self.update(
+            id,
+            status_patch(OCCURRENCE_ABANDONED),
+            EditScope::All,
+            None,
+            origin_device_id,
+        )
     }
 
     /// One quest change. For a repeating quest (ADR-0012): Complete or Abandon
@@ -641,7 +689,9 @@ impl<'a> QuestRepository<'a> {
     ) -> Result<QuestChange, String> {
         validate_optional_metadata(patch.input.energy, patch.input.priority)?;
         let quest = self.get(id)?;
-        if !matches!(patch.description, QuestFieldPatch::Unchanged) || patch.input.description.is_some() {
+        if !matches!(patch.description, QuestFieldPatch::Unchanged)
+            || patch.input.description.is_some()
+        {
             Self::reject_prose_patch_on_checklist(&quest)?;
         }
         let marks = self.occurrences(id)?;
@@ -654,10 +704,23 @@ impl<'a> QuestRepository<'a> {
             Some(OCCURRENCE_COMPLETED) | Some(OCCURRENCE_ABANDONED) => {
                 let period_key = match period_key {
                     Some(key) => key.to_string(),
-                    None => repeating.oldest_open().ok_or_else(|| "the quest has no open occurrence".to_string())?,
+                    None => repeating
+                        .oldest_open()
+                        .ok_or_else(|| "the quest has no open occurrence".to_string())?,
                 };
-                let closed = self.close_occurrence(&repeating, &period_key, status.as_deref().unwrap(), origin_device_id)?;
-                return self.finish_repeating(id, vec![closed], Vec::new(), false, Some(&period_key));
+                let closed = self.close_occurrence(
+                    &repeating,
+                    &period_key,
+                    status.as_deref().unwrap(),
+                    origin_device_id,
+                )?;
+                return self.finish_repeating(
+                    id,
+                    vec![closed],
+                    Vec::new(),
+                    false,
+                    Some(&period_key),
+                );
             }
             Some("active") => {
                 if let Some(period_key) = period_key {
@@ -683,7 +746,9 @@ impl<'a> QuestRepository<'a> {
             EditScope::Day => {
                 let period_key = match period_key {
                     Some(key) => key.to_string(),
-                    None => repeating.oldest_open().ok_or_else(|| "the quest has no open occurrence".to_string())?,
+                    None => repeating
+                        .oldest_open()
+                        .ok_or_else(|| "the quest has no open occurrence".to_string())?,
                 };
                 let mut mark = repeating.mark_or_new(&period_key);
                 if let Some(title) = patch.input.title.clone() {
@@ -696,7 +761,10 @@ impl<'a> QuestRepository<'a> {
                     mark.priority = (priority != quest.priority).then_some(priority);
                 }
                 match &patch.due_time {
-                    QuestFieldPatch::Set(time) => mark.due_time = (Some(time) != quest.due_time.as_ref()).then(|| time.clone()),
+                    QuestFieldPatch::Set(time) => {
+                        mark.due_time =
+                            (Some(time) != quest.due_time.as_ref()).then(|| time.clone())
+                    }
                     QuestFieldPatch::Clear => mark.due_time = None,
                     QuestFieldPatch::Unchanged => {}
                 }
@@ -713,14 +781,19 @@ impl<'a> QuestRepository<'a> {
                 patch.input.status = None;
                 // A changed rule computes its open days from today; the old
                 // marks stay (D10). A new date given in the same edit wins.
-                let rule_changed = match (&patch.repeat_rule, RepeatRule::parse(quest.repeat_rule.as_deref())) {
+                let rule_changed = match (
+                    &patch.repeat_rule,
+                    RepeatRule::parse(quest.repeat_rule.as_deref()),
+                ) {
                     (QuestFieldPatch::Set(rule), Some(stored)) => {
                         RepeatRule::parse(Some(rule)).is_some_and(|new| !new.same_days_as(&stored))
                     }
                     _ => false,
                 };
                 if rule_changed && matches!(patch.due, QuestFieldPatch::Unchanged) {
-                    patch.due = QuestFieldPatch::Set(Local::now().date_naive().format("%Y-%m-%d").to_string());
+                    patch.due = QuestFieldPatch::Set(
+                        Local::now().date_naive().format("%Y-%m-%d").to_string(),
+                    );
                 }
                 let (_, _) = self.write_patch(id, patch)?;
                 self.finish_repeating(id, Vec::new(), Vec::new(), true, None)
@@ -759,7 +832,9 @@ impl<'a> QuestRepository<'a> {
         let mut occurrences = Vec::new();
         let starts_to_repeat = RepeatRule::parse(previous.repeat_rule.as_deref()).is_none()
             && RepeatRule::parse(quest.repeat_rule.as_deref()).is_some();
-        if let (true, true, Some(day)) = (starts_to_repeat, quest.is_checklist, quest.due.as_deref()) {
+        if let (true, true, Some(day)) =
+            (starts_to_repeat, quest.is_checklist, quest.due.as_deref())
+        {
             if quest.description.as_deref().map(checklist::reset_unchecked) != quest.description {
                 let mut mark = QuestOccurrence::new(&quest.id, day, &utc_now());
                 mark.description = quest.description.clone();
@@ -811,7 +886,11 @@ impl<'a> QuestRepository<'a> {
     }
 
     /// Opens a closed day again. A mark with nothing else to keep goes.
-    fn reopen_occurrence(&mut self, repeating: &RepeatingQuest<'_>, period_key: &str) -> Result<QuestChange, String> {
+    fn reopen_occurrence(
+        &mut self,
+        repeating: &RepeatingQuest<'_>,
+        period_key: &str,
+    ) -> Result<QuestChange, String> {
         let id = repeating.quest().id.clone();
         let mut mark = repeating
             .mark(period_key)
@@ -824,7 +903,13 @@ impl<'a> QuestRepository<'a> {
             || mark.energy.is_some()
             || mark.priority.is_some()
             || mark.due_time.is_some()
-            || (mark.description.is_some() && mark.description != repeating.quest().description.as_deref().map(checklist::reset_unchecked));
+            || (mark.description.is_some()
+                && mark.description
+                    != repeating
+                        .quest()
+                        .description
+                        .as_deref()
+                        .map(checklist::reset_unchecked));
         if keeps_something {
             let saved = self.save_occurrence(&mark)?;
             self.finish_repeating(&id, vec![saved], Vec::new(), false, None)
@@ -837,7 +922,11 @@ impl<'a> QuestRepository<'a> {
     /// ADR-0012 D10: with no marks the quest becomes a one-time quest on its
     /// date; with marks the rule gets an end at the last closed
     /// day, and the quest ends.
-    fn stop_repeat(&mut self, repeating: &RepeatingQuest<'_>, origin_device_id: Option<&str>) -> Result<QuestChange, String> {
+    fn stop_repeat(
+        &mut self,
+        repeating: &RepeatingQuest<'_>,
+        origin_device_id: Option<&str>,
+    ) -> Result<QuestChange, String> {
         let quest = repeating.quest().clone();
         let closed = repeating.closed();
         // With no closed day the quest's date is its oldest open day already.
@@ -857,7 +946,9 @@ impl<'a> QuestRepository<'a> {
         let clear_rule = closed.is_empty();
         // A quest that becomes one-time keeps what was done on its open day:
         // the ticks and the "This day" edits of that day.
-        let open_day = clear_rule.then(|| repeating.oldest_open().map(|key| repeating.on_day(&key))).flatten();
+        let open_day = clear_rule
+            .then(|| repeating.oldest_open().map(|key| repeating.on_day(&key)))
+            .flatten();
         let mut input = input;
         let (description, due_time) = match &open_day {
             Some(day) => {
@@ -865,8 +956,12 @@ impl<'a> QuestRepository<'a> {
                 input.energy = Some(day.energy);
                 input.priority = Some(day.priority);
                 (
-                    day.description.clone().map_or(QuestFieldPatch::Unchanged, QuestFieldPatch::Set),
-                    day.due_time.clone().map_or(QuestFieldPatch::Unchanged, QuestFieldPatch::Set),
+                    day.description
+                        .clone()
+                        .map_or(QuestFieldPatch::Unchanged, QuestFieldPatch::Set),
+                    day.due_time
+                        .clone()
+                        .map_or(QuestFieldPatch::Unchanged, QuestFieldPatch::Set),
                 )
             }
             None => (QuestFieldPatch::Unchanged, QuestFieldPatch::Unchanged),
@@ -876,7 +971,11 @@ impl<'a> QuestRepository<'a> {
             description,
             due: QuestFieldPatch::Unchanged,
             due_time,
-            repeat_rule: if clear_rule { QuestFieldPatch::Clear } else { QuestFieldPatch::Unchanged },
+            repeat_rule: if clear_rule {
+                QuestFieldPatch::Clear
+            } else {
+                QuestFieldPatch::Unchanged
+            },
         };
         let _ = origin_device_id;
         self.write_patch(&quest.id, patch)?;
@@ -885,10 +984,15 @@ impl<'a> QuestRepository<'a> {
 
     /// "Complete through today" (ADR-0012 D7): closes every open occurrence
     /// dated today or before, today's included.
-    pub fn complete_through_today(&mut self, id: &str, origin_device_id: Option<&str>) -> Result<QuestChange, String> {
+    pub fn complete_through_today(
+        &mut self,
+        id: &str,
+        origin_device_id: Option<&str>,
+    ) -> Result<QuestChange, String> {
         let quest = self.get(id)?;
         let marks = self.occurrences(id)?;
-        let repeating = RepeatingQuest::new(&quest, &marks).ok_or_else(|| "the quest does not repeat".to_string())?;
+        let repeating = RepeatingQuest::new(&quest, &marks)
+            .ok_or_else(|| "the quest does not repeat".to_string())?;
         // Today is the person's local date, as on their screen.
         let days = repeating.open_through(Local::now().date_naive());
         if days.is_empty() {
@@ -896,9 +1000,20 @@ impl<'a> QuestRepository<'a> {
         }
         let mut closed = Vec::with_capacity(days.len());
         for period_key in &days {
-            closed.push(self.close_occurrence(&repeating, period_key, OCCURRENCE_COMPLETED, origin_device_id)?);
+            closed.push(self.close_occurrence(
+                &repeating,
+                period_key,
+                OCCURRENCE_COMPLETED,
+                origin_device_id,
+            )?);
         }
-        self.finish_repeating(id, closed, Vec::new(), false, days.last().map(String::as_str))
+        self.finish_repeating(
+            id,
+            closed,
+            Vec::new(),
+            false,
+            days.last().map(String::as_str),
+        )
     }
 
     fn finish_repeating(
@@ -915,7 +1030,9 @@ impl<'a> QuestRepository<'a> {
         // changed.
         let quest = match RepeatingQuest::new(&stored, &marks) {
             Some(repeating) => {
-                let open = (stored.status == "active").then(|| repeating.oldest_open()).flatten();
+                let open = (stored.status == "active")
+                    .then(|| repeating.oldest_open())
+                    .flatten();
                 match (open, changed_day) {
                     (Some(open), _) => repeating.on_day(&open),
                     (None, Some(day)) => repeating.on_day(day),
@@ -973,17 +1090,30 @@ impl<'a> QuestRepository<'a> {
     pub fn emit_missing_sync_events(&mut self, device_id: &str) -> Result<(), String> {
         let quests = self.load_all()?;
         let marks = self.all_occurrences()?;
-        let space_by_quest: HashMap<&str, &str> =
-            quests.iter().map(|quest| (quest.id.as_str(), quest.space_id.as_str())).collect();
+        let space_by_quest: HashMap<&str, &str> = quests
+            .iter()
+            .map(|quest| (quest.id.as_str(), quest.space_id.as_str()))
+            .collect();
         let mut outbox = OutboxRepository::new(self.conn);
-        for quest in quests.iter().filter(|quest| RepeatRule::parse(quest.repeat_rule.as_deref()).is_some()) {
-            if outbox.load_latest_event_for_entity("quest", &quest.id)?.is_none() {
+        for quest in quests
+            .iter()
+            .filter(|quest| RepeatRule::parse(quest.repeat_rule.as_deref()).is_some())
+        {
+            if outbox
+                .load_latest_event_for_entity("quest", &quest.id)?
+                .is_none()
+            {
                 outbox.record_quest(device_id, &quest.space_id, &quest.id)?;
             }
         }
         for mark in &marks {
-            let Some(space_id) = space_by_quest.get(mark.quest_id.as_str()) else { continue };
-            if outbox.load_latest_event_for_entity("quest_occurrence", &mark.sync_id())?.is_none() {
+            let Some(space_id) = space_by_quest.get(mark.quest_id.as_str()) else {
+                continue;
+            };
+            if outbox
+                .load_latest_event_for_entity("quest_occurrence", &mark.sync_id())?
+                .is_none()
+            {
                 outbox.record_occurrence(device_id, space_id, mark)?;
             }
         }
@@ -1008,14 +1138,29 @@ impl<'a> QuestRepository<'a> {
         let merged = match (&local.description, &incoming.description) {
             (Some(local_description), Some(incoming_description)) => {
                 // An empty day copy is an override too (all items removed).
-                Some(checklist::merge_3way(local.checklist_base.as_deref(), local_description, incoming_description).0)
+                Some(
+                    checklist::merge_3way(
+                        local.checklist_base.as_deref(),
+                        local_description,
+                        incoming_description,
+                    )
+                    .0,
+                )
             }
             _ if incoming_wins => incoming.description.clone(),
             _ => local.description.clone(),
         };
         let incoming_matches_merged = merged == incoming.description;
-        let mut mark = if incoming_wins { incoming.clone() } else { local.clone() };
-        mark.checklist_base = if incoming_matches_merged { merged.clone() } else { local.checklist_base.clone() };
+        let mut mark = if incoming_wins {
+            incoming.clone()
+        } else {
+            local.clone()
+        };
+        mark.checklist_base = if incoming_matches_merged {
+            merged.clone()
+        } else {
+            local.checklist_base.clone()
+        };
         mark.description = merged;
         let saved = self.save_occurrence(&mark)?;
         Ok((!incoming_matches_merged).then_some(saved))
@@ -1051,11 +1196,7 @@ impl<'a> QuestRepository<'a> {
         let base_advanced = checklist_base_before.as_deref() != next_checklist_base.as_deref();
 
         if merged != local.description {
-            self.update_external_quest_checklist_merge(
-                id,
-                &merged,
-                &next_checklist_base,
-            )?;
+            self.update_external_quest_checklist_merge(id, &merged, &next_checklist_base)?;
         } else if base_advanced {
             self.update_external_quest_checklist_base(id, &next_checklist_base)?;
         }
@@ -1065,7 +1206,6 @@ impl<'a> QuestRepository<'a> {
             merged.as_deref() != incoming_description || base_advanced,
         ))
     }
-
 
     // ── Checklist (issue #128; repeating quests: ADR-0012 D5) ──────────────────
 
@@ -1122,7 +1262,9 @@ impl<'a> QuestRepository<'a> {
             EditScope::Day => {
                 let period_key = match period_key {
                     Some(key) => key.to_string(),
-                    None => repeating.oldest_open().ok_or_else(|| "the quest has no open occurrence".to_string())?,
+                    None => repeating
+                        .oldest_open()
+                        .ok_or_else(|| "the quest has no open occurrence".to_string())?,
                 };
                 let day = repeating.on_day(&period_key);
                 let updated = edit(day.description.as_deref().unwrap_or(""))?;
@@ -1142,8 +1284,11 @@ impl<'a> QuestRepository<'a> {
                 // The open day copies take the template edit (D5).
                 let mut merged_days = Vec::new();
                 for mark in marks.iter().filter(|mark| !mark.is_closed()) {
-                    let Some(local) = mark.description.as_deref() else { continue };
-                    let (description, _) = checklist::merge_3way(mark.checklist_base.as_deref(), local, &updated);
+                    let Some(local) = mark.description.as_deref() else {
+                        continue;
+                    };
+                    let (description, _) =
+                        checklist::merge_3way(mark.checklist_base.as_deref(), local, &updated);
                     let mut mark = mark.clone();
                     mark.description = Some(description);
                     mark.checklist_base = Some(updated.clone());
@@ -1163,7 +1308,10 @@ impl<'a> QuestRepository<'a> {
         origin_device_id: Option<&str>,
     ) -> Result<QuestChange, String> {
         let change = self.edit_checklist(quest_id, scope, None, |checklist_text| {
-            Ok(checklist::add_item(Some(checklist_text).filter(|text| !text.is_empty()), text))
+            Ok(checklist::add_item(
+                Some(checklist_text).filter(|text| !text.is_empty()),
+                text,
+            ))
         })?;
         log_checklist_activity(
             self.conn,
@@ -1190,7 +1338,10 @@ impl<'a> QuestRepository<'a> {
         // Individual toggles are not written to the audit log by design (#128): the
         // checklist's own checked state is the record.
         self.edit_checklist(quest_id, EditScope::Day, period_key, |checklist_text| {
-            if !checklist::parse(checklist_text).iter().any(|it| it.id == item_id) {
+            if !checklist::parse(checklist_text)
+                .iter()
+                .any(|it| it.id == item_id)
+            {
                 return Err("checklist item not found".to_string());
             }
             Ok(checklist::set_checked(checklist_text, item_id, checked))
@@ -1207,7 +1358,10 @@ impl<'a> QuestRepository<'a> {
     ) -> Result<QuestChange, String> {
         // A stale/nonexistent item_id must not report a fake rename.
         let change = self.edit_checklist(quest_id, scope, None, |checklist_text| {
-            if !checklist::parse(checklist_text).iter().any(|it| it.id == item_id) {
+            if !checklist::parse(checklist_text)
+                .iter()
+                .any(|it| it.id == item_id)
+            {
                 return Err("checklist item not found".to_string());
             }
             Ok(checklist::set_text(checklist_text, item_id, text))
@@ -1260,7 +1414,8 @@ impl<'a> QuestRepository<'a> {
         origin_device_id: Option<&str>,
     ) -> Result<QuestChange, String> {
         let before = self.resolved(quest_id)?;
-        let change = self.edit_checklist(quest_id, scope, None, |_| Ok(checklist_text.to_string()))?;
+        let change =
+            self.edit_checklist(quest_id, scope, None, |_| Ok(checklist_text.to_string()))?;
         Self::log_checklist_replacement_activity(
             self.conn,
             &before,
@@ -1280,10 +1435,14 @@ impl<'a> QuestRepository<'a> {
     ) -> Result<(), String> {
         let old_items = checklist::parse_opt(old_checklist);
         let new_items = checklist::parse_opt(new_checklist);
-        let old_by_id: HashMap<&str, &checklist::ChecklistItem> =
-            old_items.iter().map(|item| (item.id.as_str(), item)).collect();
-        let new_by_id: HashMap<&str, &checklist::ChecklistItem> =
-            new_items.iter().map(|item| (item.id.as_str(), item)).collect();
+        let old_by_id: HashMap<&str, &checklist::ChecklistItem> = old_items
+            .iter()
+            .map(|item| (item.id.as_str(), item))
+            .collect();
+        let new_by_id: HashMap<&str, &checklist::ChecklistItem> = new_items
+            .iter()
+            .map(|item| (item.id.as_str(), item))
+            .collect();
 
         for item in &new_items {
             match old_by_id.get(item.id.as_str()) {
@@ -1324,7 +1483,9 @@ impl<'a> QuestRepository<'a> {
         ordered_ids: &[String],
         scope: EditScope,
     ) -> Result<QuestChange, String> {
-        self.edit_checklist(quest_id, scope, None, |checklist_text| Ok(checklist::reorder(checklist_text, ordered_ids)))
+        self.edit_checklist(quest_id, scope, None, |checklist_text| {
+            Ok(checklist::reorder(checklist_text, ordered_ids))
+        })
     }
 
     pub fn get_checklist_activity(
@@ -1340,7 +1501,6 @@ impl<'a> QuestRepository<'a> {
     }
 }
 
-
 // ── "Focus N" badge: how many times the quest became the Focus quest ───────
 //
 // TODO: count this in the backend again, later. Focus is now a read-only
@@ -1349,7 +1509,7 @@ impl<'a> QuestRepository<'a> {
 // 2026-11-01). The old code is kept below so we remember how it worked.
 //
 // const ACTIVE_FOCUS_QUEST_SETTING_KEY: &str = "active_focus_quest_id";
-// 
+//
 // fn save_active_focus_quest_id(
 //     conn: &mut SqliteConnection,
 //     quest_id: Option<&str>,
@@ -1369,7 +1529,7 @@ impl<'a> QuestRepository<'a> {
 //     }
 //     Ok(())
 // }
-// 
+//
 // /// Counts a Focus enter on the quest (ADR-0012 D9: a repeating quest counts
 // /// on the quest, not on a day) and returns `quest` with the new count.
 // pub(crate) fn record_focus_enter(
@@ -1382,7 +1542,7 @@ impl<'a> QuestRepository<'a> {
 //         .first::<String>(conn)
 //         .optional()
 //         .map_err(|error| error.to_string())?;
-// 
+//
 //     let mut quest = quest.clone();
 //     if previous_focus_id.as_deref() != Some(quest.id.as_str()) {
 //         let stored = QuestRepository::new(conn).increment_focus_enter_count(&quest.id)?;
@@ -1424,7 +1584,6 @@ pub(crate) fn append_focus_history(
     Ok(())
 }
 
-
 /// What a quest change wrote, for the callers that sync it and schedule
 /// reminders.
 pub struct QuestChange {
@@ -1440,7 +1599,6 @@ pub struct QuestChange {
     pub removed_occurrences: Vec<String>,
     pub restore_should_focus: bool,
 }
-
 
 pub(crate) fn log_checklist_activity(
     conn: &mut SqliteConnection,
@@ -1464,7 +1622,6 @@ pub(crate) fn log_checklist_activity(
         .map_err(|e| e.to_string())?;
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1537,7 +1694,9 @@ mod tests {
     /// A daily quest at 00:00 that started two days ago, every day open.
     fn daily_at_midnight(conn: &mut SqliteConnection) -> (Quest, String, String) {
         let today = Local::now().date_naive();
-        let start = (today - chrono::Duration::days(2)).format("%Y-%m-%d").to_string();
+        let start = (today - chrono::Duration::days(2))
+            .format("%Y-%m-%d")
+            .to_string();
         let quest = QuestRepository::new(conn)
             .insert(crate::models::CreateQuestInput {
                 space_id: "1".to_string(),
@@ -1552,7 +1711,9 @@ mod tests {
                 is_checklist: false,
             })
             .expect("create quest");
-        let tomorrow = (today + chrono::Duration::days(1)).format("%Y-%m-%d").to_string();
+        let tomorrow = (today + chrono::Duration::days(1))
+            .format("%Y-%m-%d")
+            .to_string();
         (quest, today.format("%Y-%m-%d").to_string(), tomorrow)
     }
 
@@ -1570,11 +1731,19 @@ mod tests {
             description: QuestFieldPatch::Unchanged,
             due: QuestFieldPatch::Unchanged,
             due_time: QuestFieldPatch::Unchanged,
-            repeat_rule: QuestFieldPatch::Set(r#"{"preset":"custom","interval":2,"unit":"day"}"#.to_string()),
+            repeat_rule: QuestFieldPatch::Set(
+                r#"{"preset":"custom","interval":2,"unit":"day"}"#.to_string(),
+            ),
         };
-        let change = QuestRepository::new(&mut conn).update(&quest.id, patch, EditScope::All, None, None).unwrap();
+        let change = QuestRepository::new(&mut conn)
+            .update(&quest.id, patch, EditScope::All, None, None)
+            .unwrap();
 
-        assert_eq!(change.quest.due.as_deref(), Some(today.as_str()), "the oldest open day is today");
+        assert_eq!(
+            change.quest.due.as_deref(),
+            Some(today.as_str()),
+            "the oldest open day is today"
+        );
         let _ = std::fs::remove_file(db_path);
     }
 
@@ -1586,7 +1755,10 @@ mod tests {
         let mut conn = open_db_at_path(&db_path);
         let (quest, _, _) = daily_at_midnight(&mut conn);
         let patch = |title: Option<&str>, repeat_rule| QuestUpdatePatch {
-            input: UpdateQuestInput { title: title.map(str::to_string), ..crate::models::UpdateQuestInputBuilder::default().build() },
+            input: UpdateQuestInput {
+                title: title.map(str::to_string),
+                ..crate::models::UpdateQuestInputBuilder::default().build()
+            },
             description: QuestFieldPatch::Unchanged,
             due: QuestFieldPatch::Unchanged,
             due_time: QuestFieldPatch::Unchanged,
@@ -1594,10 +1766,22 @@ mod tests {
         };
 
         QuestRepository::new(&mut conn)
-            .update(&quest.id, patch(Some("This day only"), QuestFieldPatch::Unchanged), EditScope::Day, None, None)
+            .update(
+                &quest.id,
+                patch(Some("This day only"), QuestFieldPatch::Unchanged),
+                EditScope::Day,
+                None,
+                None,
+            )
             .unwrap();
         let change = QuestRepository::new(&mut conn)
-            .update(&quest.id, patch(None, QuestFieldPatch::Clear), EditScope::All, None, None)
+            .update(
+                &quest.id,
+                patch(None, QuestFieldPatch::Clear),
+                EditScope::All,
+                None,
+                None,
+            )
             .unwrap();
 
         assert_eq!(change.quest.repeat_rule, None);
@@ -1631,11 +1815,19 @@ mod tests {
             due_time: QuestFieldPatch::Unchanged,
             repeat_rule: QuestFieldPatch::Set(r#"{"preset":"daily"}"#.to_string()),
         };
-        let change = QuestRepository::new(&mut conn).update(&quest.id, patch, EditScope::All, None, None).unwrap();
+        let change = QuestRepository::new(&mut conn)
+            .update(&quest.id, patch, EditScope::All, None, None)
+            .unwrap();
 
         assert_eq!(change.occurrences.len(), 1, "the first day's copy syncs");
-        let day = QuestRepository::new(&mut conn).find_occurrence(&quest.id, "2026-03-01").unwrap().unwrap();
-        assert_eq!(day.description.as_deref(), Some("- [x] headphones <!--k=a1-->"));
+        let day = QuestRepository::new(&mut conn)
+            .find_occurrence(&quest.id, "2026-03-01")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            day.description.as_deref(),
+            Some("- [x] headphones <!--k=a1-->")
+        );
         let _ = std::fs::remove_file(db_path);
     }
 

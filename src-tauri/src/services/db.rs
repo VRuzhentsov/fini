@@ -41,17 +41,26 @@ impl DbPool {
 
     fn open_sized(path: &Path, max_size: Option<u32>) -> Result<Self, String> {
         drop(try_open_db_at_path(path)?);
-        let manager = ConnectionManager::<SqliteConnection>::new(path.to_str().ok_or("database path is not UTF-8")?);
-        let builder = Pool::builder().min_idle(Some(1)).connection_customizer(Box::new(Pragmas));
+        let manager = ConnectionManager::<SqliteConnection>::new(
+            path.to_str().ok_or("database path is not UTF-8")?,
+        );
+        let builder = Pool::builder()
+            .min_idle(Some(1))
+            .connection_customizer(Box::new(Pragmas));
         let builder = match max_size {
             Some(size) => builder.max_size(size),
             None => builder,
         };
-        builder.build(manager).map(Self).map_err(|err| format!("failed to make the database pool: {err}"))
+        builder
+            .build(manager)
+            .map(Self)
+            .map_err(|err| format!("failed to make the database pool: {err}"))
     }
 
     pub fn get(&self) -> Result<DbConnection, String> {
-        self.0.get().map_err(|err| format!("no database connection: {err}"))
+        self.0
+            .get()
+            .map_err(|err| format!("no database connection: {err}"))
     }
 
     /// A connection, for code that has no way to return an error: it stops
@@ -97,7 +106,9 @@ struct Pragmas;
 
 impl CustomizeConnection<SqliteConnection, diesel::r2d2::Error> for Pragmas {
     fn on_acquire(&self, conn: &mut SqliteConnection) -> Result<(), diesel::r2d2::Error> {
-        set_pragmas(conn).map_err(|err| diesel::r2d2::Error::ConnectionError(ConnectionError::BadConnection(err)))
+        set_pragmas(conn).map_err(|err| {
+            diesel::r2d2::Error::ConnectionError(ConnectionError::BadConnection(err))
+        })
     }
 }
 
@@ -116,7 +127,9 @@ pub fn utc_now() -> String {
 /// create-then-immediate-edit sequence intermittently landed in the same
 /// second, and the objectively later edit silently lost the tie.
 pub fn sync_timestamp() -> String {
-    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
+    chrono::Utc::now()
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string()
 }
 
 pub fn db_default_path() -> PathBuf {
@@ -184,7 +197,8 @@ pub fn try_open_db_at_path(path: &Path) -> Result<SqliteConnection, String> {
         match try_open_db_at_path_once(path) {
             Ok(conn) => return Ok(conn),
             Err(err) => {
-                let retriable = err.contains("database is locked") || err.contains("database is busy");
+                let retriable =
+                    err.contains("database is locked") || err.contains("database is busy");
                 last_err = err;
                 if !retriable {
                     return Err(last_err);
@@ -280,7 +294,8 @@ pub fn app_db_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         app_data_dir(app).join("fini.db")
     };
     if let Some(parent) = db_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|err| format!("failed to create app data dir: {err}"))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create app data dir: {err}"))?;
     }
     Ok(db_path)
 }
@@ -386,9 +401,21 @@ mod tests {
         conn.run_pending_migrations(MIGRATIONS)
             .expect("run migration 28 over v0.3.17 series");
 
-        let quests_now: Vec<(String, String, Option<String>, Option<String>, Option<String>)> = quests::table
+        let quests_now: Vec<(
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        )> = quests::table
             .order(quests::id.asc())
-            .select((quests::id, quests::status, quests::due, quests::due_time, quests::description))
+            .select((
+                quests::id,
+                quests::status,
+                quests::due,
+                quests::due_time,
+                quests::description,
+            ))
             .load(&mut conn)
             .expect("load quests");
         assert_eq!(
@@ -402,8 +429,16 @@ mod tests {
         );
 
         let marks: Vec<(String, String, Option<String>, Option<String>)> = quest_occurrences::table
-            .order((quest_occurrences::quest_id.asc(), quest_occurrences::period_key.asc()))
-            .select((quest_occurrences::quest_id, quest_occurrences::period_key, quest_occurrences::status, quest_occurrences::description))
+            .order((
+                quest_occurrences::quest_id.asc(),
+                quest_occurrences::period_key.asc(),
+            ))
+            .select((
+                quest_occurrences::quest_id,
+                quest_occurrences::period_key,
+                quest_occurrences::status,
+                quest_occurrences::description,
+            ))
             .load(&mut conn)
             .expect("load marks");
         assert_eq!(
@@ -417,15 +452,28 @@ mod tests {
             "closed days become marks; a checklist day keeps its own copy, also one equal to the template"
         );
 
-        let focus: Vec<String> = focus_history::table.select(focus_history::quest_id).load(&mut conn).unwrap();
-        assert_eq!(focus, vec!["gym".to_string()], "Focus points at the quest");
-        let reminder_rows: Vec<(String, Option<i64>, Option<String>)> = reminders::table
-            .select((reminders::quest_id, reminders::mm_offset, reminders::due_at_utc))
+        let focus: Vec<String> = focus_history::table
+            .select(focus_history::quest_id)
             .load(&mut conn)
             .unwrap();
-        assert_eq!(reminder_rows, vec![("gym".to_string(), Some(10), None)], "reminders keep only their rule, on the quest");
+        assert_eq!(focus, vec!["gym".to_string()], "Focus points at the quest");
+        let reminder_rows: Vec<(String, Option<i64>, Option<String>)> = reminders::table
+            .select((
+                reminders::quest_id,
+                reminders::mm_offset,
+                reminders::due_at_utc,
+            ))
+            .load(&mut conn)
+            .unwrap();
+        assert_eq!(
+            reminder_rows,
+            vec![("gym".to_string(), Some(10), None)],
+            "reminders keep only their rule, on the quest"
+        );
         assert!(
-            diesel::sql_query("SELECT 1 FROM quest_series").execute(&mut conn).is_err(),
+            diesel::sql_query("SELECT 1 FROM quest_series")
+                .execute(&mut conn)
+                .is_err(),
             "quest_series is gone"
         );
         let stale_activity: i64 = crate::schema::sync_outbox::table
@@ -433,7 +481,10 @@ mod tests {
             .count()
             .get_result(&mut conn)
             .unwrap();
-        assert_eq!(stale_activity, 0, "an activity event that names an old occurrence goes");
+        assert_eq!(
+            stale_activity, 0,
+            "an activity event that names an old occurrence goes"
+        );
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -509,9 +560,24 @@ mod tests {
                     Some("AA:BB:CC:DD:EE:FF".to_string())
                 ),
                 ("bt-on".to_string(), "network".to_string(), true, None),
-                ("bt-switched-off".to_string(), "bluetooth".to_string(), false, None),
-                ("bt-switched-off".to_string(), "network".to_string(), true, None),
-                ("never-used-bt".to_string(), "network".to_string(), true, None),
+                (
+                    "bt-switched-off".to_string(),
+                    "bluetooth".to_string(),
+                    false,
+                    None
+                ),
+                (
+                    "bt-switched-off".to_string(),
+                    "network".to_string(),
+                    true,
+                    None
+                ),
+                (
+                    "never-used-bt".to_string(),
+                    "network".to_string(),
+                    true,
+                    None
+                ),
             ],
             "every pair keeps Network on; Bluetooth appears only where it was actually set up, \
              switched off where the person had switched it off"

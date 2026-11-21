@@ -82,6 +82,3 @@ pub struct CreateTombstone {
     pub entity_id: String,
     pub space_id: String,
 }
-
-
-

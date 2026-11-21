@@ -55,7 +55,11 @@ fn hard_unlink_migration_drops_only_unlinked_channels() {
         .expect("upgrade a database that had a tombstoned channel");
 
     let rows: Vec<(String, bool, bool)> = channels::table
-        .select((channels::channel_kind, channels::enabled, channels::is_primary))
+        .select((
+            channels::channel_kind,
+            channels::enabled,
+            channels::is_primary,
+        ))
         .load(&mut conn)
         .expect("load the upgraded channels");
     assert_eq!(
@@ -159,7 +163,8 @@ fn reminder_moment_migration_keeps_reminders_made_with_their_own_time() {
         .iter()
         .any(|version| version.to_string() == "00000000000029")
     {
-        conn.revert_last_migration(MIGRATIONS).expect("wind back past migration 29");
+        conn.revert_last_migration(MIGRATIONS)
+            .expect("wind back past migration 29");
     }
 
     diesel::sql_query(
@@ -179,20 +184,41 @@ fn reminder_moment_migration_keeps_reminders_made_with_their_own_time() {
     .execute(&mut conn)
     .expect("seed reminders");
 
-    conn.run_pending_migrations(MIGRATIONS).expect("upgrade through migration 29");
+    conn.run_pending_migrations(MIGRATIONS)
+        .expect("upgrade through migration 29");
 
     use crate::schema::reminders;
     let mut rows: Vec<(String, String, Option<i64>, Option<String>)> = reminders::table
-        .select((reminders::id, reminders::kind, reminders::mm_offset, reminders::due_at_utc))
+        .select((
+            reminders::id,
+            reminders::kind,
+            reminders::mm_offset,
+            reminders::due_at_utc,
+        ))
         .load(&mut conn)
         .expect("load the upgraded reminders");
     rows.sort();
     assert_eq!(
         rows,
         vec![
-            ("from-date".to_string(), "relative".to_string(), Some(0), None),
-            ("own-time".to_string(), "absolute".to_string(), None, Some("2026-03-05T18:00:00Z".to_string())),
-            ("undated-own".to_string(), "absolute".to_string(), None, Some("2026-04-01T08:00:00Z".to_string())),
+            (
+                "from-date".to_string(),
+                "relative".to_string(),
+                Some(0),
+                None
+            ),
+            (
+                "own-time".to_string(),
+                "absolute".to_string(),
+                None,
+                Some("2026-03-05T18:00:00Z".to_string())
+            ),
+            (
+                "undated-own".to_string(),
+                "absolute".to_string(),
+                None,
+                Some("2026-04-01T08:00:00Z".to_string())
+            ),
         ]
     );
 

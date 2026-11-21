@@ -12,12 +12,14 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 // The driver of a desktop system: BlueZ on Linux, WinRT on Windows.
+use ble_gatt::datagram::DatagramConfig;
 #[cfg(target_os = "linux")]
 use ble_gatt::drivers::linux::LinuxDriver as DesktopDriver;
 #[cfg(target_os = "windows")]
 use ble_gatt::drivers::windows::WindowsDriver as DesktopDriver;
-use ble_gatt::datagram::DatagramConfig;
-use ble_gatt::{Adapter, CharacteristicUuid, PeerAddress, PeerChannel, PeerLink, PeerLinkConfig, ServiceUuid};
+use ble_gatt::{
+    Adapter, CharacteristicUuid, PeerAddress, PeerChannel, PeerLink, PeerLinkConfig, ServiceUuid,
+};
 use uuid::Uuid;
 
 use crate::models::{Event, Identity};
@@ -30,13 +32,12 @@ use crate::services::db::DbPool;
 use crate::services::event_bus_service::EventBus;
 use crate::services::space_sync_service::rejected_by_peer;
 
-
 pub use adapter::BluetoothAdapter;
 pub use data_link::*;
 
 pub use advertiser::Advertiser;
-pub use scanner::Scanner;
 pub use scanner::AvailableDevice;
+pub use scanner::Scanner;
 
 use scanner::Purpose;
 
@@ -69,7 +70,8 @@ pub struct BluetoothChannelService {
     admission: std::sync::Mutex<()>,
     shutdown_result: tokio::sync::OnceCell<Result<(), String>>,
     /// Scoped pairing uses until each first session acquires the channel.
-    pairing_links: std::sync::Mutex<std::collections::HashMap<String, (Uuid, iroh::EndpointId, PeerChannel)>>,
+    pairing_links:
+        std::sync::Mutex<std::collections::HashMap<String, (Uuid, iroh::EndpointId, PeerChannel)>>,
     /// When this device last rejected each paired device's session because
     /// the channel was off here (`note_refused`).
     refused_at: std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
@@ -101,7 +103,9 @@ impl BluetoothChannelService {
 
     /// This object as an `Arc`, for a task it starts.
     fn arc(&self) -> Arc<Self> {
-        self.me.upgrade().expect("the Bluetooth channel lives as long as its tasks")
+        self.me
+            .upgrade()
+            .expect("the Bluetooth channel lives as long as its tasks")
     }
 
     fn stopping(&self) -> bool {
@@ -120,53 +124,75 @@ impl BluetoothChannelService {
             self.stopping.send_replace(true);
         }
         self.scanner.stop();
-        self.shutdown_result.get_or_init(|| async {
-            let mut errors = Vec::new();
-            let initialization = match tokio::time::timeout(Duration::from_secs(2), self.initialization.write()).await {
-                Ok(guard) => Some(guard),
-                Err(err) => {
-                    errors.push(format!("Bluetooth initialization drain timed out: {err}"));
-                    None
-                }
-            };
-            if let Some((endpoint, _)) = self.endpoint.get() {
-                if let Err(err) = tokio::time::timeout(Duration::from_secs(2), endpoint.close()).await {
-                    errors.push(format!("Bluetooth endpoint close timed out: {err}"));
-                }
-            }
-            let held = self.pairing_links.lock().map(|mut links| links.drain().map(|(_, (_, _, channel))| channel).collect::<Vec<_>>())
-                .map_err(|err| err.to_string());
-            match held {
-                Ok(held) => {
-                    let drain = async {
-                        let mut releases = futures_util::stream::FuturesUnordered::new();
-                        for channel in held {
-                            releases.push(async move { channel.release().await });
-                        }
-                        use futures_util::StreamExt;
-                        while let Some(result) = releases.next().await {
-                            if let Err(err) = result {
-                                errors.push(format!("Bluetooth held use release failed: {err}"));
-                            }
+        self.shutdown_result
+            .get_or_init(|| async {
+                let mut errors = Vec::new();
+                let initialization =
+                    match tokio::time::timeout(Duration::from_secs(2), self.initialization.write())
+                        .await
+                    {
+                        Ok(guard) => Some(guard),
+                        Err(err) => {
+                            errors.push(format!("Bluetooth initialization drain timed out: {err}"));
+                            None
                         }
                     };
-                    if let Err(err) = tokio::time::timeout(Duration::from_secs(2), drain).await {
-                        errors.push(format!("Bluetooth held use drain timed out: {err}"));
+                if let Some((endpoint, _)) = self.endpoint.get() {
+                    if let Err(err) =
+                        tokio::time::timeout(Duration::from_secs(2), endpoint.close()).await
+                    {
+                        errors.push(format!("Bluetooth endpoint close timed out: {err}"));
                     }
                 }
-                Err(err) => errors.push(format!("Bluetooth held use lock failed: {err}")),
-            }
-            // Always attempt managed close, even when an earlier drain failed.
-            if let Some(link) = self.peer_link.get() {
-                match tokio::time::timeout(Duration::from_secs(6), link.close()).await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(err)) => errors.push(format!("Bluetooth owner close failed: {err}")),
-                    Err(err) => errors.push(format!("Bluetooth owner close timed out: {err}")),
+                let held = self
+                    .pairing_links
+                    .lock()
+                    .map(|mut links| {
+                        links
+                            .drain()
+                            .map(|(_, (_, _, channel))| channel)
+                            .collect::<Vec<_>>()
+                    })
+                    .map_err(|err| err.to_string());
+                match held {
+                    Ok(held) => {
+                        let drain = async {
+                            let mut releases = futures_util::stream::FuturesUnordered::new();
+                            for channel in held {
+                                releases.push(async move { channel.release().await });
+                            }
+                            use futures_util::StreamExt;
+                            while let Some(result) = releases.next().await {
+                                if let Err(err) = result {
+                                    errors
+                                        .push(format!("Bluetooth held use release failed: {err}"));
+                                }
+                            }
+                        };
+                        if let Err(err) = tokio::time::timeout(Duration::from_secs(2), drain).await
+                        {
+                            errors.push(format!("Bluetooth held use drain timed out: {err}"));
+                        }
+                    }
+                    Err(err) => errors.push(format!("Bluetooth held use lock failed: {err}")),
                 }
-            }
-            drop(initialization);
-            if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
-        }).await.clone()
+                // Always attempt managed close, even when an earlier drain failed.
+                if let Some(link) = self.peer_link.get() {
+                    match tokio::time::timeout(Duration::from_secs(6), link.close()).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(err)) => errors.push(format!("Bluetooth owner close failed: {err}")),
+                        Err(err) => errors.push(format!("Bluetooth owner close timed out: {err}")),
+                    }
+                }
+                drop(initialization);
+                if errors.is_empty() {
+                    Ok(())
+                } else {
+                    Err(errors.join("; "))
+                }
+            })
+            .await
+            .clone()
     }
 
     /// Whether a session with the peer runs on Bluetooth now.
@@ -174,10 +200,11 @@ impl BluetoothChannelService {
         self.handlers.has_session(peer_id, ChannelKind::Bluetooth)
     }
 
-
     /// The iroh key pinned for the pair, if any.
     fn pinned_key(&self, peer_id: &str) -> Option<String> {
-        tokio::task::block_in_place(|| DeviceRepository::new(&mut *self.pool.connection()).pinned_key(peer_id))
+        tokio::task::block_in_place(|| {
+            DeviceRepository::new(&mut *self.pool.connection()).pinned_key(peer_id)
+        })
     }
 }
 
@@ -224,14 +251,21 @@ pub struct DeliverySchedule {
 
 impl DeliverySchedule {
     pub fn new(bus: Arc<EventBus>) -> Self {
-        Self { bus, schedule: Default::default(), rejected_until: Default::default() }
+        Self {
+            bus,
+            schedule: Default::default(),
+            rejected_until: Default::default(),
+        }
     }
 
     /// Tells the bus once `after` has passed: a search or a connection to
     /// the peer is due again (ADR-0008 D12).
     fn publish_due_after(&self, peer_id: &str, after: Duration) {
         let bus = self.bus.clone();
-        let event = Event::ConnectChanged { peer_device_id: peer_id.to_string(), kind: ChannelKind::Bluetooth };
+        let event = Event::ConnectChanged {
+            peer_device_id: peer_id.to_string(),
+            kind: ChannelKind::Bluetooth,
+        };
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(after).await;
             bus.publish(event);
@@ -242,10 +276,11 @@ impl DeliverySchedule {
     /// rejected a session recently is not. A device heard recently is
     /// otherwise always due: it is reached by one connection.
     pub fn delivery_due(&self, scanner: &Scanner, peer_id: &str) -> bool {
-        let rejected = self
-            .rejected_until
-            .lock()
-            .is_ok_and(|rejected| rejected.get(peer_id).is_some_and(|until| std::time::Instant::now() < *until));
+        let rejected = self.rejected_until.lock().is_ok_and(|rejected| {
+            rejected
+                .get(peer_id)
+                .is_some_and(|until| std::time::Instant::now() < *until)
+        });
         if rejected {
             return false;
         }
@@ -284,7 +319,10 @@ impl DeliverySchedule {
     /// `REJECTED_WAIT_TIME`.
     pub fn record_rejected(&self, peer_id: &str) {
         if let Ok(mut rejected) = self.rejected_until.lock() {
-            rejected.insert(peer_id.to_string(), std::time::Instant::now() + REJECTED_WAIT_TIME);
+            rejected.insert(
+                peer_id.to_string(),
+                std::time::Instant::now() + REJECTED_WAIT_TIME,
+            );
         }
         self.publish_due_after(peer_id, REJECTED_WAIT_TIME);
     }
@@ -314,7 +352,9 @@ const FINI_BLE_CHARACTERISTIC_UUID: &str = "b1e6a001-f101-4000-8000-00805f9b34fb
 fn datagram_config() -> DatagramConfig {
     DatagramConfig::new(
         ServiceUuid(Uuid::parse_str(FINI_BLE_SERVICE_UUID).expect("valid UUID literal")),
-        CharacteristicUuid(Uuid::parse_str(FINI_BLE_CHARACTERISTIC_UUID).expect("valid UUID literal")),
+        CharacteristicUuid(
+            Uuid::parse_str(FINI_BLE_CHARACTERISTIC_UUID).expect("valid UUID literal"),
+        ),
     )
 }
 
@@ -427,7 +467,9 @@ impl ChannelService for BluetoothChannelService {
     }
 
     fn set_add_device_mode(&self, on: bool) {
-        if self.stopping() { return; }
+        if self.stopping() {
+            return;
+        }
         self.advertiser.set_add_mode(on);
         self.scanner.set_add_device_mode(on);
         tokio::task::block_in_place(|| self.refresh_advertising(&mut self.pool.connection()));
@@ -460,7 +502,9 @@ impl ChannelService for BluetoothChannelService {
     }
 
     fn keep_serving(self: Arc<Self>) {
-        if self.stopping() { return; }
+        if self.stopping() {
+            return;
+        }
         // Android starts its peripheral lazily, from the first real tick:
         // the Activity context it needs does not exist when the app boots
         // (see `start_peripheral_once`). Gated on the Nearby Devices
@@ -476,7 +520,8 @@ impl ChannelService for BluetoothChannelService {
         // (2026-10-13: green is a live connection). `start_exchange` skips
         // a device that has one, or whose delivery search is not due.
         let peers = tokio::task::block_in_place(|| {
-            ChannelRepository::new(&mut *self.pool.connection()).peers_with_channel_enabled(ChannelKind::Bluetooth)
+            ChannelRepository::new(&mut *self.pool.connection())
+                .peers_with_channel_enabled(ChannelKind::Bluetooth)
         });
         for peer in peers {
             self.start_exchange(&peer);
@@ -501,7 +546,9 @@ impl ChannelService for BluetoothChannelService {
 impl BluetoothChannelService {
     /// Follow advertisement state. Incoming requests have their own task.
     async fn run_server(&self) {
-        if self.stopping() || !self.advertiser.claim_peripheral_role() { return; }
+        if self.stopping() || !self.advertiser.claim_peripheral_role() {
+            return;
+        }
         let mut wanted = self.advertiser.watch_wanted();
         let mut add_mode = self.advertiser.watch_add_mode();
         let mut events = self.bus.subscribe();
@@ -510,12 +557,18 @@ impl BluetoothChannelService {
         loop {
             let visible = *wanted.borrow_and_update();
             let _ = *add_mode.borrow_and_update();
-            if self.stopping() { return; }
+            if self.stopping() {
+                return;
+            }
             if visible || link.is_some() {
                 let apply = async {
-                    if link.is_none() { link = Some(self.peer_link().await?); }
+                    if link.is_none() {
+                        link = Some(self.peer_link().await?);
+                    }
                     let shared = link.as_ref().expect("the managed owner exists");
-                    self.advertiser.update(shared, visible, &mut uncertain).await
+                    self.advertiser
+                        .update(shared, visible, &mut uncertain)
+                        .await
                 };
                 tokio::select! {
                     biased;
@@ -567,63 +620,79 @@ impl BluetoothChannelService {
     }
 
     /// The shared managed owner. Claim incoming requests before any advertisement.
-    fn peer_link(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Arc<PeerLink>, String>> + Send + '_>> {
+    fn peer_link(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Arc<PeerLink>, String>> + Send + '_>,
+    > {
         Box::pin(async move {
-        let _initialization = self.initialization.write().await;
-        if self.stopping() { return Err("Bluetooth is stopping".to_string()); }
-        if let Some(link) = self.peer_link.get() { return Ok(link.clone()); }
-                use futures_util::StreamExt;
+            let _initialization = self.initialization.write().await;
+            if self.stopping() {
+                return Err("Bluetooth is stopping".to_string());
+            }
+            if let Some(link) = self.peer_link.get() {
+                return Ok(link.clone());
+            }
+            use futures_util::StreamExt;
 
-                let adapter = tokio::select! {
-                    biased;
-                    () = self.wait_until_stopping() => return Err("Bluetooth is stopping".to_string()),
-                    adapter = BluetoothAdapter::this_device().adapter() => adapter?,
-                };
-                let _admission = self.admission.lock().map_err(|err| err.to_string())?;
-                if self.stopping() { return Err("Bluetooth is stopping".to_string()); }
-                let link = PeerLink::with_driver(
-                    adapter.driver(),
-                    PeerLinkConfig::new(self.advertiser.advertised_config()),
-                );
-                let mut incoming = link.incoming().map_err(|err| err.to_string())?;
-                self.peer_link.set(link.clone()).map_err(|_| "Bluetooth owner already initialized".to_string())?;
-                let owner = self.me.clone();
-                tokio::spawn(async move {
-                    loop {
-                        let Some(owner) = owner.upgrade() else { return };
-                        let request = tokio::select! {
+            let adapter = tokio::select! {
+                biased;
+                () = self.wait_until_stopping() => return Err("Bluetooth is stopping".to_string()),
+                adapter = BluetoothAdapter::this_device().adapter() => adapter?,
+            };
+            let _admission = self.admission.lock().map_err(|err| err.to_string())?;
+            if self.stopping() {
+                return Err("Bluetooth is stopping".to_string());
+            }
+            let link = PeerLink::with_driver(
+                adapter.driver(),
+                PeerLinkConfig::new(self.advertiser.advertised_config()),
+            );
+            let mut incoming = link.incoming().map_err(|err| err.to_string())?;
+            self.peer_link
+                .set(link.clone())
+                .map_err(|_| "Bluetooth owner already initialized".to_string())?;
+            let owner = self.me.clone();
+            tokio::spawn(async move {
+                loop {
+                    let Some(owner) = owner.upgrade() else { return };
+                    let request = tokio::select! {
+                        biased;
+                        () = owner.wait_until_stopping() => return,
+                        request = incoming.next() => match request { Some(request) => request, None => return },
+                    };
+                    // Admission is independent of any outgoing attempt.
+                    tokio::spawn(async move {
+                        if owner.stopping()
+                            || (!owner.advertiser.in_add_mode() && !owner.advertiser.wanted())
+                        {
+                            if let Err(err) = request.reject().await {
+                                log::warn!("[transport][ble] request rejection failed: {err}");
+                            }
+                            return;
+                        }
+                        let accepted = tokio::select! {
                             biased;
                             () = owner.wait_until_stopping() => return,
-                            request = incoming.next() => match request { Some(request) => request, None => return },
+                            accepted = request.accept() => accepted,
                         };
-                        // Admission is independent of any outgoing attempt.
-                        tokio::spawn(async move {
-                            if owner.stopping() || (!owner.advertiser.in_add_mode() && !owner.advertiser.wanted()) {
-                                if let Err(err) = request.reject().await {
-                                    log::warn!("[transport][ble] request rejection failed: {err}");
+                        match accepted {
+                            Ok(channel) => {
+                                let _step = owner.scanner.begin_pairing_step();
+                                if let Some(handled) = owner.route_inbound(channel).await {
+                                    let _ = handled.await;
                                 }
-                                return;
                             }
-                            let accepted = tokio::select! {
-                                biased;
-                                () = owner.wait_until_stopping() => return,
-                                accepted = request.accept() => accepted,
-                            };
-                            match accepted {
-                                Ok(channel) => {
-                                    let _step = owner.scanner.begin_pairing_step();
-                                    if let Some(handled) = owner.route_inbound(channel).await {
-                                        let _ = handled.await;
-                                    }
-                                }
-                                Err(err) => log::info!("[transport][ble] incoming attempt ended: {err}"),
+                            Err(err) => {
+                                log::info!("[transport][ble] incoming attempt ended: {err}")
                             }
-                        });
-                    }
-                });
-                // The shared owner is ready, also when the scanner initialized it.
-                self.bus.publish(Event::AdapterChanged);
-                Ok::<_, String>(link)
+                        }
+                    });
+                }
+            });
+            // The shared owner is ready, also when the scanner initialized it.
+            self.bus.publish(Event::AdapterChanged);
+            Ok::<_, String>(link)
         })
     }
 
@@ -631,7 +700,10 @@ impl BluetoothChannelService {
     /// or being attempted (ADR-0008 D10). Called when there is work for the
     /// peer.
     pub fn start_exchange(&self, peer_id: &str) {
-        if self.stopping() || self.has_session(peer_id) || !self.delivery.delivery_due(&self.scanner, peer_id) {
+        if self.stopping()
+            || self.has_session(peer_id)
+            || !self.delivery.delivery_due(&self.scanner, peer_id)
+        {
             return;
         }
         // While a device is being added, the adapter belongs to that search --
@@ -666,7 +738,9 @@ impl BluetoothChannelService {
         if !refused_recently {
             return;
         }
-        log::info!("[transport][ble] {peer_id} was rejected a short time ago; connecting to it once");
+        log::info!(
+            "[transport][ble] {peer_id} was rejected a short time ago; connecting to it once"
+        );
         self.delivery.forget_delivery_misses(peer_id);
         self.start_exchange(peer_id);
     }
@@ -677,7 +751,6 @@ impl BluetoothChannelService {
             refused.insert(peer_id.to_string(), std::time::Instant::now());
         }
     }
-
 
     /// One delivery (ADR-0008 D8, D12): a present peer is one dial to where
     /// it was last heard; otherwise a delivery search of up to
@@ -699,10 +772,14 @@ impl BluetoothChannelService {
             match connected {
                 Ok(link) => {
                     drop(guard);
-                    log::info!("[transport][ble] first session with {peer_id} over the pairing link");
+                    log::info!(
+                        "[transport][ble] first session with {peer_id} over the pairing link"
+                    );
                     return self.run_exchange(peer_id, link, &address).await;
                 }
-                Err(err) => log::info!("[transport][ble] the pairing link to {address} is gone: {err}"),
+                Err(err) => {
+                    log::info!("[transport][ble] the pairing link to {address} is gone: {err}")
+                }
             }
         }
         let deadline = tokio::time::Instant::now() + SEARCH_WINDOW;
@@ -733,7 +810,9 @@ impl BluetoothChannelService {
             let found = if remaining.is_zero() {
                 None
             } else {
-                self.scanner.find(peer_id, Purpose::Delivery, remaining).await
+                self.scanner
+                    .find(peer_id, Purpose::Delivery, remaining)
+                    .await
             };
             let Some(found) = found else {
                 match last_error {
@@ -754,7 +833,10 @@ impl BluetoothChannelService {
             };
             // The peer's session can arrive while this search runs: it carries
             // the work, and a dial now would only cross it.
-            if !self.is_on(peer_id) || self.has_session(peer_id) || self.peer_connected_first(peer_id).await {
+            if !self.is_on(peer_id)
+                || self.has_session(peer_id)
+                || self.peer_connected_first(peer_id).await
+            {
                 return;
             }
             match self.connect_for_session(peer_id, &found.address).await {
@@ -825,7 +907,11 @@ impl BluetoothChannelService {
     /// The connect also stops when the pair or the channel goes while it
     /// runs: a connect that went on to its timeout after an unpair stopped
     /// the Add Device scan for up to 20 s.
-    async fn connect_for_session(&self, peer_id: &str, address: &str) -> Result<Box<dyn DataLink>, String> {
+    async fn connect_for_session(
+        &self,
+        peer_id: &str,
+        address: &str,
+    ) -> Result<Box<dyn DataLink>, String> {
         let _dialing = self.scanner.begin_dial(peer_id);
         let connect = tokio::time::timeout(
             CONNECT_CANDIDATE_TIMEOUT,
@@ -850,7 +936,9 @@ impl BluetoothChannelService {
                 Err(err)
             }
             Err(_elapsed) => {
-                log::info!("[transport][ble] candidate {address} did not finish the connect in time");
+                log::info!(
+                    "[transport][ble] candidate {address} did not finish the connect in time"
+                );
                 self.scanner.note_connect_failed(address);
 
                 Err("connect timed out".to_string())
@@ -907,10 +995,11 @@ impl BluetoothChannelService {
     /// the setups open now. Cheap; called whenever one of these can change.
     /// The caller gives its connection (docs/db.md, rule 2).
     pub fn refresh_advertising(&self, conn: &mut diesel::SqliteConnection) {
-        let any_channel_on = !ChannelRepository::new(conn).peers_with_channel_enabled(ChannelKind::Bluetooth).is_empty();
+        let any_channel_on = !ChannelRepository::new(conn)
+            .peers_with_channel_enabled(ChannelKind::Bluetooth)
+            .is_empty();
         let advertiser = &self.advertiser;
-        let wanted =
-            any_channel_on || advertiser.in_add_mode();
+        let wanted = any_channel_on || advertiser.in_add_mode();
         advertiser.set_wanted(wanted);
     }
 }
@@ -925,7 +1014,11 @@ mod tests {
     fn delivery_searches_back_off_one_five_fifteen_then_every_fifteen() {
         let now = std::time::Instant::now();
         let waits: Vec<u64> = (1..=5)
-            .map(|misses| next_delivery_search(misses, now).duration_since(now).as_secs())
+            .map(|misses| {
+                next_delivery_search(misses, now)
+                    .duration_since(now)
+                    .as_secs()
+            })
             .collect();
         assert_eq!(waits, vec![60, 300, 900, 900, 900]);
     }
@@ -938,7 +1031,10 @@ mod tests {
         let scanner = Scanner::default();
         let peer = "peer-forget-delivery-misses";
         schedule.note_delivery_missed(peer);
-        assert!(!schedule.delivery_due(&scanner, peer), "a miss delays the next search");
+        assert!(
+            !schedule.delivery_due(&scanner, peer),
+            "a miss delays the next search"
+        );
         schedule.forget_delivery_misses(peer);
         assert!(schedule.delivery_due(&scanner, peer));
     }
@@ -965,2436 +1061,2833 @@ mod tests {
         }
 
         for id in ["75700b2e-c970-482f-aa16-63ebdde0a91c", "peer-a", ""] {
-            assert_eq!(fingerprint_of(id), reference_fnv1a(id), "mismatch for {id:?}");
+            assert_eq!(
+                fingerprint_of(id),
+                reference_fnv1a(id),
+                "mismatch for {id:?}"
+            );
         }
         assert_ne!(fingerprint_of("peer-a"), fingerprint_of("peer-b"));
     }
-
 }
 
 mod adapter {
-//! The Bluetooth adapter: one per process, and whether it worked the last
-//! time anything used it.
-//!
-//! Process-wide on purpose, unlike the per-state objects beside it: a
-//! process drives one physical adapter, and each `ble-gatt` platform driver
-//! owns one D-Bus session (Linux) or one Activity-bound plugin (Android).
+    //! The Bluetooth adapter: one per process, and whether it worked the last
+    //! time anything used it.
+    //!
+    //! Process-wide on purpose, unlike the per-state objects beside it: a
+    //! process drives one physical adapter, and each `ble-gatt` platform driver
+    //! owns one D-Bus session (Linux) or one Activity-bound plugin (Android).
 
-use super::*;
-
-/// The Bluetooth adapter of this device: the ble-gatt `Adapter`, made one
-/// time for the process at the first use; whether it worked the last time
-/// anything used it; and, in debug builds, the test switch over its driver.
-pub struct BluetoothAdapter {
-    adapter: tokio::sync::OnceCell<Adapter>,
-    /// See `ADAPTER_UNKNOWN`.
-    health: AtomicU8,
-    /// Gets `AdapterChanged` when the health changes (`set_bus`).
-    bus: std::sync::OnceLock<Arc<EventBus>>,
-    #[cfg(feature = "devtools")]
-    switch: std::sync::OnceLock<Arc<test_switch::RadioSwitch>>,
-}
-
-static THIS_DEVICE: BluetoothAdapter = BluetoothAdapter {
-    adapter: tokio::sync::OnceCell::const_new(),
-    health: AtomicU8::new(ADAPTER_UNKNOWN),
-    bus: std::sync::OnceLock::new(),
-    #[cfg(feature = "devtools")]
-    switch: std::sync::OnceLock::new(),
-};
-
-impl BluetoothAdapter {
-    /// The one adapter of this process.
-    pub fn this_device() -> &'static Self {
-        &THIS_DEVICE
-    }
-
-    /// The ble-gatt adapter, made at the first use.
-    ///
-    /// The desktop driver needs a powered adapter: on Linux it opens a
-    /// BlueZ D-Bus session, on Windows it opens the WinRT radio. Fini makes
-    /// it at the first use, not at startup, so a computer without a usable
-    /// adapter still starts the app.
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
-    pub(super) async fn adapter(&self) -> Result<Adapter, String> {
-    // `get_or_try_init`, not `get_or_init` over a cached `Result`: the
-    // latter permanently bakes in whatever the *first* call returned,
-    // success or failure. If Fini starts while Bluetooth is off, BlueZ is
-    // restarting, or the adapter is briefly unavailable, that first
-    // failure would be replayed to every later dial/serve attempt for the
-    // rest of the process's life, even after the adapter comes back —
-    // `get_or_try_init` instead leaves the cell empty on error, so the
-    // next call genuinely retries construction.
-    // Bounded: `LinuxDriver::new()` opens a D-Bus system-bus session and
-    // talks to BlueZ over it. On a machine with no `bluetoothd` running at
-    // all (headless CI containers, minimal installs) there's nothing wrong
-    // locally, but D-Bus's own service-activation/name-owner-wait semantics
-    // can leave that call pending far longer than this transport is worth
-    // blocking anything on — this runs at app startup via
-    // `tauri::async_runtime::spawn`, so an unbounded wait here would tie up
-    // an async worker thread for however long that takes. A timeout turns
-    // "no adapter reachable" into a fast, retryable failure instead.
-        const ADAPTER_INIT_TIMEOUT: Duration = Duration::from_secs(5);
-
-        self.adapter
-            .get_or_try_init(|| async {
-                #[cfg(all(target_os = "linux", feature = "devtools"))]
-                if let Ok(endpoint) = std::env::var("FINI_BLE_MOCK_BROKER") {
-                    return Ok(Adapter::new(self.switched(mock_driver(&endpoint).await?)).await);
-                }
-                match tokio::time::timeout(ADAPTER_INIT_TIMEOUT, DesktopDriver::new()).await {
-                    Ok(Ok(driver)) => Ok(Adapter::new(self.switched(Arc::new(driver))).await),
-                    Ok(Err(err)) => Err(err.to_string()),
-                    Err(_) => Err(format!(
-                        "timed out after {ADAPTER_INIT_TIMEOUT:?} waiting for the Bluetooth adapter"
-                    )),
-                }
-            })
-            .await
-            .cloned()
-    }
-
-    /// The ble-gatt adapter on Android, which `tauri-plugin-ble-gatt` makes.
-    /// Made at the first use, not at `.setup()`: the driver needs the
-    /// Activity, and the Activity does not exist at `.setup()` (see the
-    /// plugin's `lazy` module). The first use comes from a command or a tick
-    /// after startup (`start_peripheral_once`, `start_exchange`). A
-    /// `devtools` build puts the adapter's driver behind the test switch.
-    #[cfg(target_os = "android")]
-    pub(super) async fn adapter(&self) -> Result<Adapter, String> {
-        self.adapter
-            .get_or_try_init(|| async {
-                let adapter = crate::services::ble_plugin::adapter().await?;
-                #[cfg(feature = "devtools")]
-                return Ok(Adapter::new(self.switched(adapter.driver())).await);
-                #[cfg(not(feature = "devtools"))]
-                Ok(adapter)
-            })
-            .await
-            .cloned()
-    }
-
-    /// The driver as the adapter gets it. In a build without `devtools` this
-    /// is the platform driver itself.
-    #[cfg(all(any(target_os = "linux", target_os = "windows"), not(feature = "devtools")))]
-    fn switched(&self, driver: Arc<dyn ble_gatt::Driver>) -> Arc<dyn ble_gatt::Driver> {
-        driver
-    }
-
-    /// The driver as the adapter gets it. In a `devtools` build the driver is
-    /// behind the test switch (`set_switch`).
-    #[cfg(feature = "devtools")]
-    fn switched(&self, driver: Arc<dyn ble_gatt::Driver>) -> Arc<dyn ble_gatt::Driver> {
-        let switch = test_switch::RadioSwitch::new(driver);
-        let _ = self.switch.set(switch.clone());
-        Arc::new(test_switch::SwitchedDriver(switch))
-    }
-
-    /// Sets the test switch of the Bluetooth radio. Off makes the radio look
-    /// switched off to Fini: scans and connections fail, links close, and
-    /// `RadioChanged` tells ble-gatt. On makes everything pass through
-    /// again. The real radio stays on. False if this device has no usable
-    /// adapter.
-    #[cfg(feature = "devtools")]
-    pub async fn set_switch(&self, on: bool) -> bool {
-        if self.adapter().await.is_err() {
-            return false;
-        }
-        match self.switch.get() {
-            Some(switch) => {
-                switch.set(on).await;
-                true
-            }
-            None => false,
-        }
-    }
-
-    /// The event bus that gets `AdapterChanged`. The first one set stays.
-    pub(super) fn set_bus(&self, bus: Arc<EventBus>) {
-        let _ = self.bus.set(bus);
-    }
-
-    pub(super) fn note_reachable(&self) {
-        self.set_health(ADAPTER_REACHABLE);
-    }
-
-    pub(super) fn note_unreachable(&self) {
-        self.set_health(ADAPTER_UNREACHABLE);
-    }
-
-    /// Records the health. A change publishes `AdapterChanged`, so that an
-    /// open Device page shows the new colour of its Bluetooth row.
-    fn set_health(&self, health: u8) {
-        if self.health.swap(health, Ordering::Relaxed) != health {
-            self.publish_changed();
-        }
-    }
-
-    /// Tells the app that the adapter can be used now, or not any more: the
-    /// rows refresh, and SpaceSync ticks, which starts the advertising. Also
-    /// after the Android permission dialog granted Nearby Devices.
-    pub fn publish_changed(&self) {
-        if let Some(bus) = self.bus.get() {
-            bus.publish(Event::AdapterChanged);
-        }
-    }
-
-    /// Records what a refused scan says about the adapter. A busy adapter (a
-    /// discovery already running, which ble-gatt has tried to recover) is
-    /// there and working -- only something else refuses it as missing.
-    pub(super) fn note_scan_refused(&self, err: &ble_gatt::BleError) -> bool {
-        if matches!(err, ble_gatt::BleError::AdapterBusy(_)) {
-            self.note_reachable();
-            true
-        } else {
-            self.note_unreachable();
-            false
-        }
-    }
-
-    /// `true` only once a genuine attempt has failed -- never merely because
-    /// nothing has been tried yet. See `ADAPTER_UNKNOWN`.
-    pub fn is_unavailable(&self) -> bool {
-        #[cfg(test)]
-        if let Some(reachable) = ADAPTER_PINNED.with(|pinned| pinned.get()) {
-            return !reachable;
-        }
-        self.health.load(Ordering::Relaxed) == ADAPTER_UNREACHABLE
-    }
-
-    /// Asks the radio, right now, whether it can be used -- and records the
-    /// answer into the health like any other attempt.
-    ///
-    /// The observed signal is free but unhurried: it only refreshes when
-    /// the dial loop next scans, which since ADR-0007 is up to 30s away. That
-    /// is fine for a row correcting itself in the background and wrong for
-    /// the one moment the user is watching -- switching a channel on and
-    /// expecting to be told immediately if their own Bluetooth is off. So
-    /// this exists to be called from that user action, and only from it.
-    ///
-    /// It opens a discovery session and drops it immediately rather than
-    /// asking BlueZ whether the adapter reports itself powered. An adapter
-    /// that claims to be powered and then refuses to scan is a real failure
-    /// mode, and the question worth answering is "can we do the thing", not
-    /// "does the hardware feel well".
-    ///
-    /// A scan already running elsewhere answers the question without a
-    /// second one: the adapter accepted that discovery session, so it is
-    /// reachable. Starting our own would only be refused (see `scan_lock`).
-    /// A caller that merely holds the lease proves nothing yet -- its scan
-    /// may still be refused -- so the probe waits for it to start or finish.
-    pub async fn probe(&self, scanner: &Scanner) -> bool {
-        let deadline = tokio::time::Instant::now() + PROBE_WAIT_FOR_OTHER_SCAN;
-        loop {
-            if scanner.scan_is_running() {
-                self.note_reachable();
-                return true;
-            }
-            if let Some(_scan) = scanner.try_scan_lock() {
-                let Ok(shared) = scanner.peer_link().await else {
-                    self.note_unreachable();
-                    return false;
-                };
-                // Android's scan start limit is used, so scans started a
-                // short time ago: a probe scan now would only be refused, and
-                // would push the Scanner's next scan out too.
-                if !scanner.scan_start_wait().is_zero() {
-                    return !self.is_unavailable();
-                }
-                scanner.note_scan_started();
-                return match shared.discover().await {
-                    Ok(stream) => {
-                        drop(stream);
-                        self.note_reachable();
-                        true
-                    }
-                    Err(err) => {
-                        log::warn!("[transport][ble] adapter probe failed: {err}");
-                        self.note_scan_refused(&err)
-                    }
-                };
-            }
-            // Another caller holds the lease but its scan has not started:
-            // wait for it to start (the adapter works) or give the lease up.
-            if tokio::time::Instant::now() >= deadline {
-                return !self.is_unavailable();
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
-
-    /// For a test on this thread that is not about the adapter: the
-    /// process-wide health is written by concurrent tests (and by any scan
-    /// they start), so a check that reads it would pass or fail with their
-    /// timing.
-    #[cfg(test)]
-    pub fn pin_reachable_on_this_thread() {
-        ADAPTER_PINNED.with(|pinned| pinned.set(Some(true)));
-    }
-
-    /// For a test about what an unreachable adapter does, for the same
-    /// reason.
-    #[cfg(test)]
-    fn pin_unreachable_on_this_thread() {
-        ADAPTER_PINNED.with(|pinned| pinned.set(Some(false)));
-    }
-}
-
-/// The radio of the e2e specs with `testDeviceChannel: ChannelKind.Bluetooth`
-/// on virtual Linux test devices: a `MockDriver` talking to a
-/// cross-process broker instead of BlueZ, so two real `fini-app` processes
-/// can prove this file's dial/peripheral/session-claim code path without
-/// hardware. See `specs/e2e/multi-device/helpers/ble-sync.ts` and ble-gatt's
-/// `docs/adr/0004-mock-broker-for-cross-process-e2e.md`.
-///
-/// Both the `devtools` feature gate above (off in release builds) and this
-/// env var must be true for a process to ever reach this branch -- an env
-/// var alone can never redirect a shipped binary onto a socket.
-#[cfg(all(target_os = "linux", feature = "devtools"))]
-async fn mock_driver(endpoint: &str) -> Result<Arc<dyn ble_gatt::Driver>, String> {
-    use ble_gatt::drivers::mock::{MockDriver, MockNetwork};
-    use ble_gatt::CapabilityReport;
-
-    // Reuses the existing "fake local adapter address" escape hatch
-    // (`pairing::commands::local_bluetooth_address`'s own env
-    // override) rather than adding a second one -- the harness already sets
-    // this for each test device for the self-report path.
-    let address = std::env::var("FINI_LOCAL_BLUETOOTH_ADDRESS")
-        .map_err(|_| "FINI_BLE_MOCK_BROKER is set but FINI_LOCAL_BLUETOOTH_ADDRESS is not".to_string())?;
-    let network = MockNetwork::remote(endpoint)
-        .await
-        .map_err(|err| format!("ble mock broker connect to {endpoint} failed: {err}"))?;
-    Ok(Arc::new(MockDriver::new(
-        PeerAddress(address),
-        network,
-        CapabilityReport { central: true, peripheral: true },
-    )) as Arc<dyn ble_gatt::Driver>)
-}
-
-/// A test switch over the Bluetooth driver, for debug builds only. It
-/// makes the radio look off without a change to the real radio, so that
-/// no test must switch off the Bluetooth of a person's device.
-#[cfg(feature = "devtools")]
-mod test_switch {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
-
-    use async_trait::async_trait;
-    use ble_gatt::{
-        BleError, BoxStream, Driver, CapabilityReport, CharacteristicUuid, ConnectionPriority,
-        DiscoveredPeer, GattConnection, GattEvent, GattServiceSpec, PeerAddress, RadioStatus, Role,
-        ServiceUuid, WriteType,
-    };
-    use futures_util::StreamExt;
-    use tokio::sync::broadcast;
-
-    fn switched_off() -> BleError {
-        BleError::AdapterUnavailable("the test switch set the radio to off".into())
-    }
-
-    pub(super) struct RadioSwitch {
-        driver: Arc<dyn Driver>,
-        off: AtomicBool,
-        /// The events the switch adds: `RadioChanged`, and `Disconnected`
-        /// for each link that it closes.
-        events: broadcast::Sender<GattEvent>,
-        /// The open links, from the driver's own events.
-        links: Mutex<Vec<(PeerAddress, Role, Option<u64>)>>,
-    }
-
-    impl RadioSwitch {
-        pub(super) fn new(driver: Arc<dyn Driver>) -> Arc<Self> {
-            let switch = Arc::new(Self {
-                driver: driver.clone(),
-                off: AtomicBool::new(false),
-                events: broadcast::channel(64).0,
-                links: Mutex::new(Vec::new()),
-            });
-            let weak = Arc::downgrade(&switch);
-            let mut events = driver.lifecycle_events();
-            tokio::spawn(async move {
-                while let Some(event) = events.next().await {
-                    let Some(switch) = weak.upgrade() else { return };
-                    switch.record(&event);
-                }
-            });
-            switch
-        }
-
-        fn is_off(&self) -> bool {
-            self.off.load(Ordering::SeqCst)
-        }
-
-        fn record(&self, event: &GattEvent) {
-            let mut links = self.links.lock().unwrap();
-            match event {
-                GattEvent::Connected { peer, local_role, session } => {
-                    let link = (peer.clone(), *local_role, *session);
-                    if !links.contains(&link) {
-                        links.push(link);
-                    }
-                }
-                GattEvent::Disconnected { peer, local_role, session } => {
-                    links.retain(|(p, r, s)| !(p.0 == peer.0 && r == local_role && s == session));
-                }
-                GattEvent::Lagged { .. } => links.clear(),
-                _ => {}
-            }
-        }
-
-        pub(super) async fn set(&self, on: bool) {
-            if on {
-                if self.off.swap(false, Ordering::SeqCst) {
-                    log::info!("[transport][ble] test switch: radio on");
-                    let _ = self.events.send(GattEvent::RadioChanged { status: RadioStatus::On });
-                }
-                return;
-            }
-            if self.off.swap(true, Ordering::SeqCst) {
-                return;
-            }
-            log::info!("[transport][ble] test switch: radio off");
-            let _ = self.driver.stop_advertising().await;
-            let links: Vec<_> = std::mem::take(&mut *self.links.lock().unwrap());
-            for (peer, local_role, session) in links {
-                if local_role == Role::Peripheral {
-                    let _ = self.driver.disconnect_peer(&peer, session).await;
-                }
-                let _ = self.events.send(GattEvent::Disconnected { peer, local_role, session });
-            }
-            let _ = self.events.send(GattEvent::RadioChanged { status: RadioStatus::Off });
-        }
-
-        fn events(&self) -> BoxStream<GattEvent> {
-            Box::pin(futures_util::stream::unfold(self.events.subscribe(), |mut rx| async move {
-                match rx.recv().await {
-                    Ok(event) => Some((event, rx)),
-                    Err(broadcast::error::RecvError::Lagged(dropped)) => Some((GattEvent::Lagged { dropped }, rx)),
-                    Err(broadcast::error::RecvError::Closed) => None,
-                }
-            }))
-        }
-    }
-
-    pub(super) struct SwitchedDriver(pub(super) Arc<RadioSwitch>);
-
-    #[async_trait]
-    impl Driver for SwitchedDriver {
-        async fn capabilities(&self) -> CapabilityReport {
-            self.0.driver.capabilities().await
-        }
-
-        async fn scan(&self, service: ServiceUuid) -> ble_gatt::Result<BoxStream<ble_gatt::Result<DiscoveredPeer>>> {
-            if self.0.is_off() {
-                return Err(switched_off());
-            }
-            let switch = self.0.clone();
-            let stream = self.0.driver.scan(service).await?;
-            Ok(Box::pin(stream.map(move |item| if switch.is_off() { Err(switched_off()) } else { item })))
-        }
-
-        async fn connect(&self, peer: &PeerAddress) -> ble_gatt::Result<Box<dyn GattConnection>> {
-            if self.0.is_off() {
-                return Err(switched_off());
-            }
-            let inner = self.0.driver.connect(peer).await?;
-            Ok(Box::new(SwitchedConnection { inner, switch: self.0.clone() }))
-        }
-
-        async fn advertise(&self, service: GattServiceSpec) -> ble_gatt::Result<()> {
-            if self.0.is_off() {
-                return Err(switched_off());
-            }
-            self.0.driver.advertise(service).await
-        }
-
-        async fn update_advertisement(&self, service: GattServiceSpec) -> ble_gatt::Result<()> {
-            if self.0.is_off() {
-                return Err(switched_off());
-            }
-            self.0.driver.update_advertisement(service).await
-        }
-
-        async fn stop_advertising(&self) -> ble_gatt::Result<()> {
-            self.0.driver.stop_advertising().await
-        }
-
-        async fn set_advertising_enabled(&self, enabled: bool) -> ble_gatt::Result<()> {
-            if enabled && self.0.is_off() {
-                return Err(switched_off());
-            }
-            self.0.driver.set_advertising_enabled(enabled).await
-        }
-
-        async fn close(&self) -> ble_gatt::Result<()> {
-            self.0.driver.close().await
-        }
-
-        // Serving re-advertises this after the radio comes back on, so an
-        // Add Device change made since `advertise` is kept.
-        fn served_service(&self) -> Option<GattServiceSpec> {
-            self.0.driver.served_service()
-        }
-
-        async fn notify(&self, characteristic: CharacteristicUuid, value: Vec<u8>) -> ble_gatt::Result<()> {
-            if self.0.is_off() {
-                return Err(switched_off());
-            }
-            self.0.driver.notify(characteristic, value).await
-        }
-
-        async fn set_characteristic_value(
-            &self,
-            characteristic: CharacteristicUuid,
-            value: Vec<u8>,
-        ) -> ble_gatt::Result<()> {
-            self.0.driver.set_characteristic_value(characteristic, value).await
-        }
-
-        async fn notify_peer(
-            &self, peer: &PeerAddress, session: Option<u64>, characteristic: CharacteristicUuid, value: Vec<u8>,
-        ) -> ble_gatt::Result<()> {
-            if self.0.is_off() {
-                return Err(switched_off());
-            }
-            self.0.driver.notify_peer(peer, session, characteristic, value).await
-        }
-
-        async fn disconnect_peer(&self, peer: &PeerAddress, session: Option<u64>) -> ble_gatt::Result<()> {
-            self.0.driver.disconnect_peer(peer, session).await
-        }
-
-        async fn notify_max_len(&self, peer: &PeerAddress, session: Option<u64>) -> Option<usize> {
-            self.0.driver.notify_max_len(peer, session).await
-        }
-
-        fn events(&self) -> BoxStream<GattEvent> {
-            // While the switch is off, writes from centrals do not arrive,
-            // as with a radio that is off.
-            let switch = self.0.clone();
-            let from_driver = self.0.driver.events().filter(move |event| {
-                let drop_it = switch.is_off() && matches!(event, GattEvent::CharacteristicWritten { .. });
-                std::future::ready(!drop_it)
-            });
-            let from_switch = self.0.events();
-            Box::pin(futures_util::stream::select(from_driver, from_switch))
-        }
-
-        fn lifecycle_events(&self) -> BoxStream<GattEvent> {
-            Box::pin(futures_util::stream::select(self.0.driver.lifecycle_events(), self.0.events()))
-        }
-
-        async fn radio_status(&self) -> RadioStatus {
-            if self.0.is_off() {
-                return RadioStatus::Off;
-            }
-            self.0.driver.radio_status().await
-        }
-    }
-
-    /// A central-role connection that fails while the switch is off.
-    struct SwitchedConnection {
-        inner: Box<dyn GattConnection>,
-        switch: Arc<RadioSwitch>,
-    }
-
-    #[async_trait]
-    impl GattConnection for SwitchedConnection {
-        fn peer(&self) -> PeerAddress {
-            self.inner.peer()
-        }
-
-        fn session(&self) -> Option<u64> {
-            self.inner.session()
-        }
-
-        fn att_mtu(&self) -> u16 {
-            self.inner.att_mtu()
-        }
-
-        async fn read(&mut self, characteristic: CharacteristicUuid) -> ble_gatt::Result<Vec<u8>> {
-            if self.switch.is_off() {
-                return Err(switched_off());
-            }
-            self.inner.read(characteristic).await
-        }
-
-        async fn write_with_type(
-            &mut self, characteristic: CharacteristicUuid, value: Vec<u8>, write_type: WriteType,
-        ) -> ble_gatt::Result<()> {
-            if self.switch.is_off() {
-                return Err(switched_off());
-            }
-            self.inner.write_with_type(characteristic, value, write_type).await
-        }
-
-        async fn subscribe(
-            &mut self, characteristic: CharacteristicUuid,
-        ) -> ble_gatt::Result<BoxStream<ble_gatt::Result<Vec<u8>>>> {
-            if self.switch.is_off() {
-                return Err(switched_off());
-            }
-            let switch = self.switch.clone();
-            let stream = self.inner.subscribe(characteristic).await?;
-            Ok(Box::pin(stream.take_while(move |_| std::future::ready(!switch.is_off()))))
-        }
-
-        async fn disconnect(&mut self) -> ble_gatt::Result<()> {
-            self.inner.disconnect().await
-        }
-
-        async fn request_connection_priority(&mut self, priority: ConnectionPriority) -> ble_gatt::Result<()> {
-            self.inner.request_connection_priority(priority).await
-        }
-    }
-}
-
-/// Whether the *local* Bluetooth radio could actually be used the last time
-/// this process tried to use it.
-///
-/// Three-valued on purpose. Before anything has been attempted the honest
-/// answer is "nobody has looked", and a row must not tell the user their
-/// adapter is off on that basis -- the same reasoning that makes
-/// `bluetooth_peer_nearby_now` default to `true` on a platform that cannot
-/// look.
-///
-/// Deliberately *observed* rather than polled. Asking BlueZ whether the
-/// adapter is powered costs a D-Bus round trip, and the transport row is
-/// polled every few seconds for every paired peer; the dial loop already
-/// searches whenever it has a reason to, so recording what those attempts find
-/// keeps this fresh for free. It is also the truer signal: "we asked the
-/// radio to do something and it refused" is what the user actually cares
-/// about, and it catches an adapter that reports itself powered while
-/// refusing to scan.
-///
-/// Only a real *use* records health. Recording success from `adapter()`
-/// alone would be wrong: it caches the adapter in a `OnceCell`, so once the
-/// adapter has worked once, every later call returns that cached handle
-/// without touching hardware -- an adapter switched off afterwards would
-/// still look reachable, and the row would flap between the cached success
-/// and the scan failure that follows it.
-const ADAPTER_UNKNOWN: u8 = 0;
-const ADAPTER_REACHABLE: u8 = 1;
-const ADAPTER_UNREACHABLE: u8 = 2;
-
-#[cfg(test)]
-thread_local! {
-    // The adapter health a test pinned on its thread, if any.
-    static ADAPTER_PINNED: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
-}
-
-/// How long the probe waits on another caller's scan that is still being
-/// set up, before falling back to the last recorded adapter health.
-const PROBE_WAIT_FOR_OTHER_SCAN: Duration = Duration::from_secs(10);
-
-
-#[cfg(test)]
-mod tests {
     use super::*;
 
-    /// Serializes tests that set `FINI_LOCAL_BLUETOOTH_ADDRESS`/
-    /// `FINI_BLE_MOCK_BROKER` -- process-global env vars, unsafe to mutate
-    /// from parallel test threads. Mirrors `BLUETOOTH_PAIRED_ADDRESSES_ENV_LOCK`
-    /// in `pairing::commands`.
-    #[cfg(all(target_os = "linux", feature = "devtools"))]
-    static MOCK_DRIVER_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// The Bluetooth adapter of this device: the ble-gatt `Adapter`, made one
+    /// time for the process at the first use; whether it worked the last time
+    /// anything used it; and, in debug builds, the test switch over its driver.
+    pub struct BluetoothAdapter {
+        adapter: tokio::sync::OnceCell<Adapter>,
+        /// See `ADAPTER_UNKNOWN`.
+        health: AtomicU8,
+        /// Gets `AdapterChanged` when the health changes (`set_bus`).
+        bus: std::sync::OnceLock<Arc<EventBus>>,
+        #[cfg(feature = "devtools")]
+        switch: std::sync::OnceLock<Arc<test_switch::RadioSwitch>>,
+    }
 
-    /// Proves `mock_driver` actually round-trips through a real socket to a
-    /// real `MockNetwork::serve` broker, not just that it compiles -- the
-    /// same connect+advertise+scan shape `ble-gatt`'s own
-    /// `tests/mock_broker.rs` exercises, but through fini's injection point
-    /// (`FINI_BLE_MOCK_BROKER`/`FINI_LOCAL_BLUETOOTH_ADDRESS`) instead of
-    /// calling `MockNetwork::remote` directly. This is what the
-    /// two virtual Linux test devices of `peer-sync-over-ble.spec.ts` each do at startup.
-    #[cfg(all(target_os = "linux", feature = "devtools"))]
-    #[tokio::test]
-    async fn mock_driver_connects_to_a_broker_and_reports_full_capabilities() {
-        let _guard = MOCK_DRIVER_ENV_LOCK.lock().unwrap();
+    static THIS_DEVICE: BluetoothAdapter = BluetoothAdapter {
+        adapter: tokio::sync::OnceCell::const_new(),
+        health: AtomicU8::new(ADAPTER_UNKNOWN),
+        bus: std::sync::OnceLock::new(),
+        #[cfg(feature = "devtools")]
+        switch: std::sync::OnceLock::new(),
+    };
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+    impl BluetoothAdapter {
+        /// The one adapter of this process.
+        pub fn this_device() -> &'static Self {
+            &THIS_DEVICE
+        }
+
+        /// The ble-gatt adapter, made at the first use.
+        ///
+        /// The desktop driver needs a powered adapter: on Linux it opens a
+        /// BlueZ D-Bus session, on Windows it opens the WinRT radio. Fini makes
+        /// it at the first use, not at startup, so a computer without a usable
+        /// adapter still starts the app.
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        pub(super) async fn adapter(&self) -> Result<Adapter, String> {
+            // `get_or_try_init`, not `get_or_init` over a cached `Result`: the
+            // latter permanently bakes in whatever the *first* call returned,
+            // success or failure. If Fini starts while Bluetooth is off, BlueZ is
+            // restarting, or the adapter is briefly unavailable, that first
+            // failure would be replayed to every later dial/serve attempt for the
+            // rest of the process's life, even after the adapter comes back —
+            // `get_or_try_init` instead leaves the cell empty on error, so the
+            // next call genuinely retries construction.
+            // Bounded: `LinuxDriver::new()` opens a D-Bus system-bus session and
+            // talks to BlueZ over it. On a machine with no `bluetoothd` running at
+            // all (headless CI containers, minimal installs) there's nothing wrong
+            // locally, but D-Bus's own service-activation/name-owner-wait semantics
+            // can leave that call pending far longer than this transport is worth
+            // blocking anything on — this runs at app startup via
+            // `tauri::async_runtime::spawn`, so an unbounded wait here would tie up
+            // an async worker thread for however long that takes. A timeout turns
+            // "no adapter reachable" into a fast, retryable failure instead.
+            const ADAPTER_INIT_TIMEOUT: Duration = Duration::from_secs(5);
+
+            self.adapter
+                .get_or_try_init(|| async {
+                    #[cfg(all(target_os = "linux", feature = "devtools"))]
+                    if let Ok(endpoint) = std::env::var("FINI_BLE_MOCK_BROKER") {
+                        return Ok(Adapter::new(self.switched(mock_driver(&endpoint).await?)).await);
+                    }
+                    match tokio::time::timeout(ADAPTER_INIT_TIMEOUT, DesktopDriver::new()).await {
+                        Ok(Ok(driver)) => Ok(Adapter::new(self.switched(Arc::new(driver))).await),
+                        Ok(Err(err)) => Err(err.to_string()),
+                        Err(_) => Err(format!(
+                        "timed out after {ADAPTER_INIT_TIMEOUT:?} waiting for the Bluetooth adapter"
+                    )),
+                    }
+                })
+                .await
+                .cloned()
+        }
+
+        /// The ble-gatt adapter on Android, which `tauri-plugin-ble-gatt` makes.
+        /// Made at the first use, not at `.setup()`: the driver needs the
+        /// Activity, and the Activity does not exist at `.setup()` (see the
+        /// plugin's `lazy` module). The first use comes from a command or a tick
+        /// after startup (`start_peripheral_once`, `start_exchange`). A
+        /// `devtools` build puts the adapter's driver behind the test switch.
+        #[cfg(target_os = "android")]
+        pub(super) async fn adapter(&self) -> Result<Adapter, String> {
+            self.adapter
+                .get_or_try_init(|| async {
+                    let adapter = crate::services::ble_plugin::adapter().await?;
+                    #[cfg(feature = "devtools")]
+                    return Ok(Adapter::new(self.switched(adapter.driver())).await);
+                    #[cfg(not(feature = "devtools"))]
+                    Ok(adapter)
+                })
+                .await
+                .cloned()
+        }
+
+        /// The driver as the adapter gets it. In a build without `devtools` this
+        /// is the platform driver itself.
+        #[cfg(all(
+            any(target_os = "linux", target_os = "windows"),
+            not(feature = "devtools")
+        ))]
+        fn switched(&self, driver: Arc<dyn ble_gatt::Driver>) -> Arc<dyn ble_gatt::Driver> {
+            driver
+        }
+
+        /// The driver as the adapter gets it. In a `devtools` build the driver is
+        /// behind the test switch (`set_switch`).
+        #[cfg(feature = "devtools")]
+        fn switched(&self, driver: Arc<dyn ble_gatt::Driver>) -> Arc<dyn ble_gatt::Driver> {
+            let switch = test_switch::RadioSwitch::new(driver);
+            let _ = self.switch.set(switch.clone());
+            Arc::new(test_switch::SwitchedDriver(switch))
+        }
+
+        /// Sets the test switch of the Bluetooth radio. Off makes the radio look
+        /// switched off to Fini: scans and connections fail, links close, and
+        /// `RadioChanged` tells ble-gatt. On makes everything pass through
+        /// again. The real radio stays on. False if this device has no usable
+        /// adapter.
+        #[cfg(feature = "devtools")]
+        pub async fn set_switch(&self, on: bool) -> bool {
+            if self.adapter().await.is_err() {
+                return false;
+            }
+            match self.switch.get() {
+                Some(switch) => {
+                    switch.set(on).await;
+                    true
+                }
+                None => false,
+            }
+        }
+
+        /// The event bus that gets `AdapterChanged`. The first one set stays.
+        pub(super) fn set_bus(&self, bus: Arc<EventBus>) {
+            let _ = self.bus.set(bus);
+        }
+
+        pub(super) fn note_reachable(&self) {
+            self.set_health(ADAPTER_REACHABLE);
+        }
+
+        pub(super) fn note_unreachable(&self) {
+            self.set_health(ADAPTER_UNREACHABLE);
+        }
+
+        /// Records the health. A change publishes `AdapterChanged`, so that an
+        /// open Device page shows the new colour of its Bluetooth row.
+        fn set_health(&self, health: u8) {
+            if self.health.swap(health, Ordering::Relaxed) != health {
+                self.publish_changed();
+            }
+        }
+
+        /// Tells the app that the adapter can be used now, or not any more: the
+        /// rows refresh, and SpaceSync ticks, which starts the advertising. Also
+        /// after the Android permission dialog granted Nearby Devices.
+        pub fn publish_changed(&self) {
+            if let Some(bus) = self.bus.get() {
+                bus.publish(Event::AdapterChanged);
+            }
+        }
+
+        /// Records what a refused scan says about the adapter. A busy adapter (a
+        /// discovery already running, which ble-gatt has tried to recover) is
+        /// there and working -- only something else refuses it as missing.
+        pub(super) fn note_scan_refused(&self, err: &ble_gatt::BleError) -> bool {
+            if matches!(err, ble_gatt::BleError::AdapterBusy(_)) {
+                self.note_reachable();
+                true
+            } else {
+                self.note_unreachable();
+                false
+            }
+        }
+
+        /// `true` only once a genuine attempt has failed -- never merely because
+        /// nothing has been tried yet. See `ADAPTER_UNKNOWN`.
+        pub fn is_unavailable(&self) -> bool {
+            #[cfg(test)]
+            if let Some(reachable) = ADAPTER_PINNED.with(|pinned| pinned.get()) {
+                return !reachable;
+            }
+            self.health.load(Ordering::Relaxed) == ADAPTER_UNREACHABLE
+        }
+
+        /// Asks the radio, right now, whether it can be used -- and records the
+        /// answer into the health like any other attempt.
+        ///
+        /// The observed signal is free but unhurried: it only refreshes when
+        /// the dial loop next scans, which since ADR-0007 is up to 30s away. That
+        /// is fine for a row correcting itself in the background and wrong for
+        /// the one moment the user is watching -- switching a channel on and
+        /// expecting to be told immediately if their own Bluetooth is off. So
+        /// this exists to be called from that user action, and only from it.
+        ///
+        /// It opens a discovery session and drops it immediately rather than
+        /// asking BlueZ whether the adapter reports itself powered. An adapter
+        /// that claims to be powered and then refuses to scan is a real failure
+        /// mode, and the question worth answering is "can we do the thing", not
+        /// "does the hardware feel well".
+        ///
+        /// A scan already running elsewhere answers the question without a
+        /// second one: the adapter accepted that discovery session, so it is
+        /// reachable. Starting our own would only be refused (see `scan_lock`).
+        /// A caller that merely holds the lease proves nothing yet -- its scan
+        /// may still be refused -- so the probe waits for it to start or finish.
+        pub async fn probe(&self, scanner: &Scanner) -> bool {
+            let deadline = tokio::time::Instant::now() + PROBE_WAIT_FOR_OTHER_SCAN;
+            loop {
+                if scanner.scan_is_running() {
+                    self.note_reachable();
+                    return true;
+                }
+                if let Some(_scan) = scanner.try_scan_lock() {
+                    let Ok(shared) = scanner.peer_link().await else {
+                        self.note_unreachable();
+                        return false;
+                    };
+                    // Android's scan start limit is used, so scans started a
+                    // short time ago: a probe scan now would only be refused, and
+                    // would push the Scanner's next scan out too.
+                    if !scanner.scan_start_wait().is_zero() {
+                        return !self.is_unavailable();
+                    }
+                    scanner.note_scan_started();
+                    return match shared.discover().await {
+                        Ok(stream) => {
+                            drop(stream);
+                            self.note_reachable();
+                            true
+                        }
+                        Err(err) => {
+                            log::warn!("[transport][ble] adapter probe failed: {err}");
+                            self.note_scan_refused(&err)
+                        }
+                    };
+                }
+                // Another caller holds the lease but its scan has not started:
+                // wait for it to start (the adapter works) or give the lease up.
+                if tokio::time::Instant::now() >= deadline {
+                    return !self.is_unavailable();
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+
+        /// For a test on this thread that is not about the adapter: the
+        /// process-wide health is written by concurrent tests (and by any scan
+        /// they start), so a check that reads it would pass or fail with their
+        /// timing.
+        #[cfg(test)]
+        pub fn pin_reachable_on_this_thread() {
+            ADAPTER_PINNED.with(|pinned| pinned.set(Some(true)));
+        }
+
+        /// For a test about what an unreachable adapter does, for the same
+        /// reason.
+        #[cfg(test)]
+        fn pin_unreachable_on_this_thread() {
+            ADAPTER_PINNED.with(|pinned| pinned.set(Some(false)));
+        }
+    }
+
+    /// The radio of the e2e specs with `testDeviceChannel: ChannelKind.Bluetooth`
+    /// on virtual Linux test devices: a `MockDriver` talking to a
+    /// cross-process broker instead of BlueZ, so two real `fini-app` processes
+    /// can prove this file's dial/peripheral/session-claim code path without
+    /// hardware. See `specs/e2e/multi-device/helpers/ble-sync.ts` and ble-gatt's
+    /// `docs/adr/0004-mock-broker-for-cross-process-e2e.md`.
+    ///
+    /// Both the `devtools` feature gate above (off in release builds) and this
+    /// env var must be true for a process to ever reach this branch -- an env
+    /// var alone can never redirect a shipped binary onto a socket.
+    #[cfg(all(target_os = "linux", feature = "devtools"))]
+    async fn mock_driver(endpoint: &str) -> Result<Arc<dyn ble_gatt::Driver>, String> {
+        use ble_gatt::drivers::mock::{MockDriver, MockNetwork};
+        use ble_gatt::CapabilityReport;
+
+        // Reuses the existing "fake local adapter address" escape hatch
+        // (`pairing::commands::local_bluetooth_address`'s own env
+        // override) rather than adding a second one -- the harness already sets
+        // this for each test device for the self-report path.
+        let address = std::env::var("FINI_LOCAL_BLUETOOTH_ADDRESS").map_err(|_| {
+            "FINI_BLE_MOCK_BROKER is set but FINI_LOCAL_BLUETOOTH_ADDRESS is not".to_string()
+        })?;
+        let network = MockNetwork::remote(endpoint)
             .await
-            .expect("bind loopback broker port");
-        let broker_addr = listener.local_addr().expect("local_addr");
-        tokio::spawn(async move {
-            let _ = ble_gatt::drivers::mock::MockNetwork::serve(listener).await;
-        });
-
-        std::env::set_var("FINI_LOCAL_BLUETOOTH_ADDRESS", "AA:BB:CC:00:00:01");
-        let result = mock_driver(&broker_addr.to_string()).await;
-        std::env::remove_var("FINI_LOCAL_BLUETOOTH_ADDRESS");
-
-        let driver = result.expect("mock_driver should connect to the broker");
-        let capabilities = driver.capabilities().await;
-        assert!(capabilities.central && capabilities.peripheral);
+            .map_err(|err| format!("ble mock broker connect to {endpoint} failed: {err}"))?;
+        Ok(Arc::new(MockDriver::new(
+            PeerAddress(address),
+            network,
+            CapabilityReport {
+                central: true,
+                peripheral: true,
+            },
+        )) as Arc<dyn ble_gatt::Driver>)
     }
 
-    /// The one precondition `mock_driver` itself enforces: without a local
-    /// address there is nothing to identify this peer as on the mock radio,
-    /// and the error must name which env var is missing rather than panic
-    /// or silently pick something.
-    #[cfg(all(target_os = "linux", feature = "devtools"))]
-    #[tokio::test]
-    async fn mock_driver_requires_a_local_bluetooth_address() {
-        let _guard = MOCK_DRIVER_ENV_LOCK.lock().unwrap();
-        std::env::remove_var("FINI_LOCAL_BLUETOOTH_ADDRESS");
+    /// A test switch over the Bluetooth driver, for debug builds only. It
+    /// makes the radio look off without a change to the real radio, so that
+    /// no test must switch off the Bluetooth of a person's device.
+    #[cfg(feature = "devtools")]
+    mod test_switch {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Mutex};
 
-        let err = match mock_driver("127.0.0.1:1").await {
-            Ok(_) => panic!("must fail without a local address"),
-            Err(err) => err,
+        use async_trait::async_trait;
+        use ble_gatt::{
+            BleError, BoxStream, CapabilityReport, CharacteristicUuid, ConnectionPriority,
+            DiscoveredPeer, Driver, GattConnection, GattEvent, GattServiceSpec, PeerAddress,
+            RadioStatus, Role, ServiceUuid, WriteType,
         };
-        assert!(err.contains("FINI_LOCAL_BLUETOOTH_ADDRESS"));
+        use futures_util::StreamExt;
+        use tokio::sync::broadcast;
+
+        fn switched_off() -> BleError {
+            BleError::AdapterUnavailable("the test switch set the radio to off".into())
+        }
+
+        pub(super) struct RadioSwitch {
+            driver: Arc<dyn Driver>,
+            off: AtomicBool,
+            /// The events the switch adds: `RadioChanged`, and `Disconnected`
+            /// for each link that it closes.
+            events: broadcast::Sender<GattEvent>,
+            /// The open links, from the driver's own events.
+            links: Mutex<Vec<(PeerAddress, Role, Option<u64>)>>,
+        }
+
+        impl RadioSwitch {
+            pub(super) fn new(driver: Arc<dyn Driver>) -> Arc<Self> {
+                let switch = Arc::new(Self {
+                    driver: driver.clone(),
+                    off: AtomicBool::new(false),
+                    events: broadcast::channel(64).0,
+                    links: Mutex::new(Vec::new()),
+                });
+                let weak = Arc::downgrade(&switch);
+                let mut events = driver.lifecycle_events();
+                tokio::spawn(async move {
+                    while let Some(event) = events.next().await {
+                        let Some(switch) = weak.upgrade() else { return };
+                        switch.record(&event);
+                    }
+                });
+                switch
+            }
+
+            fn is_off(&self) -> bool {
+                self.off.load(Ordering::SeqCst)
+            }
+
+            fn record(&self, event: &GattEvent) {
+                let mut links = self.links.lock().unwrap();
+                match event {
+                    GattEvent::Connected {
+                        peer,
+                        local_role,
+                        session,
+                    } => {
+                        let link = (peer.clone(), *local_role, *session);
+                        if !links.contains(&link) {
+                            links.push(link);
+                        }
+                    }
+                    GattEvent::Disconnected {
+                        peer,
+                        local_role,
+                        session,
+                    } => {
+                        links.retain(|(p, r, s)| {
+                            !(p.0 == peer.0 && r == local_role && s == session)
+                        });
+                    }
+                    GattEvent::Lagged { .. } => links.clear(),
+                    _ => {}
+                }
+            }
+
+            pub(super) async fn set(&self, on: bool) {
+                if on {
+                    if self.off.swap(false, Ordering::SeqCst) {
+                        log::info!("[transport][ble] test switch: radio on");
+                        let _ = self.events.send(GattEvent::RadioChanged {
+                            status: RadioStatus::On,
+                        });
+                    }
+                    return;
+                }
+                if self.off.swap(true, Ordering::SeqCst) {
+                    return;
+                }
+                log::info!("[transport][ble] test switch: radio off");
+                let _ = self.driver.stop_advertising().await;
+                let links: Vec<_> = std::mem::take(&mut *self.links.lock().unwrap());
+                for (peer, local_role, session) in links {
+                    if local_role == Role::Peripheral {
+                        let _ = self.driver.disconnect_peer(&peer, session).await;
+                    }
+                    let _ = self.events.send(GattEvent::Disconnected {
+                        peer,
+                        local_role,
+                        session,
+                    });
+                }
+                let _ = self.events.send(GattEvent::RadioChanged {
+                    status: RadioStatus::Off,
+                });
+            }
+
+            fn events(&self) -> BoxStream<GattEvent> {
+                Box::pin(futures_util::stream::unfold(
+                    self.events.subscribe(),
+                    |mut rx| async move {
+                        match rx.recv().await {
+                            Ok(event) => Some((event, rx)),
+                            Err(broadcast::error::RecvError::Lagged(dropped)) => {
+                                Some((GattEvent::Lagged { dropped }, rx))
+                            }
+                            Err(broadcast::error::RecvError::Closed) => None,
+                        }
+                    },
+                ))
+            }
+        }
+
+        pub(super) struct SwitchedDriver(pub(super) Arc<RadioSwitch>);
+
+        #[async_trait]
+        impl Driver for SwitchedDriver {
+            async fn capabilities(&self) -> CapabilityReport {
+                self.0.driver.capabilities().await
+            }
+
+            async fn scan(
+                &self,
+                service: ServiceUuid,
+            ) -> ble_gatt::Result<BoxStream<ble_gatt::Result<DiscoveredPeer>>> {
+                if self.0.is_off() {
+                    return Err(switched_off());
+                }
+                let switch = self.0.clone();
+                let stream = self.0.driver.scan(service).await?;
+                Ok(Box::pin(stream.map(move |item| {
+                    if switch.is_off() {
+                        Err(switched_off())
+                    } else {
+                        item
+                    }
+                })))
+            }
+
+            async fn connect(
+                &self,
+                peer: &PeerAddress,
+            ) -> ble_gatt::Result<Box<dyn GattConnection>> {
+                if self.0.is_off() {
+                    return Err(switched_off());
+                }
+                let inner = self.0.driver.connect(peer).await?;
+                Ok(Box::new(SwitchedConnection {
+                    inner,
+                    switch: self.0.clone(),
+                }))
+            }
+
+            async fn advertise(&self, service: GattServiceSpec) -> ble_gatt::Result<()> {
+                if self.0.is_off() {
+                    return Err(switched_off());
+                }
+                self.0.driver.advertise(service).await
+            }
+
+            async fn update_advertisement(&self, service: GattServiceSpec) -> ble_gatt::Result<()> {
+                if self.0.is_off() {
+                    return Err(switched_off());
+                }
+                self.0.driver.update_advertisement(service).await
+            }
+
+            async fn stop_advertising(&self) -> ble_gatt::Result<()> {
+                self.0.driver.stop_advertising().await
+            }
+
+            async fn set_advertising_enabled(&self, enabled: bool) -> ble_gatt::Result<()> {
+                if enabled && self.0.is_off() {
+                    return Err(switched_off());
+                }
+                self.0.driver.set_advertising_enabled(enabled).await
+            }
+
+            async fn close(&self) -> ble_gatt::Result<()> {
+                self.0.driver.close().await
+            }
+
+            // Serving re-advertises this after the radio comes back on, so an
+            // Add Device change made since `advertise` is kept.
+            fn served_service(&self) -> Option<GattServiceSpec> {
+                self.0.driver.served_service()
+            }
+
+            async fn notify(
+                &self,
+                characteristic: CharacteristicUuid,
+                value: Vec<u8>,
+            ) -> ble_gatt::Result<()> {
+                if self.0.is_off() {
+                    return Err(switched_off());
+                }
+                self.0.driver.notify(characteristic, value).await
+            }
+
+            async fn set_characteristic_value(
+                &self,
+                characteristic: CharacteristicUuid,
+                value: Vec<u8>,
+            ) -> ble_gatt::Result<()> {
+                self.0
+                    .driver
+                    .set_characteristic_value(characteristic, value)
+                    .await
+            }
+
+            async fn notify_peer(
+                &self,
+                peer: &PeerAddress,
+                session: Option<u64>,
+                characteristic: CharacteristicUuid,
+                value: Vec<u8>,
+            ) -> ble_gatt::Result<()> {
+                if self.0.is_off() {
+                    return Err(switched_off());
+                }
+                self.0
+                    .driver
+                    .notify_peer(peer, session, characteristic, value)
+                    .await
+            }
+
+            async fn disconnect_peer(
+                &self,
+                peer: &PeerAddress,
+                session: Option<u64>,
+            ) -> ble_gatt::Result<()> {
+                self.0.driver.disconnect_peer(peer, session).await
+            }
+
+            async fn notify_max_len(
+                &self,
+                peer: &PeerAddress,
+                session: Option<u64>,
+            ) -> Option<usize> {
+                self.0.driver.notify_max_len(peer, session).await
+            }
+
+            fn events(&self) -> BoxStream<GattEvent> {
+                // While the switch is off, writes from centrals do not arrive,
+                // as with a radio that is off.
+                let switch = self.0.clone();
+                let from_driver = self.0.driver.events().filter(move |event| {
+                    let drop_it =
+                        switch.is_off() && matches!(event, GattEvent::CharacteristicWritten { .. });
+                    std::future::ready(!drop_it)
+                });
+                let from_switch = self.0.events();
+                Box::pin(futures_util::stream::select(from_driver, from_switch))
+            }
+
+            fn lifecycle_events(&self) -> BoxStream<GattEvent> {
+                Box::pin(futures_util::stream::select(
+                    self.0.driver.lifecycle_events(),
+                    self.0.events(),
+                ))
+            }
+
+            async fn radio_status(&self) -> RadioStatus {
+                if self.0.is_off() {
+                    return RadioStatus::Off;
+                }
+                self.0.driver.radio_status().await
+            }
+        }
+
+        /// A central-role connection that fails while the switch is off.
+        struct SwitchedConnection {
+            inner: Box<dyn GattConnection>,
+            switch: Arc<RadioSwitch>,
+        }
+
+        #[async_trait]
+        impl GattConnection for SwitchedConnection {
+            fn peer(&self) -> PeerAddress {
+                self.inner.peer()
+            }
+
+            fn session(&self) -> Option<u64> {
+                self.inner.session()
+            }
+
+            fn att_mtu(&self) -> u16 {
+                self.inner.att_mtu()
+            }
+
+            async fn read(
+                &mut self,
+                characteristic: CharacteristicUuid,
+            ) -> ble_gatt::Result<Vec<u8>> {
+                if self.switch.is_off() {
+                    return Err(switched_off());
+                }
+                self.inner.read(characteristic).await
+            }
+
+            async fn write_with_type(
+                &mut self,
+                characteristic: CharacteristicUuid,
+                value: Vec<u8>,
+                write_type: WriteType,
+            ) -> ble_gatt::Result<()> {
+                if self.switch.is_off() {
+                    return Err(switched_off());
+                }
+                self.inner
+                    .write_with_type(characteristic, value, write_type)
+                    .await
+            }
+
+            async fn subscribe(
+                &mut self,
+                characteristic: CharacteristicUuid,
+            ) -> ble_gatt::Result<BoxStream<ble_gatt::Result<Vec<u8>>>> {
+                if self.switch.is_off() {
+                    return Err(switched_off());
+                }
+                let switch = self.switch.clone();
+                let stream = self.inner.subscribe(characteristic).await?;
+                Ok(Box::pin(
+                    stream.take_while(move |_| std::future::ready(!switch.is_off())),
+                ))
+            }
+
+            async fn disconnect(&mut self) -> ble_gatt::Result<()> {
+                self.inner.disconnect().await
+            }
+
+            async fn request_connection_priority(
+                &mut self,
+                priority: ConnectionPriority,
+            ) -> ble_gatt::Result<()> {
+                self.inner.request_connection_priority(priority).await
+            }
+        }
     }
 
-    /// ble-gatt reports a discovery it could not take over as busy, not
-    /// missing: that adapter works, so Bluetooth must not read as unavailable.
-    #[test]
-    fn a_busy_adapter_is_not_an_unavailable_one() {
-        let adapter = BluetoothAdapter::this_device();
-        assert!(adapter.note_scan_refused(&ble_gatt::BleError::AdapterBusy("in progress".into())));
-        assert!(!adapter.note_scan_refused(&ble_gatt::BleError::AdapterUnavailable("no adapter".into())));
+    /// Whether the *local* Bluetooth radio could actually be used the last time
+    /// this process tried to use it.
+    ///
+    /// Three-valued on purpose. Before anything has been attempted the honest
+    /// answer is "nobody has looked", and a row must not tell the user their
+    /// adapter is off on that basis -- the same reasoning that makes
+    /// `bluetooth_peer_nearby_now` default to `true` on a platform that cannot
+    /// look.
+    ///
+    /// Deliberately *observed* rather than polled. Asking BlueZ whether the
+    /// adapter is powered costs a D-Bus round trip, and the transport row is
+    /// polled every few seconds for every paired peer; the dial loop already
+    /// searches whenever it has a reason to, so recording what those attempts find
+    /// keeps this fresh for free. It is also the truer signal: "we asked the
+    /// radio to do something and it refused" is what the user actually cares
+    /// about, and it catches an adapter that reports itself powered while
+    /// refusing to scan.
+    ///
+    /// Only a real *use* records health. Recording success from `adapter()`
+    /// alone would be wrong: it caches the adapter in a `OnceCell`, so once the
+    /// adapter has worked once, every later call returns that cached handle
+    /// without touching hardware -- an adapter switched off afterwards would
+    /// still look reachable, and the row would flap between the cached success
+    /// and the scan failure that follows it.
+    const ADAPTER_UNKNOWN: u8 = 0;
+    const ADAPTER_REACHABLE: u8 = 1;
+    const ADAPTER_UNREACHABLE: u8 = 2;
+
+    #[cfg(test)]
+    thread_local! {
+        // The adapter health a test pinned on its thread, if any.
+        static ADAPTER_PINNED: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
     }
 
-    /// A scan already running is proof the adapter works, so the check a
-    /// person triggers by switching Bluetooth on must say so -- not start a
-    /// second scan, which Android refuses ("a scan is already active") and
-    /// which used to be recorded as "Bluetooth is unavailable on this device".
-    #[tokio::test]
-    async fn adapter_probe_during_another_scan_reports_the_adapter_reachable() {
-        let radio = Scanner::default();
-        let _other_scan = radio.scan_lock().await;
-        let _running = radio.start_running_scan();
-        let adapter = BluetoothAdapter::this_device();
-        adapter.note_unreachable();
+    /// How long the probe waits on another caller's scan that is still being
+    /// set up, before falling back to the last recorded adapter health.
+    const PROBE_WAIT_FOR_OTHER_SCAN: Duration = Duration::from_secs(10);
 
-        assert!(
-            adapter.probe(&radio).await,
-            "a scan in flight means the adapter accepted a discovery session"
-        );
-        assert!(!adapter.is_unavailable());
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// Serializes tests that set `FINI_LOCAL_BLUETOOTH_ADDRESS`/
+        /// `FINI_BLE_MOCK_BROKER` -- process-global env vars, unsafe to mutate
+        /// from parallel test threads. Mirrors `BLUETOOTH_PAIRED_ADDRESSES_ENV_LOCK`
+        /// in `pairing::commands`.
+        #[cfg(all(target_os = "linux", feature = "devtools"))]
+        static MOCK_DRIVER_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+        /// Proves `mock_driver` actually round-trips through a real socket to a
+        /// real `MockNetwork::serve` broker, not just that it compiles -- the
+        /// same connect+advertise+scan shape `ble-gatt`'s own
+        /// `tests/mock_broker.rs` exercises, but through fini's injection point
+        /// (`FINI_BLE_MOCK_BROKER`/`FINI_LOCAL_BLUETOOTH_ADDRESS`) instead of
+        /// calling `MockNetwork::remote` directly. This is what the
+        /// two virtual Linux test devices of `peer-sync-over-ble.spec.ts` each do at startup.
+        #[cfg(all(target_os = "linux", feature = "devtools"))]
+        #[tokio::test]
+        async fn mock_driver_connects_to_a_broker_and_reports_full_capabilities() {
+            let _guard = MOCK_DRIVER_ENV_LOCK.lock().unwrap();
+
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind loopback broker port");
+            let broker_addr = listener.local_addr().expect("local_addr");
+            tokio::spawn(async move {
+                let _ = ble_gatt::drivers::mock::MockNetwork::serve(listener).await;
+            });
+
+            std::env::set_var("FINI_LOCAL_BLUETOOTH_ADDRESS", "AA:BB:CC:00:00:01");
+            let result = mock_driver(&broker_addr.to_string()).await;
+            std::env::remove_var("FINI_LOCAL_BLUETOOTH_ADDRESS");
+
+            let driver = result.expect("mock_driver should connect to the broker");
+            let capabilities = driver.capabilities().await;
+            assert!(capabilities.central && capabilities.peripheral);
+        }
+
+        /// The one precondition `mock_driver` itself enforces: without a local
+        /// address there is nothing to identify this peer as on the mock radio,
+        /// and the error must name which env var is missing rather than panic
+        /// or silently pick something.
+        #[cfg(all(target_os = "linux", feature = "devtools"))]
+        #[tokio::test]
+        async fn mock_driver_requires_a_local_bluetooth_address() {
+            let _guard = MOCK_DRIVER_ENV_LOCK.lock().unwrap();
+            std::env::remove_var("FINI_LOCAL_BLUETOOTH_ADDRESS");
+
+            let err = match mock_driver("127.0.0.1:1").await {
+                Ok(_) => panic!("must fail without a local address"),
+                Err(err) => err,
+            };
+            assert!(err.contains("FINI_LOCAL_BLUETOOTH_ADDRESS"));
+        }
+
+        /// ble-gatt reports a discovery it could not take over as busy, not
+        /// missing: that adapter works, so Bluetooth must not read as unavailable.
+        #[test]
+        fn a_busy_adapter_is_not_an_unavailable_one() {
+            let adapter = BluetoothAdapter::this_device();
+            assert!(
+                adapter.note_scan_refused(&ble_gatt::BleError::AdapterBusy("in progress".into()))
+            );
+            assert!(!adapter
+                .note_scan_refused(&ble_gatt::BleError::AdapterUnavailable("no adapter".into())));
+        }
+
+        /// A scan already running is proof the adapter works, so the check a
+        /// person triggers by switching Bluetooth on must say so -- not start a
+        /// second scan, which Android refuses ("a scan is already active") and
+        /// which used to be recorded as "Bluetooth is unavailable on this device".
+        #[tokio::test]
+        async fn adapter_probe_during_another_scan_reports_the_adapter_reachable() {
+            let radio = Scanner::default();
+            let _other_scan = radio.scan_lock().await;
+            let _running = radio.start_running_scan();
+            let adapter = BluetoothAdapter::this_device();
+            adapter.note_unreachable();
+
+            assert!(
+                adapter.probe(&radio).await,
+                "a scan in flight means the adapter accepted a discovery session"
+            );
+            assert!(!adapter.is_unavailable());
+        }
+
+        /// Holding the lease is not a running scan. The add-mode scan takes the
+        /// lease and then waits on the adapter; a probe in that window used to
+        /// report a missing radio as working, so adding Bluetooth never failed.
+        #[tokio::test(start_paused = true)]
+        async fn adapter_probe_does_not_trust_a_scan_that_has_not_started() {
+            let radio = Arc::new(Scanner::default());
+            let other_scan = radio.scan_lock().await;
+            // Pinned, not recorded: other tests' scans write the process-wide
+            // health while this one waits out the probe.
+            BluetoothAdapter::pin_unreachable_on_this_thread();
+
+            let probe = tokio::spawn({
+                let radio = radio.clone();
+                async move { BluetoothAdapter::this_device().probe(&radio).await }
+            });
+            tokio::time::sleep(PROBE_WAIT_FOR_OTHER_SCAN + Duration::from_secs(1)).await;
+            drop(other_scan);
+
+            assert!(
+                !probe.await.unwrap(),
+                "no scan ever started, and the adapter was last seen unreachable"
+            );
+        }
     }
-
-    /// Holding the lease is not a running scan. The add-mode scan takes the
-    /// lease and then waits on the adapter; a probe in that window used to
-    /// report a missing radio as working, so adding Bluetooth never failed.
-    #[tokio::test(start_paused = true)]
-    async fn adapter_probe_does_not_trust_a_scan_that_has_not_started() {
-        let radio = Arc::new(Scanner::default());
-        let other_scan = radio.scan_lock().await;
-        // Pinned, not recorded: other tests' scans write the process-wide
-        // health while this one waits out the probe.
-        BluetoothAdapter::pin_unreachable_on_this_thread();
-
-        let probe = tokio::spawn({
-            let radio = radio.clone();
-            async move { BluetoothAdapter::this_device().probe(&radio).await }
-        });
-        tokio::time::sleep(PROBE_WAIT_FOR_OTHER_SCAN + Duration::from_secs(1)).await;
-        drop(other_scan);
-
-        assert!(!probe.await.unwrap(), "no scan ever started, and the adapter was last seen unreachable");
-    }
-}
 }
 
 mod advertiser {
-//! What this device advertises over Bluetooth, and whether it advertises
-//! at all.
-//!
-//! One `Advertiser` per Bluetooth channel, so two devices in one test
-//! process each advertise their own identity and add-mode.
+    //! What this device advertises over Bluetooth, and whether it advertises
+    //! at all.
+    //!
+    //! One `Advertiser` per Bluetooth channel, so two devices in one test
+    //! process each advertise their own identity and add-mode.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, Ordering};
 
-use tokio::sync::watch;
+    use tokio::sync::watch;
 
-use super::{datagram_config, fingerprint_of, ADD_MODE_FLAG_BYTE, FINGERPRINT_LEN, FINI_MANUFACTURER_ID};
-use ble_gatt::datagram::DatagramConfig;
-use crate::models::Identity;
+    use super::{
+        datagram_config, fingerprint_of, ADD_MODE_FLAG_BYTE, FINGERPRINT_LEN, FINI_MANUFACTURER_ID,
+    };
+    use crate::models::Identity;
+    use ble_gatt::datagram::DatagramConfig;
 
-/// The longest name the scan response carries on every platform: Android
-/// fits 13 bytes next to the service UUID, Linux 29. Cut here, so both show
-/// the same name.
-const SHORT_NAME_MAX_BYTES: usize = 13;
+    /// The longest name the scan response carries on every platform: Android
+    /// fits 13 bytes next to the service UUID, Linux 29. Cut here, so both show
+    /// the same name.
+    const SHORT_NAME_MAX_BYTES: usize = 13;
 
-/// `name` cut to `SHORT_NAME_MAX_BYTES` at a character boundary.
-fn short_name(name: &str) -> String {
-    let mut end = name.len().min(SHORT_NAME_MAX_BYTES);
-    while !name.is_char_boundary(end) {
-        end -= 1;
-    }
-    name[..end].to_string()
-}
-
-pub struct Advertiser {
-    /// This device's advertised identity fingerprint: what lets a scanning
-    /// peer tell this device apart from any other Fini install without
-    /// connecting to it first.
-    fingerprint: [u8; FINGERPRINT_LEN],
-    /// This device's name, cut to `SHORT_NAME_MAX_BYTES`, sent in the scan
-    /// response so the Add Device list can show it without a connection.
-    short_name: String,
-    /// The readable metadata retains the complete application name.
-    hostname: String,
-    /// Add Device state, watched by the one advertisement task.
-    /// A change updates the shared owner without replacing its server.
-    add_mode: watch::Sender<bool>,
-    /// Whether this device should advertise (ADR-0008 D8): while it has a
-    /// Bluetooth channel on, is setting one up, or is being paired. Otherwise
-    /// the radio stays quiet -- there is nobody it should be reachable by.
-    wanted: watch::Sender<bool>,
-    /// One peripheral acceptor, enforced where the loop actually runs rather
-    /// than at each call site.
-    ///
-    /// This used to be a `Once` inside `start_peripheral_once`, which guarded
-    /// only that one caller. `start_serving` spawned `run_server` directly
-    /// as well, so on Android both ran: two accept loops, both handed the
-    /// same inbound central, both running the gate on it. One claimed the
-    /// session, the other was rejected as a duplicate, and dropping the
-    /// rejected link released the session the winner was using.
-    peripheral_running: AtomicBool,
-}
-
-impl Advertiser {
-    pub fn new(identity: &Identity) -> Self {
-        Self {
-            fingerprint: fingerprint_of(&identity.device_id),
-            short_name: short_name(&identity.hostname),
-            hostname: identity.hostname.clone(),
-            add_mode: watch::channel(false).0,
-            wanted: watch::channel(false).0,
-            peripheral_running: AtomicBool::new(false),
+    /// `name` cut to `SHORT_NAME_MAX_BYTES` at a character boundary.
+    fn short_name(name: &str) -> String {
+        let mut end = name.len().min(SHORT_NAME_MAX_BYTES);
+        while !name.is_char_boundary(end) {
+            end -= 1;
         }
+        name[..end].to_string()
     }
 
-    fn advertisement(&self) -> ble_gatt::advertisement::GattAdvertisement {
-        let config = self.advertised_config();
-        ble_gatt::advertisement::GattAdvertisement {
-            manufacturer_data: config.advertised_manufacturer_data,
-            service_data: config.advertised_service_data,
-            local_name: Some(self.hostname.clone()),
-        }
+    pub struct Advertiser {
+        /// This device's advertised identity fingerprint: what lets a scanning
+        /// peer tell this device apart from any other Fini install without
+        /// connecting to it first.
+        fingerprint: [u8; FINGERPRINT_LEN],
+        /// This device's name, cut to `SHORT_NAME_MAX_BYTES`, sent in the scan
+        /// response so the Add Device list can show it without a connection.
+        short_name: String,
+        /// The readable metadata retains the complete application name.
+        hostname: String,
+        /// Add Device state, watched by the one advertisement task.
+        /// A change updates the shared owner without replacing its server.
+        add_mode: watch::Sender<bool>,
+        /// Whether this device should advertise (ADR-0008 D8): while it has a
+        /// Bluetooth channel on, is setting one up, or is being paired. Otherwise
+        /// the radio stays quiet -- there is nobody it should be reachable by.
+        wanted: watch::Sender<bool>,
+        /// One peripheral acceptor, enforced where the loop actually runs rather
+        /// than at each call site.
+        ///
+        /// This used to be a `Once` inside `start_peripheral_once`, which guarded
+        /// only that one caller. `start_serving` spawned `run_server` directly
+        /// as well, so on Android both ran: two accept loops, both handed the
+        /// same inbound central, both running the gate on it. One claimed the
+        /// session, the other was rejected as a duplicate, and dropping the
+        /// rejected link released the session the winner was using.
+        peripheral_running: AtomicBool,
     }
 
-    /// An uncertain update needs a hide fence and a complete hidden update.
-    pub(super) async fn update(&self, link: &ble_gatt::PeerLink, visible: bool, uncertain: &mut bool) -> Result<(), String> {
-        if *uncertain || !visible {
-            *uncertain = true;
-            link.set_advertising(false).await.map_err(|err| format!("advertisement hide failed: {err}"))?;
-        }
-        *uncertain = true;
-        if let Err(err) = link.update_advertisement(self.advertisement()).await {
-            // Show requires a complete hidden update after this fence.
-            let fence = link.set_advertising(false).await;
-            return Err(format!("advertisement write failed: {err}; hide fence: {fence:?}"));
-        }
-        if let Err(err) = link.set_advertising(visible).await {
-            let fence = link.set_advertising(false).await;
-            return Err(format!("advertisement visibility failed: {err}; hide fence: {fence:?}"));
-        }
-        *uncertain = false;
-        Ok(())
-    }
-
-    /// The datagram config `run_server` advertises: Fini's service plus one
-    /// flags byte and the identity fingerprint as manufacturer data, and the
-    /// short name in the scan response.
-    pub fn advertised_config(&self) -> DatagramConfig {
-        let mut config = datagram_config();
-        let mut payload = Vec::with_capacity(1 + FINGERPRINT_LEN);
-        payload.push(if self.in_add_mode() { ADD_MODE_FLAG_BYTE } else { 0 });
-        payload.extend_from_slice(&self.fingerprint);
-        config.advertised_manufacturer_data.insert(FINI_MANUFACTURER_ID, payload);
-        config.advertised_local_name = Some(self.short_name.clone());
-        // The record travels in ble-gatt's fast advertisement, and the scan
-        // gives it back under the same ID (ble-gatt ADR-0012 §2).
-        config.fast_advertisement_company = Some(FINI_MANUFACTURER_ID);
-        config
-    }
-
-    pub fn in_add_mode(&self) -> bool {
-        *self.add_mode.borrow()
-    }
-
-    /// Called from `device_connection_enter_add_mode`/`leave_add_mode`; see
-    /// `add_mode` for why this signals a running `run_server` rather than
-    /// restarting it.
-    pub fn set_add_mode(&self, enabled: bool) {
-        self.add_mode.send_if_modified(|current| {
-            if *current == enabled {
-                return false;
+    impl Advertiser {
+        pub fn new(identity: &Identity) -> Self {
+            Self {
+                fingerprint: fingerprint_of(&identity.device_id),
+                short_name: short_name(&identity.hostname),
+                hostname: identity.hostname.clone(),
+                add_mode: watch::channel(false).0,
+                wanted: watch::channel(false).0,
+                peripheral_running: AtomicBool::new(false),
             }
-            *current = enabled;
-            true
-        });
-    }
+        }
 
-    pub fn watch_add_mode(&self) -> watch::Receiver<bool> {
-        self.add_mode.subscribe()
-    }
+        fn advertisement(&self) -> ble_gatt::advertisement::GattAdvertisement {
+            let config = self.advertised_config();
+            ble_gatt::advertisement::GattAdvertisement {
+                manufacturer_data: config.advertised_manufacturer_data,
+                service_data: config.advertised_service_data,
+                local_name: Some(self.hostname.clone()),
+            }
+        }
 
-    pub fn watch_wanted(&self) -> watch::Receiver<bool> {
-        self.wanted.subscribe()
-    }
+        /// An uncertain update needs a hide fence and a complete hidden update.
+        pub(super) async fn update(
+            &self,
+            link: &ble_gatt::PeerLink,
+            visible: bool,
+            uncertain: &mut bool,
+        ) -> Result<(), String> {
+            if *uncertain || !visible {
+                *uncertain = true;
+                link.set_advertising(false)
+                    .await
+                    .map_err(|err| format!("advertisement hide failed: {err}"))?;
+            }
+            *uncertain = true;
+            if let Err(err) = link.update_advertisement(self.advertisement()).await {
+                // Show requires a complete hidden update after this fence.
+                let fence = link.set_advertising(false).await;
+                return Err(format!(
+                    "advertisement write failed: {err}; hide fence: {fence:?}"
+                ));
+            }
+            if let Err(err) = link.set_advertising(visible).await {
+                let fence = link.set_advertising(false).await;
+                return Err(format!(
+                    "advertisement visibility failed: {err}; hide fence: {fence:?}"
+                ));
+            }
+            *uncertain = false;
+            Ok(())
+        }
 
-    pub fn wanted(&self) -> bool {
-        *self.wanted.borrow()
-    }
+        /// The datagram config `run_server` advertises: Fini's service plus one
+        /// flags byte and the identity fingerprint as manufacturer data, and the
+        /// short name in the scan response.
+        pub fn advertised_config(&self) -> DatagramConfig {
+            let mut config = datagram_config();
+            let mut payload = Vec::with_capacity(1 + FINGERPRINT_LEN);
+            payload.push(if self.in_add_mode() {
+                ADD_MODE_FLAG_BYTE
+            } else {
+                0
+            });
+            payload.extend_from_slice(&self.fingerprint);
+            config
+                .advertised_manufacturer_data
+                .insert(FINI_MANUFACTURER_ID, payload);
+            config.advertised_local_name = Some(self.short_name.clone());
+            // The record travels in ble-gatt's fast advertisement, and the scan
+            // gives it back under the same ID (ble-gatt ADR-0012 §2).
+            config.fast_advertisement_company = Some(FINI_MANUFACTURER_ID);
+            config
+        }
 
-    /// Records whether to advertise; see `refresh_advertising`.
-    pub fn set_wanted(&self, wanted: bool) {
-        self.wanted.send_if_modified(|current| {
-            let changed = *current != wanted;
-            *current = wanted;
-            changed
-        });
-    }
+        pub fn in_add_mode(&self) -> bool {
+            *self.add_mode.borrow()
+        }
 
-    /// Takes the peripheral role; false if an acceptor already runs.
-    pub fn claim_peripheral_role(&self) -> bool {
-        !self.peripheral_running.swap(true, Ordering::SeqCst)
-    }
+        /// Called from `device_connection_enter_add_mode`/`leave_add_mode`; see
+        /// `add_mode` for why this signals a running `run_server` rather than
+        /// restarting it.
+        pub fn set_add_mode(&self, enabled: bool) {
+            self.add_mode.send_if_modified(|current| {
+                if *current == enabled {
+                    return false;
+                }
+                *current = enabled;
+                true
+            });
+        }
 
+        pub fn watch_add_mode(&self) -> watch::Receiver<bool> {
+            self.add_mode.subscribe()
+        }
 
-    #[cfg(target_os = "android")]
-    pub fn peripheral_running(&self) -> bool {
-        self.peripheral_running.load(Ordering::SeqCst)
-    }
-}
+        pub fn watch_wanted(&self) -> watch::Receiver<bool> {
+            self.wanted.subscribe()
+        }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+        pub fn wanted(&self) -> bool {
+            *self.wanted.borrow()
+        }
 
-    fn identity(device_id: &str) -> Identity {
-        let secret_key = iroh::SecretKey::generate();
-        Identity {
-            device_id: device_id.to_string(),
-            hostname: "host".to_string(),
-            endpoint_id: secret_key.public().to_string(),
-            secret_key,
+        /// Records whether to advertise; see `refresh_advertising`.
+        pub fn set_wanted(&self, wanted: bool) {
+            self.wanted.send_if_modified(|current| {
+                let changed = *current != wanted;
+                *current = wanted;
+                changed
+            });
+        }
+
+        /// Takes the peripheral role; false if an acceptor already runs.
+        pub fn claim_peripheral_role(&self) -> bool {
+            !self.peripheral_running.swap(true, Ordering::SeqCst)
+        }
+
+        #[cfg(target_os = "android")]
+        pub fn peripheral_running(&self) -> bool {
+            self.peripheral_running.load(Ordering::SeqCst)
         }
     }
 
-    /// The peripheral acceptor must be a singleton, whatever starts it.
-    ///
-    /// It was not: `start_serving` spawned `run_server` on Linux *and*
-    /// Android, while Android also started it from `dial` via
-    /// `start_peripheral_once`. Two accept loops then received the same
-    /// inbound central and both ran the gate on it -- one claimed the
-    /// session, the other was rejected as a duplicate, and dropping the
-    /// rejected link released the session the winner was using. Observed on
-    /// hardware as an inbound link dying ~170ms after authenticating, with
-    /// `no live notify session` as the only trace.
-    #[test]
-    fn only_one_peripheral_acceptor_can_run_at_a_time() {
-        let advertiser = Advertiser::new(&identity("test-device"));
-        assert!(advertiser.claim_peripheral_role(), "the first start takes the role");
-        assert!(
-            !advertiser.claim_peripheral_role(),
-            "a second start must be refused -- two acceptors race each other's session"
-        );
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn identity(device_id: &str) -> Identity {
+            let secret_key = iroh::SecretKey::generate();
+            Identity {
+                device_id: device_id.to_string(),
+                hostname: "host".to_string(),
+                endpoint_id: secret_key.public().to_string(),
+                secret_key,
+            }
+        }
+
+        /// The peripheral acceptor must be a singleton, whatever starts it.
+        ///
+        /// It was not: `start_serving` spawned `run_server` on Linux *and*
+        /// Android, while Android also started it from `dial` via
+        /// `start_peripheral_once`. Two accept loops then received the same
+        /// inbound central and both ran the gate on it -- one claimed the
+        /// session, the other was rejected as a duplicate, and dropping the
+        /// rejected link released the session the winner was using. Observed on
+        /// hardware as an inbound link dying ~170ms after authenticating, with
+        /// `no live notify session` as the only trace.
+        #[test]
+        fn only_one_peripheral_acceptor_can_run_at_a_time() {
+            let advertiser = Advertiser::new(&identity("test-device"));
+            assert!(
+                advertiser.claim_peripheral_role(),
+                "the first start takes the role"
+            );
+            assert!(
+                !advertiser.claim_peripheral_role(),
+                "a second start must be refused -- two acceptors race each other's session"
+            );
+        }
+
+        #[test]
+        fn the_advertisement_carries_the_add_mode_flag_only_while_enabled() {
+            // ADR-0006 slice 2 changed the shape this asserts. The payload is no
+            // longer present only in add-mode and no longer equals a single
+            // flag byte: it is a flags byte followed by the identity
+            // fingerprint, advertised always, because being identifiable is what
+            // lets a scanner skip peers it does not want. The add-mode signal
+            // became bit 0 of that first byte.
+            let advertiser = Advertiser::new(&identity("test-device"));
+            let expected = fingerprint_of("test-device");
+
+            let disabled = advertiser.advertised_config();
+            let payload = disabled
+                .advertised_manufacturer_data
+                .get(&FINI_MANUFACTURER_ID)
+                .expect("the fingerprint is advertised regardless of add-mode");
+            assert_eq!(
+                payload[0] & ADD_MODE_FLAG_BYTE,
+                0,
+                "add-mode bit must be clear"
+            );
+            assert_eq!(&payload[1..], &expected, "fingerprint must be advertised");
+
+            advertiser.set_add_mode(true);
+            let enabled = advertiser.advertised_config();
+            let payload = enabled
+                .advertised_manufacturer_data
+                .get(&FINI_MANUFACTURER_ID)
+                .expect("payload present in add-mode too");
+            assert_eq!(
+                payload[0] & ADD_MODE_FLAG_BYTE,
+                ADD_MODE_FLAG_BYTE,
+                "add-mode bit must be set while add-mode is on"
+            );
+            assert_eq!(
+                &payload[1..],
+                &expected,
+                "fingerprint is unchanged by add-mode"
+            );
+
+            advertiser.set_add_mode(false);
+            let disabled_again = advertiser.advertised_config();
+            assert_eq!(
+                disabled_again
+                    .advertised_manufacturer_data
+                    .get(&FINI_MANUFACTURER_ID)
+                    .map(|p| p[0] & ADD_MODE_FLAG_BYTE),
+                Some(0),
+                "must stop signalling add-mode once it is left again"
+            );
+        }
     }
-
-    #[test]
-    fn the_advertisement_carries_the_add_mode_flag_only_while_enabled() {
-        // ADR-0006 slice 2 changed the shape this asserts. The payload is no
-        // longer present only in add-mode and no longer equals a single
-        // flag byte: it is a flags byte followed by the identity
-        // fingerprint, advertised always, because being identifiable is what
-        // lets a scanner skip peers it does not want. The add-mode signal
-        // became bit 0 of that first byte.
-        let advertiser = Advertiser::new(&identity("test-device"));
-        let expected = fingerprint_of("test-device");
-
-        let disabled = advertiser.advertised_config();
-        let payload = disabled
-            .advertised_manufacturer_data
-            .get(&FINI_MANUFACTURER_ID)
-            .expect("the fingerprint is advertised regardless of add-mode");
-        assert_eq!(payload[0] & ADD_MODE_FLAG_BYTE, 0, "add-mode bit must be clear");
-        assert_eq!(&payload[1..], &expected, "fingerprint must be advertised");
-
-        advertiser.set_add_mode(true);
-        let enabled = advertiser.advertised_config();
-        let payload = enabled
-            .advertised_manufacturer_data
-            .get(&FINI_MANUFACTURER_ID)
-            .expect("payload present in add-mode too");
-        assert_eq!(
-            payload[0] & ADD_MODE_FLAG_BYTE,
-            ADD_MODE_FLAG_BYTE,
-            "add-mode bit must be set while add-mode is on"
-        );
-        assert_eq!(&payload[1..], &expected, "fingerprint is unchanged by add-mode");
-
-        advertiser.set_add_mode(false);
-        let disabled_again = advertiser.advertised_config();
-        assert_eq!(
-            disabled_again.advertised_manufacturer_data.get(&FINI_MANUFACTURER_ID).map(|p| p[0]
-                & ADD_MODE_FLAG_BYTE),
-            Some(0),
-            "must stop signalling add-mode once it is left again"
-        );
-    }
-}
 }
 
 mod data_link {
-//! A plain BLE GATT link, for pre-pairing frames only: there is no pinned
-//! key to dial yet, so each frame carries the sender's key itself.
+    //! A plain BLE GATT link, for pre-pairing frames only: there is no pinned
+    //! key to dial yet, so each frame carries the sender's key itself.
 
-use super::*;
+    use super::*;
 
-pub struct BleDataLink {
-    /// `None` once the channel went to the iroh transport.
-    channel: Option<PeerChannel>,
-    peer_addr: String,
-    /// A datagram already read off the channel (to route it, see
-    /// `route_inbound`), returned by the first `recv`.
-    pending: Option<Vec<u8>>,
-    /// Takes the channel when a QUIC Initial arrives on it: the identifying
-    /// side starts its pairing connection on the identify link, in place of
-    /// a second BLE connection.
-    session: Option<ble_gatt_iroh::BleGattTransport>,
-}
-
-impl Drop for BleDataLink {
-    fn drop(&mut self) {
-        if let Some(channel) = self.channel.take() {
-            tauri::async_runtime::spawn(async move {
-                if let Err(err) = channel.release().await {
-                    log::warn!("[transport][ble] plain channel release failed: {err}");
-                }
-            });
-        }
+    pub struct BleDataLink {
+        /// `None` once the channel went to the iroh transport.
+        channel: Option<PeerChannel>,
+        peer_addr: String,
+        /// A datagram already read off the channel (to route it, see
+        /// `route_inbound`), returned by the first `recv`.
+        pending: Option<Vec<u8>>,
+        /// Takes the channel when a QUIC Initial arrives on it: the identifying
+        /// side starts its pairing connection on the identify link, in place of
+        /// a second BLE connection.
+        session: Option<ble_gatt_iroh::BleGattTransport>,
     }
-}
 
-impl BleDataLink {
-    pub(super) fn new(channel: PeerChannel) -> Self {
-        let peer_addr = channel.peer().0.clone();
-        Self {
-            channel: Some(channel),
-            peer_addr,
-            pending: None,
-            session: None,
+    impl Drop for BleDataLink {
+        fn drop(&mut self) {
+            if let Some(channel) = self.channel.take() {
+                tauri::async_runtime::spawn(async move {
+                    if let Err(err) = channel.release().await {
+                        log::warn!("[transport][ble] plain channel release failed: {err}");
+                    }
+                });
+            }
         }
     }
 
-    pub(super) fn after(channel: PeerChannel, first: Vec<u8>, session: Option<ble_gatt_iroh::BleGattTransport>) -> Self {
-        let mut link = Self::new(channel);
-        link.pending = Some(first);
-        link.session = session;
-        link
+    impl BleDataLink {
+        pub(super) fn new(channel: PeerChannel) -> Self {
+            let peer_addr = channel.peer().0.clone();
+            Self {
+                channel: Some(channel),
+                peer_addr,
+                pending: None,
+                session: None,
+            }
+        }
+
+        pub(super) fn after(
+            channel: PeerChannel,
+            first: Vec<u8>,
+            session: Option<ble_gatt_iroh::BleGattTransport>,
+        ) -> Self {
+            let mut link = Self::new(channel);
+            link.pending = Some(first);
+            link.session = session;
+            link
+        }
+
+        /// The channel, for the iroh transport (`keep_identify_link`).
+        pub(super) fn into_channel(mut self) -> Option<PeerChannel> {
+            self.channel.take()
+        }
     }
 
-    /// The channel, for the iroh transport (`keep_identify_link`).
-    pub(super) fn into_channel(mut self) -> Option<PeerChannel> {
-        self.channel.take()
-    }
-}
+    #[async_trait]
+    impl DataLink for BleDataLink {
+        fn kind(&self) -> ChannelKind {
+            ChannelKind::Bluetooth
+        }
 
-#[async_trait]
-impl DataLink for BleDataLink {
-    fn kind(&self) -> ChannelKind {
-        ChannelKind::Bluetooth
-    }
+        fn peer_addr(&self) -> Option<String> {
+            Some(self.peer_addr.clone())
+        }
 
-    fn peer_addr(&self) -> Option<String> {
-        Some(self.peer_addr.clone())
-    }
+        async fn send(&mut self, payload: Vec<u8>) -> Result<(), String> {
+            // Retry `GattBusy` here rather than inside `ble-gatt`: the backend
+            // makes exactly one attempt and classifies a rejection it believes is
+            // transient as `BleError::GattBusy`, deliberately leaving the retry
+            // budget to whoever knows the caller's own deadline. No single
+            // backend-side budget can be right for every caller -- a chain sized
+            // for a generous one silently exceeds a tight one and reads as a
+            // caller-abandoned future rather than an honest failure.
+            //
+            // Sized to the tightest caller on this path: `scan_add_mode_candidates`
+            // gets `BLUETOOTH_SCAN_DURATION_MS` (4s) for the *whole* pass, dial
+            // included, and `BluetoothChannel::find_and_send_request` allows `FIND_PEER_CANDIDATE_TIMEOUT`
+            // (4s) per candidate. With a dial typically eating 1-2s of that, the
+            // ~1.4s worst case below still leaves the caller room to fail cleanly
+            // instead of being cut off mid-retry.
+            //
+            // Observed on real hardware: the *first* write on a freshly connected
+            // channel is the one that gets rejected (msg_id=0, fragment 0), while
+            // the `subscribe` moments earlier on the same link succeeds -- so this
+            // covers a genuine just-connected window, not a dead peer.
+            const SEND_RETRY_DELAYS: [Duration; 3] = [
+                Duration::from_millis(150),
+                Duration::from_millis(300),
+                Duration::from_millis(600),
+            ];
 
-    async fn send(&mut self, payload: Vec<u8>) -> Result<(), String> {
-        // Retry `GattBusy` here rather than inside `ble-gatt`: the backend
-        // makes exactly one attempt and classifies a rejection it believes is
-        // transient as `BleError::GattBusy`, deliberately leaving the retry
-        // budget to whoever knows the caller's own deadline. No single
-        // backend-side budget can be right for every caller -- a chain sized
-        // for a generous one silently exceeds a tight one and reads as a
-        // caller-abandoned future rather than an honest failure.
-        //
-        // Sized to the tightest caller on this path: `scan_add_mode_candidates`
-        // gets `BLUETOOTH_SCAN_DURATION_MS` (4s) for the *whole* pass, dial
-        // included, and `BluetoothChannel::find_and_send_request` allows `FIND_PEER_CANDIDATE_TIMEOUT`
-        // (4s) per candidate. With a dial typically eating 1-2s of that, the
-        // ~1.4s worst case below still leaves the caller room to fail cleanly
-        // instead of being cut off mid-retry.
-        //
-        // Observed on real hardware: the *first* write on a freshly connected
-        // channel is the one that gets rejected (msg_id=0, fragment 0), while
-        // the `subscribe` moments earlier on the same link succeeds -- so this
-        // covers a genuine just-connected window, not a dead peer.
-        const SEND_RETRY_DELAYS: [Duration; 3] = [
-            Duration::from_millis(150),
-            Duration::from_millis(300),
-            Duration::from_millis(600),
-        ];
-
-        let Some(channel) = self.channel.as_mut() else {
-            return Err("the link went to the iroh transport".to_string());
-        };
-        let mut attempt = 0;
-        loop {
-            match channel.send(payload.clone()).await {
-                Ok(()) => return Ok(()),
-                Err(ble_gatt::BleError::GattBusy(err)) if attempt < SEND_RETRY_DELAYS.len() => {
-                    log::warn!(
+            let Some(channel) = self.channel.as_mut() else {
+                return Err("the link went to the iroh transport".to_string());
+            };
+            let mut attempt = 0;
+            loop {
+                match channel.send(payload.clone()).await {
+                    Ok(()) => return Ok(()),
+                    Err(ble_gatt::BleError::GattBusy(err)) if attempt < SEND_RETRY_DELAYS.len() => {
+                        log::warn!(
                         "[transport][ble] send to {} rejected as busy ({err}), retrying ({}/{})",
                         self.peer_addr,
                         attempt + 1,
                         SEND_RETRY_DELAYS.len()
                     );
-                    tokio::time::sleep(SEND_RETRY_DELAYS[attempt]).await;
-                    attempt += 1;
+                        tokio::time::sleep(SEND_RETRY_DELAYS[attempt]).await;
+                        attempt += 1;
+                    }
+                    Err(err) => return Err(err.to_string()),
                 }
-                Err(err) => return Err(err.to_string()),
             }
+        }
+
+        async fn recv(&mut self) -> Option<Result<Vec<u8>, String>> {
+            if let Some(first) = self.pending.take() {
+                return Some(Ok(first));
+            }
+            let bytes = match self.channel.as_mut()?.recv().await? {
+                Ok(bytes) => bytes,
+                Err(err) => return Some(Err(err.to_string())),
+            };
+            // The identifying side's pairing connection: the channel goes to
+            // iroh, and this link ends here.
+            if ble_gatt_iroh::is_quic_initial(&bytes) {
+                if let (Some(session), Some(channel)) = (self.session.as_ref(), self.channel.take())
+                {
+                    log::info!(
+                        "[transport][ble] {}: the pairing connection goes on the identify link",
+                        self.peer_addr
+                    );
+                    session.attach_after(channel, bytes);
+                    return None;
+                }
+            }
+            Some(Ok(bytes))
         }
     }
 
-    async fn recv(&mut self) -> Option<Result<Vec<u8>, String>> {
-        if let Some(first) = self.pending.take() {
-            return Some(Ok(first));
+    /// Central role: connect to a peer's Bluetooth address over a plain link,
+    /// for Fini's own pre-pairing frames (identify, pair request/accept/
+    /// complete). Sessions use `BluetoothChannel::connect_session`.
+    impl BleDataLink {
+        pub(super) async fn connect(shared: Arc<PeerLink>, address: &str) -> Result<Self, String> {
+            let peer = PeerAddress(address.to_string());
+            let channel = shared
+                .request(&peer)
+                .await
+                .map_err(|err| err.to_string())?
+                .accept()
+                .await
+                .map_err(|err| format!("ble connect to {address} failed: {err}"))?;
+            Ok(BleDataLink::new(channel))
         }
-        let bytes = match self.channel.as_mut()?.recv().await? {
-            Ok(bytes) => bytes,
-            Err(err) => return Some(Err(err.to_string())),
-        };
-        // The identifying side's pairing connection: the channel goes to
-        // iroh, and this link ends here.
-        if ble_gatt_iroh::is_quic_initial(&bytes) {
-            if let (Some(session), Some(channel)) = (self.session.as_ref(), self.channel.take()) {
-                log::info!("[transport][ble] {}: the pairing connection goes on the identify link", self.peer_addr);
-                session.attach_after(channel, bytes);
-                return None;
-            }
-        }
-        Some(Ok(bytes))
     }
-}
-
-/// Central role: connect to a peer's Bluetooth address over a plain link,
-/// for Fini's own pre-pairing frames (identify, pair request/accept/
-/// complete). Sessions use `BluetoothChannel::connect_session`.
-impl BleDataLink {
-pub(super) async fn connect(shared: Arc<PeerLink>, address: &str) -> Result<Self, String> {
-    let peer = PeerAddress(address.to_string());
-    let channel = shared.request(&peer).await.map_err(|err| err.to_string())?
-        .accept().await.map_err(|err| format!("ble connect to {address} failed: {err}"))?;
-    Ok(BleDataLink::new(channel))
-}
-}
 }
 
 mod endpoint {
-//! The Bluetooth channel's iroh endpoint (ADR-0009 D2, D3): dialling a
-//! session or a pairing step by key, and handing what peers open to the gate.
+    //! The Bluetooth channel's iroh endpoint (ADR-0009 D2, D3): dialling a
+    //! session or a pairing step by key, and handing what peers open to the gate.
 
-use super::*;
+    use super::*;
 
-/// How long a pairing dial keeps retrying a refusal caused by the candidate
-/// scan's cancelled probe still tearing down its connection.
-const PAIRING_CONNECT_RETRY_WINDOW: Duration = Duration::from_secs(5);
+    /// How long a pairing dial keeps retrying a refusal caused by the candidate
+    /// scan's cancelled probe still tearing down its connection.
+    const PAIRING_CONNECT_RETRY_WINDOW: Duration = Duration::from_secs(5);
 
-/// How long a pairing dial may take once it has the radio: its retries, one
-/// connect that runs to `SESSION_CONNECT_TIMEOUT`, and opening the stream.
-/// Counted from after any candidate probe it waited out, so a probe that
-/// held the radio does not eat the dial's own time.
-const PAIRING_CONNECT_BUDGET: Duration =
-    Duration::from_secs(PAIRING_CONNECT_RETRY_WINDOW.as_secs() + SESSION_CONNECT_TIMEOUT.as_secs() + 5);
+    /// How long a pairing dial may take once it has the radio: its retries, one
+    /// connect that runs to `SESSION_CONNECT_TIMEOUT`, and opening the stream.
+    /// Counted from after any candidate probe it waited out, so a probe that
+    /// held the radio does not eat the dial's own time.
+    const PAIRING_CONNECT_BUDGET: Duration = Duration::from_secs(
+        PAIRING_CONNECT_RETRY_WINDOW.as_secs() + SESSION_CONNECT_TIMEOUT.as_secs() + 5,
+    );
 
-/// How long a new inbound channel may take to send its first datagram,
-/// which decides what it carries (`route_inbound`).
-const FIRST_DATAGRAM_TIMEOUT: Duration = Duration::from_secs(15);
+    /// How long a new inbound channel may take to send its first datagram,
+    /// which decides what it carries (`route_inbound`).
+    const FIRST_DATAGRAM_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// How long an iroh connection over Bluetooth may take to open. A GATT
-/// connect alone was measured at up to ~28 s on hardware.
-const SESSION_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+    /// How long an iroh connection over Bluetooth may take to open. A GATT
+    /// connect alone was measured at up to ~28 s on hardware.
+    const SESSION_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// How long a pairing's BLE link waits for the first session to use it
-/// (`keep_pairing_link`).
-const PAIRING_LINK_KEEP_TIME: Duration = Duration::from_secs(15);
+    /// How long a pairing's BLE link waits for the first session to use it
+    /// (`keep_pairing_link`).
+    const PAIRING_LINK_KEEP_TIME: Duration = Duration::from_secs(15);
 
-impl BluetoothChannelService {
-    /// Opens an iroh connection to `peer_key` for a pairing step --
-    /// `address` is only where to reach it first (ADR-0009 D2/D7: Bluetooth
-    /// carries iroh, and iroh dials by key) -- and hands back the link plus
-    /// the registrations that keep it clear of the scan: no scan runs until
-    /// the caller drops the returned guards.
-    ///
-    /// Waits out a candidate probe already dialling, then dials within
-    /// `PAIRING_CONNECT_BUDGET`.
-    ///
-    /// The peer's key is not pinned yet, so TLS proves only that whoever
-    /// answers holds `peer_key`; pairing pins it (D8).
-    pub async fn connect_for_pairing(&self, peer_key: &str, address: &str) -> Result<(Box<dyn DataLink>, impl Sized), String> {
-        let peer_key: iroh::EndpointId = peer_key
-            .parse()
-            .map_err(|err| format!("invalid key for the pairing peer: {err}"))?;
-        let scanner = &self.scanner;
-        let step = scanner.begin_pairing_step();
-        // A candidate probe already dialling is let finish, not cancelled;
-        // wait for it so this dial never overlaps one to the same peer.
-        drop(scanner.candidate_probe().await);
-        tokio::time::timeout(PAIRING_CONNECT_BUDGET, async {
-            let connect_guard = scanner.acquire_connect().await;
+    impl BluetoothChannelService {
+        /// Opens an iroh connection to `peer_key` for a pairing step --
+        /// `address` is only where to reach it first (ADR-0009 D2/D7: Bluetooth
+        /// carries iroh, and iroh dials by key) -- and hands back the link plus
+        /// the registrations that keep it clear of the scan: no scan runs until
+        /// the caller drops the returned guards.
+        ///
+        /// Waits out a candidate probe already dialling, then dials within
+        /// `PAIRING_CONNECT_BUDGET`.
+        ///
+        /// The peer's key is not pinned yet, so TLS proves only that whoever
+        /// answers holds `peer_key`; pairing pins it (D8).
+        pub async fn connect_for_pairing(
+            &self,
+            peer_key: &str,
+            address: &str,
+        ) -> Result<(Box<dyn DataLink>, impl Sized), String> {
+            let peer_key: iroh::EndpointId = peer_key
+                .parse()
+                .map_err(|err| format!("invalid key for the pairing peer: {err}"))?;
+            let scanner = &self.scanner;
+            let step = scanner.begin_pairing_step();
+            // A candidate probe already dialling is let finish, not cancelled;
+            // wait for it so this dial never overlaps one to the same peer.
+            drop(scanner.candidate_probe().await);
+            tokio::time::timeout(PAIRING_CONNECT_BUDGET, async {
+                let connect_guard = scanner.acquire_connect().await;
+                let (endpoint, transport) = self.iroh_endpoint().await?;
+                let peer = PeerAddress(address.to_string());
+                transport.set_peer_address(peer_key, peer.clone());
+                let addr = iroh::EndpointAddr::from_parts(
+                    peer_key,
+                    [iroh::TransportAddr::Custom(ble_gatt_iroh::custom_addr(
+                        &peer,
+                    ))],
+                );
+                let started = tokio::time::Instant::now();
+                loop {
+                    let attempt = tokio::time::timeout(
+                        SESSION_CONNECT_TIMEOUT,
+                        endpoint.connect(addr.clone(), PEER_ALPN),
+                    )
+                    .await;
+                    match attempt {
+                        Ok(Ok(connection)) => {
+                            let link = IrohDataLink::open(
+                                ChannelKind::Bluetooth,
+                                connection,
+                                Some(address.to_string()),
+                            )
+                            .await?;
+                            return Ok((Box::new(link) as Box<dyn DataLink>, connect_guard));
+                        }
+                        // The probe's connection may still be closing.
+                        Ok(Err(_)) if started.elapsed() < PAIRING_CONNECT_RETRY_WINDOW => {
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                        }
+                        Ok(Err(err)) => {
+                            return Err(format!("bluetooth connect to {address} failed: {err}"))
+                        }
+                        Err(_) => return Err(format!("bluetooth connect to {address} timed out")),
+                    }
+                }
+            })
+            .await
+            .map_err(|_| format!("bluetooth pairing connection to {address} timed out"))?
+            .map(|(link, connect_guard)| (link, (step, connect_guard)))
+        }
+
+        /// The channel's iroh endpoint over Bluetooth (ADR-0009 D2, D3): the
+        /// `ble-gatt-iroh` transport only, no IP, relays off. Built on first
+        /// use, which on Android has to come after the Activity is up
+        /// (`BluetoothAdapter::adapter`). Its `Router` hands every connection to
+        /// the handler of its ALPN.
+        pub(crate) async fn iroh_endpoint(
+            &self,
+        ) -> Result<(iroh::Endpoint, ble_gatt_iroh::BleGattTransport), String> {
+            let shared = self.peer_link().await?;
+            let _initialization = self.initialization.write().await;
+            if self.stopping() {
+                return Err("Bluetooth is stopping".to_string());
+            }
+            if let Some(endpoint) = self.endpoint.get() {
+                return Ok(endpoint.clone());
+            }
+            let transport = ble_gatt_iroh::BleGattTransport::builder()
+                .dialer(ble_gatt_iroh::dial_with(shared))
+                .build();
+            let bind = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+                .secret_key(self.identity.secret_key.clone())
+                .relay_mode(iroh::RelayMode::Disabled)
+                .alpns(vec![PEER_ALPN.to_vec(), SYNC_ALPN.to_vec()])
+                .transport_config(crate::services::channel_service::iroh_link::transport_config())
+                .clear_ip_transports()
+                .add_custom_transport(Arc::new(transport.clone()))
+                .hooks(transport.hooks())
+                .address_lookup(transport.address_lookup())
+                .bind();
+            let endpoint = tokio::select! {
+                biased;
+                () = self.wait_until_stopping() => return Err("Bluetooth is stopping".to_string()),
+                endpoint = bind => endpoint,
+            }
+            .map_err(|err| format!("binding the Bluetooth endpoint failed: {err}"))?;
+            let published = {
+                let _admission = self.admission.lock().map_err(|err| err.to_string())?;
+                if self.stopping() {
+                    false
+                } else {
+                    self.endpoint
+                        .set((endpoint.clone(), transport.clone()))
+                        .map_err(|_| "Bluetooth endpoint already initialized".to_string())?;
+                    match self.handlers.get().cloned() {
+                        Some(handlers) => {
+                            tokio::spawn(crate::services::channel_service::LinkAcceptor::serve(
+                                ChannelKind::Bluetooth,
+                                endpoint.clone(),
+                                handlers,
+                                Arc::new(|| false),
+                            ));
+                        }
+                        None => log::warn!(
+                            "[transport][ble] no link handlers; the endpoint answers nobody"
+                        ),
+                    }
+                    true
+                }
+            };
+            if !published {
+                return match tokio::time::timeout(Duration::from_secs(2), endpoint.close()).await {
+                    Ok(()) => Err("Bluetooth stopped during endpoint initialization".to_string()),
+                    Err(err) => Err(format!(
+                        "Bluetooth endpoint initialization close timed out: {err}"
+                    )),
+                };
+            }
+            Ok((endpoint, transport))
+        }
+
+        /// Opens an authenticated link to paired `peer_id` at `address`: an iroh
+        /// connection over Bluetooth to the key pinned for the pair, which TLS
+        /// proves (ADR-0009 D8). A device at that address holding another key
+        /// fails the handshake, so this also confirms the candidate is the peer.
+        /// `alpn`: `SYNC_ALPN` for a session, `PEER_ALPN` for `AddChannel`.
+        pub async fn connect_session(
+            &self,
+            peer_id: &str,
+            address: &str,
+            alpn: &[u8],
+        ) -> Result<Box<dyn DataLink>, String> {
+            let peer_key: iroh::EndpointId = self
+                .pinned_key(peer_id)
+                .ok_or_else(|| format!("{peer_id} has no key pinned; pair the devices again"))?
+                .parse()
+                .map_err(|err| format!("invalid key pinned for {peer_id}: {err}"))?;
             let (endpoint, transport) = self.iroh_endpoint().await?;
             let peer = PeerAddress(address.to_string());
             transport.set_peer_address(peer_key, peer.clone());
             let addr = iroh::EndpointAddr::from_parts(
                 peer_key,
-                [iroh::TransportAddr::Custom(ble_gatt_iroh::custom_addr(&peer))],
+                [iroh::TransportAddr::Custom(ble_gatt_iroh::custom_addr(
+                    &peer,
+                ))],
             );
-            let started = tokio::time::Instant::now();
-            loop {
-                let attempt =
-                    tokio::time::timeout(SESSION_CONNECT_TIMEOUT, endpoint.connect(addr.clone(), PEER_ALPN)).await;
-                match attempt {
-                    Ok(Ok(connection)) => {
-                        let link =
-                            IrohDataLink::open(ChannelKind::Bluetooth, connection, Some(address.to_string())).await?;
-                        return Ok((Box::new(link) as Box<dyn DataLink>, connect_guard));
-                    }
-                    // The probe's connection may still be closing.
-                    Ok(Err(_)) if started.elapsed() < PAIRING_CONNECT_RETRY_WINDOW => {
-                        tokio::time::sleep(Duration::from_millis(500)).await;
-                    }
-                    Ok(Err(err)) => return Err(format!("bluetooth connect to {address} failed: {err}")),
-                    Err(_) => return Err(format!("bluetooth connect to {address} timed out")),
-                }
-            }
-        })
-        .await
-        .map_err(|_| format!("bluetooth pairing connection to {address} timed out"))?
-        .map(|(link, connect_guard)| (link, (step, connect_guard)))
-    }
+            let connection =
+                tokio::time::timeout(SESSION_CONNECT_TIMEOUT, endpoint.connect(addr, alpn))
+                    .await
+                    .map_err(|_| format!("bluetooth connect to {address} timed out"))?
+                    .map_err(|err| format!("bluetooth connect to {address} failed: {err}"))?;
+            let link = IrohDataLink::open(
+                ChannelKind::Bluetooth,
+                connection,
+                Some(address.to_string()),
+            )
+            .await?;
+            Ok(Box::new(link))
+        }
 
-    /// The channel's iroh endpoint over Bluetooth (ADR-0009 D2, D3): the
-    /// `ble-gatt-iroh` transport only, no IP, relays off. Built on first
-    /// use, which on Android has to come after the Activity is up
-    /// (`BluetoothAdapter::adapter`). Its `Router` hands every connection to
-    /// the handler of its ALPN.
-    pub(crate) async fn iroh_endpoint(&self) -> Result<(iroh::Endpoint, ble_gatt_iroh::BleGattTransport), String> {
-        let shared = self.peer_link().await?;
-        let _initialization = self.initialization.write().await;
-        if self.stopping() { return Err("Bluetooth is stopping".to_string()); }
-        if let Some(endpoint) = self.endpoint.get() { return Ok(endpoint.clone()); }
-        let transport = ble_gatt_iroh::BleGattTransport::builder()
-            .dialer(ble_gatt_iroh::dial_with(shared))
-            .build();
-        let bind = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-            .secret_key(self.identity.secret_key.clone())
-            .relay_mode(iroh::RelayMode::Disabled)
-            .alpns(vec![PEER_ALPN.to_vec(), SYNC_ALPN.to_vec()])
-            .transport_config(crate::services::channel_service::iroh_link::transport_config())
-            .clear_ip_transports()
-            .add_custom_transport(Arc::new(transport.clone()))
-            .hooks(transport.hooks())
-            .address_lookup(transport.address_lookup())
-            .bind();
-        let endpoint = tokio::select! {
-            biased;
-            () = self.wait_until_stopping() => return Err("Bluetooth is stopping".to_string()),
-            endpoint = bind => endpoint,
-        }.map_err(|err| format!("binding the Bluetooth endpoint failed: {err}"))?;
-        let published = {
-            let _admission = self.admission.lock().map_err(|err| err.to_string())?;
-            if self.stopping() {
-                false
-            } else {
-                self.endpoint.set((endpoint.clone(), transport.clone()))
-                    .map_err(|_| "Bluetooth endpoint already initialized".to_string())?;
-                match self.handlers.get().cloned() {
-                    Some(handlers) => {
-                        tokio::spawn(crate::services::channel_service::LinkAcceptor::serve(
-                            ChannelKind::Bluetooth,
-                            endpoint.clone(),
-                            handlers,
-                            Arc::new(|| false),
-                        ));
+        /// Closes the BLE links to `peer_key`: at its current address and at the
+        /// addresses it had before. A BLE link outlives the iroh connection on
+        /// it until it is idle (about 25 s), and while a link to a phone's old
+        /// address is up, BlueZ aborts every connect to its new one
+        /// (`le-connection-abort-by-local`). Android changes the address when it
+        /// leaves Add Device, so the first session after a pairing failed so.
+        pub(crate) fn close_links_to(&self, peer_key: iroh::EndpointId) {
+            let held = self
+                .pairing_links
+                .lock()
+                .ok()
+                .map(|mut links| {
+                    let peers: Vec<_> = links
+                        .iter()
+                        .filter(|(_, (_, key, _))| *key == peer_key)
+                        .map(|(peer, _)| peer.clone())
+                        .collect();
+                    peers
+                        .into_iter()
+                        .filter_map(|peer| links.remove(&peer).map(|(_, _, channel)| channel))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            for channel in held {
+                tauri::async_runtime::spawn(async move {
+                    if let Err(err) = channel.disconnect().await {
+                        log::warn!("[transport][ble] pairing channel disconnect failed: {err}");
                     }
-                    None => log::warn!("[transport][ble] no link handlers; the endpoint answers nobody"),
-                }
-                true
+                    if let Err(err) = channel.release().await {
+                        log::warn!("[transport][ble] pairing use release failed: {err}");
+                    }
+                });
             }
-        };
-        if !published {
-            return match tokio::time::timeout(Duration::from_secs(2), endpoint.close()).await {
-                Ok(()) => Err("Bluetooth stopped during endpoint initialization".to_string()),
-                Err(err) => Err(format!("Bluetooth endpoint initialization close timed out: {err}")),
+            let Some((_, transport)) = self.endpoint.get().cloned() else {
+                return;
             };
+            log::info!("[transport][ble] closing the links to {peer_key}");
+            transport.close_links(&peer_key);
+            transport.forget_peer(&peer_key);
         }
-        Ok((endpoint, transport))
-    }
 
-    /// Opens an authenticated link to paired `peer_id` at `address`: an iroh
-    /// connection over Bluetooth to the key pinned for the pair, which TLS
-    /// proves (ADR-0009 D8). A device at that address holding another key
-    /// fails the handshake, so this also confirms the candidate is the peer.
-    /// `alpn`: `SYNC_ALPN` for a session, `PEER_ALPN` for `AddChannel`.
-    pub async fn connect_session(&self, peer_id: &str, address: &str, alpn: &[u8]) -> Result<Box<dyn DataLink>, String> {
-        let peer_key: iroh::EndpointId = self
-            .pinned_key(peer_id)
-            .ok_or_else(|| format!("{peer_id} has no key pinned; pair the devices again"))?
-            .parse()
-            .map_err(|err| format!("invalid key pinned for {peer_id}: {err}"))?;
-        let (endpoint, transport) = self.iroh_endpoint().await?;
-        let peer = PeerAddress(address.to_string());
-        transport.set_peer_address(peer_key, peer.clone());
-        let addr = iroh::EndpointAddr::from_parts(
-            peer_key,
-            [iroh::TransportAddr::Custom(ble_gatt_iroh::custom_addr(&peer))],
-        );
-        let connection = tokio::time::timeout(SESSION_CONNECT_TIMEOUT, endpoint.connect(addr, alpn))
-            .await
-            .map_err(|_| format!("bluetooth connect to {address} timed out"))?
-            .map_err(|err| format!("bluetooth connect to {address} failed: {err}"))?;
-        let link = IrohDataLink::open(ChannelKind::Bluetooth, connection, Some(address.to_string())).await?;
-        Ok(Box::new(link))
-    }
-
-    /// Closes the BLE links to `peer_key`: at its current address and at the
-    /// addresses it had before. A BLE link outlives the iroh connection on
-    /// it until it is idle (about 25 s), and while a link to a phone's old
-    /// address is up, BlueZ aborts every connect to its new one
-    /// (`le-connection-abort-by-local`). Android changes the address when it
-    /// leaves Add Device, so the first session after a pairing failed so.
-    pub(crate) fn close_links_to(&self, peer_key: iroh::EndpointId) {
-        let held = self.pairing_links.lock().ok().map(|mut links| {
-            let peers: Vec<_> = links.iter().filter(|(_, (_, key, _))| *key == peer_key)
-                .map(|(peer, _)| peer.clone()).collect();
-            peers.into_iter().filter_map(|peer| links.remove(&peer).map(|(_, _, channel)| channel))
-                .collect::<Vec<_>>()
-        }).unwrap_or_default();
-        for channel in held {
-            tauri::async_runtime::spawn(async move {
-                if let Err(err) = channel.disconnect().await {
-                    log::warn!("[transport][ble] pairing channel disconnect failed: {err}");
+        /// Keep a scoped use until the first session acquires the pairing channel.
+        pub(crate) fn keep_pairing_link(
+            &self,
+            peer_id: &str,
+            address: &str,
+            peer_key: iroh::EndpointId,
+        ) {
+            if self.stopping() {
+                return;
+            }
+            let Some(channel) = self
+                .peer_link
+                .get()
+                .and_then(|link| link.channel(&PeerAddress(address.to_string())))
+            else {
+                log::warn!("[transport][ble] pairing channel is already closed");
+                return;
+            };
+            let token = Uuid::new_v4();
+            let previous = self.pairing_links.lock().ok().and_then(|mut links| {
+                if self.stopping() {
+                    return None;
                 }
-                if let Err(err) = channel.release().await {
-                    log::warn!("[transport][ble] pairing use release failed: {err}");
-                }
-            });
-        }
-        let Some((_, transport)) = self.endpoint.get().cloned() else {
-            return;
-        };
-        log::info!("[transport][ble] closing the links to {peer_key}");
-        transport.close_links(&peer_key);
-        transport.forget_peer(&peer_key);
-    }
-
-    /// Keep a scoped use until the first session acquires the pairing channel.
-    pub(crate) fn keep_pairing_link(&self, peer_id: &str, address: &str, peer_key: iroh::EndpointId) {
-        if self.stopping() { return; }
-        let Some(channel) = self.peer_link.get().and_then(|link| link.channel(&PeerAddress(address.to_string()))) else {
-            log::warn!("[transport][ble] pairing channel is already closed");
-            return;
-        };
-        let token = Uuid::new_v4();
-        let previous = self.pairing_links.lock().ok()
-            .and_then(|mut links| {
-                if self.stopping() { return None; }
                 links.insert(peer_id.to_string(), (token, peer_key, channel))
             });
-        if let Some((_, _, channel)) = previous {
+            if let Some((_, _, channel)) = previous {
+                tauri::async_runtime::spawn(async move {
+                    if let Err(err) = channel.release().await {
+                        log::warn!("[transport][ble] old pairing use release failed: {err}");
+                    }
+                });
+            }
+            self.delivery.forget_delivery_misses(peer_id);
+            self.bus.publish(Event::DeviceHeard {
+                peer_device_id: peer_id.to_string(),
+                kind: ChannelKind::Bluetooth,
+            });
+            let owner = self.me.clone();
+            let peer_id = peer_id.to_string();
             tauri::async_runtime::spawn(async move {
-                if let Err(err) = channel.release().await {
-                    log::warn!("[transport][ble] old pairing use release failed: {err}");
+                tokio::time::sleep(PAIRING_LINK_KEEP_TIME).await;
+                let Some(owner) = owner.upgrade() else { return };
+                let expired = owner.pairing_links.lock().ok().and_then(|mut links| {
+                    if links
+                        .get(&peer_id)
+                        .is_some_and(|(current, _, _)| *current == token)
+                    {
+                        links.remove(&peer_id).map(|(_, _, channel)| channel)
+                    } else {
+                        None
+                    }
+                });
+                if let Some(channel) = expired {
+                    if let Err(err) = channel.release().await {
+                        log::warn!("[transport][ble] pairing use release failed: {err}");
+                    }
                 }
             });
         }
-        self.delivery.forget_delivery_misses(peer_id);
-        self.bus.publish(Event::DeviceHeard { peer_device_id: peer_id.to_string(), kind: ChannelKind::Bluetooth });
-        let owner = self.me.clone();
-        let peer_id = peer_id.to_string();
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(PAIRING_LINK_KEEP_TIME).await;
-            let Some(owner) = owner.upgrade() else { return };
-            let expired = owner.pairing_links.lock().ok().and_then(|mut links| {
-                if links.get(&peer_id).is_some_and(|(current, _, _)| *current == token) {
-                    links.remove(&peer_id).map(|(_, _, channel)| channel)
-                } else {
-                    None
+
+        pub(crate) fn has_pairing_link(&self, peer_id: &str) -> bool {
+            self.pairing_links
+                .lock()
+                .is_ok_and(|links| links.contains_key(peer_id))
+        }
+
+        pub(crate) fn remove_pairing_link(&self, peer_id: &str) -> Option<PeerChannel> {
+            self.pairing_links
+                .lock()
+                .ok()?
+                .remove(peer_id)
+                .map(|(_, _, channel)| channel)
+        }
+
+        /// Like `close_links_to`, for a link the peer opened from `address`,
+        /// which this device never connected to.
+        /// An identify step answered with the peer's key: its plain link goes to
+        /// the iroh transport, so that the pairing connection that follows runs
+        /// on it. A second BLE connection cost about 5 s (pair-1: 2 s waiting
+        /// for the first link to go, then connect and subscribe again).
+        pub(crate) async fn keep_identify_link(&self, link: BleDataLink, endpoint_id: &str) {
+            let Ok(peer_key) = endpoint_id.parse::<iroh::EndpointId>() else {
+                return;
+            };
+            let Ok((_, transport)) = self.iroh_endpoint().await else {
+                return;
+            };
+            let address = PeerAddress(link.peer_addr().unwrap_or_default());
+            let Some(channel) = link.into_channel() else {
+                return;
+            };
+            log::info!(
+                "[transport][ble] keeping the identify link to {} for the pairing connection",
+                address.0
+            );
+            transport.set_peer_address(peer_key, address);
+            transport.attach(channel);
+        }
+
+        /// Routes a channel a central opened by its first datagram: a QUIC
+        /// Initial goes to the iroh transport (an authenticated session),
+        /// anything else is one of Fini's own pre-pairing frames on a plain
+        /// link.
+        pub(super) async fn route_inbound(
+            &self,
+            channel: PeerChannel,
+        ) -> Option<tokio::task::JoinHandle<()>> {
+            let first = match tokio::time::timeout(FIRST_DATAGRAM_TIMEOUT, channel.recv()).await {
+                Ok(Some(Ok(first))) => first,
+                outcome => {
+                    log::info!(
+                        "[transport][ble] first frame ended: {outcome:?}; reason {:?}",
+                        channel.close_reason()
+                    );
+                    if let Err(err) = channel.release().await {
+                        log::warn!("[transport][ble] incoming channel release failed: {err}");
+                    }
+                    return None;
                 }
-            });
-            if let Some(channel) = expired {
-                if let Err(err) = channel.release().await {
-                    log::warn!("[transport][ble] pairing use release failed: {err}");
+            };
+            if ble_gatt_iroh::is_quic_initial(&first) {
+                match self.iroh_endpoint().await {
+                    Ok((_, transport)) => Some(transport.attach_after(channel, first)),
+                    Err(err) => {
+                        log::warn!("[transport][ble] cannot take a session: {err}");
+                        None
+                    }
                 }
+            } else {
+                let session = self
+                    .iroh_endpoint()
+                    .await
+                    .ok()
+                    .map(|(_, transport)| transport);
+                let link: Box<dyn DataLink> = Box::new(BleDataLink::after(channel, first, session));
+                let handlers = self.handlers.get().cloned()?;
+                Some(tokio::spawn(
+                    async move { handlers.peer.accept(link).await },
+                ))
             }
-        });
-    }
-
-    pub(crate) fn has_pairing_link(&self, peer_id: &str) -> bool {
-        self.pairing_links.lock().is_ok_and(|links| links.contains_key(peer_id))
-    }
-
-    pub(crate) fn remove_pairing_link(&self, peer_id: &str) -> Option<PeerChannel> {
-        self.pairing_links.lock().ok()?.remove(peer_id).map(|(_, _, channel)| channel)
-    }
-
-    /// Like `close_links_to`, for a link the peer opened from `address`,
-    /// which this device never connected to.
-    /// An identify step answered with the peer's key: its plain link goes to
-    /// the iroh transport, so that the pairing connection that follows runs
-    /// on it. A second BLE connection cost about 5 s (pair-1: 2 s waiting
-    /// for the first link to go, then connect and subscribe again).
-    pub(crate) async fn keep_identify_link(&self, link: BleDataLink, endpoint_id: &str) {
-        let Ok(peer_key) = endpoint_id.parse::<iroh::EndpointId>() else {
-            return;
-        };
-        let Ok((_, transport)) = self.iroh_endpoint().await else {
-            return;
-        };
-        let address = PeerAddress(link.peer_addr().unwrap_or_default());
-        let Some(channel) = link.into_channel() else {
-            return;
-        };
-        log::info!("[transport][ble] keeping the identify link to {} for the pairing connection", address.0);
-        transport.set_peer_address(peer_key, address);
-        transport.attach(channel);
-    }
-
-    /// Routes a channel a central opened by its first datagram: a QUIC
-    /// Initial goes to the iroh transport (an authenticated session),
-    /// anything else is one of Fini's own pre-pairing frames on a plain
-    /// link.
-    pub(super) async fn route_inbound(&self, channel: PeerChannel) -> Option<tokio::task::JoinHandle<()>> {
-        let first = match tokio::time::timeout(FIRST_DATAGRAM_TIMEOUT, channel.recv()).await {
-            Ok(Some(Ok(first))) => first,
-            outcome => {
-                log::info!("[transport][ble] first frame ended: {outcome:?}; reason {:?}", channel.close_reason());
-                if let Err(err) = channel.release().await {
-                    log::warn!("[transport][ble] incoming channel release failed: {err}");
-                }
-                return None;
-            }
-        };
-        if ble_gatt_iroh::is_quic_initial(&first) {
-            match self.iroh_endpoint().await {
-                Ok((_, transport)) => Some(transport.attach_after(channel, first)),
-                Err(err) => {
-                    log::warn!("[transport][ble] cannot take a session: {err}");
-                    None
-                }
-            }
-        } else {
-            let session = self.iroh_endpoint().await.ok().map(|(_, transport)| transport);
-            let link: Box<dyn DataLink> = Box::new(BleDataLink::after(channel, first, session));
-            let handlers = self.handlers.get().cloned()?;
-            Some(tokio::spawn(async move { handlers.peer.accept(link).await }))
         }
     }
-}
 }
 
 mod scanner {
-//! The scanner: the one Bluetooth scan of the app, and what it heard.
-//!
-//! It gives the radio to one task at a time: a scan, a connection, an
-//! identify step, or a pairing step. It also keeps what the scan heard:
-//! the devices available for Add Device (`AvailableDevices`), and when and
-//! where each paired device was last heard.
-//!
-//! One `Scanner` per Bluetooth channel, so two devices in one test process
-//! each have their own.
-//!
-//! It runs the search coordinator (ADR-0008 D13): one scan for the
-//! whole app. Callers ask for a search with a purpose -- status while the
-//! Device page is open, delivery when there is work for a peer, setup while
-//! the setup dialog is open -- and the coordinator merges whatever is asked
-//! into one running scan over every peer wanted. It never starts the radio
-//! twice for the same thing.
-//!
-//! What the scan hears:
-//!
-//! | heard | result |
-//! |---|---|
-//! | any wanted peer | its last-heard time is recorded (green, D9) |
-//! | a peer a delivery or setup search waits for | its address is handed to that search, which dials it |
-//!
-//! Scanning and dialling never overlap: an adapter cannot usefully drive
-//! discovery and establish a connection at once (hardware evidence in
-//! `connect_by_advertisement`'s history). A handed-off address carries a
-//! `ConnectGuard`, and the scan does not resume until every guard is dropped.
+    //! The scanner: the one Bluetooth scan of the app, and what it heard.
+    //!
+    //! It gives the radio to one task at a time: a scan, a connection, an
+    //! identify step, or a pairing step. It also keeps what the scan heard:
+    //! the devices available for Add Device (`AvailableDevices`), and when and
+    //! where each paired device was last heard.
+    //!
+    //! One `Scanner` per Bluetooth channel, so two devices in one test process
+    //! each have their own.
+    //!
+    //! It runs the search coordinator (ADR-0008 D13): one scan for the
+    //! whole app. Callers ask for a search with a purpose -- status while the
+    //! Device page is open, delivery when there is work for a peer, setup while
+    //! the setup dialog is open -- and the coordinator merges whatever is asked
+    //! into one running scan over every peer wanted. It never starts the radio
+    //! twice for the same thing.
+    //!
+    //! What the scan hears:
+    //!
+    //! | heard | result |
+    //! |---|---|
+    //! | any wanted peer | its last-heard time is recorded (green, D9) |
+    //! | a peer a delivery or setup search waits for | its address is handed to that search, which dials it |
+    //!
+    //! Scanning and dialling never overlap: an adapter cannot usefully drive
+    //! discovery and establish a connection at once (hardware evidence in
+    //! `connect_by_advertisement`'s history). A handed-off address carries a
+    //! `ConnectGuard`, and the scan does not resume until every guard is dropped.
 
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, Once};
-use std::time::{Duration, Instant};
+    use std::collections::{HashMap, HashSet, VecDeque};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex as StdMutex, Once};
+    use std::time::{Duration, Instant};
 
-use tokio::sync::{oneshot, watch, Mutex, MutexGuard, Notify};
+    use tokio::sync::{oneshot, watch, Mutex, MutexGuard, Notify};
 
-use super::ADD_MODE_FLAG_BYTE;
-use super::{
-    advertised_fingerprint, fingerprint_of, BluetoothAdapter, BluetoothChannelService, FINGERPRINT_LEN,
-    FINI_MANUFACTURER_ID, SCAN_WINDOW,
-};
-use crate::models::Event;
-use crate::services::channel_service::ChannelKind;
-use crate::services::event_bus_service::EventBus;
+    use super::ADD_MODE_FLAG_BYTE;
+    use super::{
+        advertised_fingerprint, fingerprint_of, BluetoothAdapter, BluetoothChannelService,
+        FINGERPRINT_LEN, FINI_MANUFACTURER_ID, SCAN_WINDOW,
+    };
+    use crate::models::Event;
+    use crate::services::channel_service::ChannelKind;
+    use crate::services::event_bus_service::EventBus;
 
-/// How long a heard advertisement counts as current (`heard_recently`).
-const BLUETOOTH_CHANNEL_TIMEOUT: Duration = Duration::from_secs(60);
+    /// How long a heard advertisement counts as current (`heard_recently`).
+    const BLUETOOTH_CHANNEL_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// How long a heard address gets a connect without a search first
-/// (`last_heard_address`). An Android phone takes a new address each time it
-/// advertises again (Add Device, a channel setup): an address heard 30 s
-/// ago got a connect that waited until the 15 s timeout, while a search finds the
-/// new one in 1-3 s.
-const LAST_HEARD_CONNECT_TIME: Duration = Duration::from_secs(5);
+    /// How long a heard address gets a connect without a search first
+    /// (`last_heard_address`). An Android phone takes a new address each time it
+    /// advertises again (Add Device, a channel setup): an address heard 30 s
+    /// ago got a connect that waited until the 15 s timeout, while a search finds the
+    /// new one in 1-3 s.
+    const LAST_HEARD_CONNECT_TIME: Duration = Duration::from_secs(5);
 
-/// How long an address whose dial just failed is not handed off again.
-///
-/// BlueZ keeps a device object for every address it has seen and reports it
-/// again at the start of each discovery (`rssi=None`), including the phone's
-/// previous private address. Without a cooldown the search heard that stale
-/// address, dialled it, was refused after 2s, restarted discovery, heard the
-/// same cached entry at once and dialled again -- a start/stop/dial loop every
-/// 2s that ended with BlueZ answering every later `StartDiscovery` with
-/// "Operation already in progress" and `StopDiscovery` with "No discovery
-/// started", after which nothing could be found until bluetoothd restarted.
-const FAILED_CONNECT_COOLDOWN: Duration = Duration::from_secs(10);
-
-/// On Linux in Add Device mode: scan this long, then pause for
-/// `ADD_DEVICE_SCAN_PAUSE`. BlueZ discovery scans without a gap, and while it
-/// does, the phone heard this desktop's advertisement only once in about 3 s
-/// (measured, Intel AX210); the old design paused its scan between passes.
-const ADD_DEVICE_SCAN_WINDOW: Duration = Duration::from_secs(4);
-const ADD_DEVICE_SCAN_PAUSE: Duration = Duration::from_secs(1);
-
-/// How long the identify step tries its connect again
-/// (`connect_heard_device`).
-const IDENTIFY_TRY_AGAIN_TIME: Duration = Duration::from_secs(5);
-
-/// Pause after the radio refused a scan, so a broken adapter is not hammered.
-const SCAN_FAILURE_PAUSE: Duration = Duration::from_secs(5);
-
-/// Android lets an app start at most `ANDROID_SCAN_STARTS` scans in
-/// `ANDROID_SCAN_START_PERIOD`. A start above that is refused ("App is
-/// scanning too frequently") and Fini gets no error: the scan only hears
-/// nothing. On virtual phones, a refused start after an unpair kept Add
-/// Device empty for a full `SCAN_WINDOW` (listing 20-30 s).
-const ANDROID_SCAN_STARTS: usize = 5;
-const ANDROID_SCAN_START_PERIOD: Duration = Duration::from_secs(30);
-
-/// Whether one scan keeps running across connections, and for `SCAN_LINGER`
-/// after nothing wants it. Each stop and start of the scan uses one of
-/// Android's `ANDROID_SCAN_STARTS`: a pairing stopped the scan for its
-/// identify connect and its pairing connect (3 starts in 3 s), so after two
-/// fast pairings the next listing waited for a free start (11-14 s). Android
-/// can scan and connect at the same time. BlueZ breaks when a connection
-/// opens during discovery, so on Linux the scan stops for each connection.
-const SCAN_DURING_CONNECT: bool = cfg!(target_os = "android");
-const SCAN_LINGER: Duration = Duration::from_secs(10);
-
-/// Why a search runs (ADR-0008 D12). The coordinator hands the peer's
-/// address over and keeps the purpose for the log.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Purpose {
-    Delivery,
-}
-
-/// A peer heard by a delivery or setup search. Scanning stays paused while
-/// this lives, so the caller can dial without competing with the scan.
-pub struct Found {
-    pub address: String,
-    _connect: ConnectGuard,
-}
-
-/// Held while a dial runs. The scan waits for every guard to be dropped.
-pub struct ConnectGuard(Arc<watch::Sender<usize>>);
-
-impl Drop for ConnectGuard {
-    fn drop(&mut self) {
-        self.0.send_modify(|count| *count = count.saturating_sub(1));
-    }
-}
-
-/// Held while a pairing leg or a Bluetooth channel setup runs; see
-/// `Scanner::pairing_steps`.
-pub struct PairingStep(Arc<watch::Sender<usize>>);
-
-impl Drop for PairingStep {
-    fn drop(&mut self) {
-        self.0.send_modify(|count| *count = count.saturating_sub(1));
-    }
-}
-
-/// Marks a started discovery session; clears the mark when dropped.
-pub(super) struct RunningScan<'a>(&'a AtomicBool);
-
-impl Drop for RunningScan<'_> {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::SeqCst);
-    }
-}
-
-struct Request {
-    id: u64,
-    peer: String,
-    purpose: Purpose,
-    reply: Option<oneshot::Sender<Found>>,
-}
-
-#[derive(Default)]
-struct Requests {
-    next_id: u64,
-    searches: Vec<Request>,
-}
-
-/// A session dial in progress (`Scanner::begin_dial`); unmarked on drop.
-pub(super) struct DialMark<'a> {
-    scanner: &'a Scanner,
-    peer_id: String,
-}
-
-impl Drop for DialMark<'_> {
-    fn drop(&mut self) {
-        self.scanner.dialing.lock().unwrap().remove(&self.peer_id);
-    }
-}
-
-pub struct Scanner {
-    channel: std::sync::Weak<BluetoothChannelService>,
-    /// Pairing legs (request / accept / complete) in progress. The add-mode
-    /// candidate scan yields to them: it holds a discovery session and
-    /// re-dials the same phone every pass, and an adapter doing either while
-    /// a pairing dial runs refuses or stalls it -- ble-gatt answered the pair
-    /// dial with "a dial to this peer is already in flight" and one dial hung
-    /// until abandoned, so the Pair button reported "Couldn't reach".
-    pairing_steps: Arc<watch::Sender<usize>>,
-    /// Held for the length of one candidate probe; see `connect_for_pairing`.
-    candidate_probe: Mutex<()>,
-    /// One Bluetooth scan at a time. Every scan holds this for
-    /// as long as its discovery stream lives.
+    /// How long an address whose dial just failed is not handed off again.
     ///
-    /// Android's backend refuses a second scan while one is running ("a scan
-    /// is already active"), and each caller read that refusal as "the adapter
-    /// is unavailable" -- so the adapter check a person triggers by switching
-    /// a channel on, landing inside the dial loop's scan window, reported
-    /// their working Bluetooth as off, and the dial loop did the same in
-    /// reverse. Linux has no such refusal, but an adapter driving two
-    /// discovery sessions competes with itself (see
-    /// `connect_by_advertisement`), so the lease applies on every platform.
-    scan_lock: Mutex<()>,
-    /// Set while a discovery session is actually running: `scan()` returned
-    /// Ok and the stream is alive. Holding `scan_lock` is not enough -- the
-    /// holder may still be waiting on an adapter that will refuse it.
-    scan_running: AtomicBool,
-    /// Peers with an exchange attempt in flight -- one at a time per peer.
-    exchanges: StdMutex<HashSet<String>>,
-    /// Peers this device is dialling a session to right now (the connect
-    /// step of an exchange, not its search or its wait).
-    dialing: StdMutex<HashSet<String>>,
-    /// When this device's own connection to each peer became a session
-    /// (`note_connected`).
-    connected_at: StdMutex<HashMap<String, Instant>>,
-    /// Dials running now; the coordinator's scan waits for none.
-    connections: Arc<watch::Sender<usize>>,
-    requests: StdMutex<Requests>,
-    /// Wakes the scan loop whenever what is wanted changes.
-    changed: Notify,
-    started: Once,
-    failed_connects: StdMutex<HashMap<String, Instant>>,
-    /// When the last scans started, for Android's limit; see
-    /// `ANDROID_SCAN_STARTS`.
-    scan_starts: StdMutex<VecDeque<Instant>>,
-    /// When each paired device was last heard advertising, and at which
-    /// address. Written only on a fingerprint match, so "heard" means "heard
-    /// advertising as this device".
-    paired_heard: StdMutex<HashMap<String, (Instant, String)>>,
-    /// Set while Add Device is open; see `set_add_device_mode`.
-    add_device_mode: AtomicBool,
-    /// Set while the check for devices that left the Add Device list runs;
-    /// see `watch_stale`.
-    stale_watch: AtomicBool,
-    /// The devices around this one in Add Device mode.
-    pub(crate) available: AvailableDevices,
-    /// Told when a paired device is heard again.
-    bus: Arc<EventBus>,
-}
+    /// BlueZ keeps a device object for every address it has seen and reports it
+    /// again at the start of each discovery (`rssi=None`), including the phone's
+    /// previous private address. Without a cooldown the search heard that stale
+    /// address, dialled it, was refused after 2s, restarted discovery, heard the
+    /// same cached entry at once and dialled again -- a start/stop/dial loop every
+    /// 2s that ended with BlueZ answering every later `StartDiscovery` with
+    /// "Operation already in progress" and `StopDiscovery` with "No discovery
+    /// started", after which nothing could be found until bluetoothd restarted.
+    const FAILED_CONNECT_COOLDOWN: Duration = Duration::from_secs(10);
 
-#[cfg(test)]
-impl Default for Scanner {
-    fn default() -> Self {
-        Self::new(Arc::default(), std::sync::Weak::new())
-    }
-}
+    /// On Linux in Add Device mode: scan this long, then pause for
+    /// `ADD_DEVICE_SCAN_PAUSE`. BlueZ discovery scans without a gap, and while it
+    /// does, the phone heard this desktop's advertisement only once in about 3 s
+    /// (measured, Intel AX210); the old design paused its scan between passes.
+    const ADD_DEVICE_SCAN_WINDOW: Duration = Duration::from_secs(4);
+    const ADD_DEVICE_SCAN_PAUSE: Duration = Duration::from_secs(1);
 
-impl Scanner {
-    pub(super) fn stop(&self) {
-        self.add_device_mode.store(false, Ordering::SeqCst);
-        if let Ok(mut requests) = self.requests.lock() {
-            requests.searches.clear();
-        }
-        self.changed.notify_waiters();
+    /// How long the identify step tries its connect again
+    /// (`connect_heard_device`).
+    const IDENTIFY_TRY_AGAIN_TIME: Duration = Duration::from_secs(5);
+
+    /// Pause after the radio refused a scan, so a broken adapter is not hammered.
+    const SCAN_FAILURE_PAUSE: Duration = Duration::from_secs(5);
+
+    /// Android lets an app start at most `ANDROID_SCAN_STARTS` scans in
+    /// `ANDROID_SCAN_START_PERIOD`. A start above that is refused ("App is
+    /// scanning too frequently") and Fini gets no error: the scan only hears
+    /// nothing. On virtual phones, a refused start after an unpair kept Add
+    /// Device empty for a full `SCAN_WINDOW` (listing 20-30 s).
+    const ANDROID_SCAN_STARTS: usize = 5;
+    const ANDROID_SCAN_START_PERIOD: Duration = Duration::from_secs(30);
+
+    /// Whether one scan keeps running across connections, and for `SCAN_LINGER`
+    /// after nothing wants it. Each stop and start of the scan uses one of
+    /// Android's `ANDROID_SCAN_STARTS`: a pairing stopped the scan for its
+    /// identify connect and its pairing connect (3 starts in 3 s), so after two
+    /// fast pairings the next listing waited for a free start (11-14 s). Android
+    /// can scan and connect at the same time. BlueZ breaks when a connection
+    /// opens during discovery, so on Linux the scan stops for each connection.
+    const SCAN_DURING_CONNECT: bool = cfg!(target_os = "android");
+    const SCAN_LINGER: Duration = Duration::from_secs(10);
+
+    /// Why a search runs (ADR-0008 D12). The coordinator hands the peer's
+    /// address over and keeps the purpose for the log.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Purpose {
+        Delivery,
     }
 
-    pub(super) async fn peer_link(&self) -> Result<Arc<ble_gatt::PeerLink>, String> {
-        self.channel.upgrade().ok_or_else(|| "Bluetooth channel closed".to_string())?.peer_link().await
+    /// A peer heard by a delivery or setup search. Scanning stays paused while
+    /// this lives, so the caller can dial without competing with the scan.
+    pub struct Found {
+        pub address: String,
+        _connect: ConnectGuard,
     }
 
-    pub fn new(bus: Arc<EventBus>, channel: std::sync::Weak<BluetoothChannelService>) -> Self {
-        Self {
-            channel,
-            bus,
-            pairing_steps: Arc::new(watch::channel(0).0),
-            candidate_probe: Mutex::new(()),
-            scan_lock: Mutex::new(()),
-            scan_running: AtomicBool::new(false),
-            exchanges: StdMutex::new(HashSet::new()),
-            dialing: StdMutex::new(HashSet::new()),
-            connected_at: StdMutex::new(HashMap::new()),
-            connections: Arc::new(watch::channel(0).0),
-            requests: StdMutex::new(Requests::default()),
-            changed: Notify::new(),
-            started: Once::new(),
-            failed_connects: StdMutex::new(HashMap::new()),
-            scan_starts: StdMutex::new(VecDeque::new()),
-            paired_heard: StdMutex::new(HashMap::new()),
-            add_device_mode: AtomicBool::new(false),
-            stale_watch: AtomicBool::new(false),
-            available: AvailableDevices::default(),
+    /// Held while a dial runs. The scan waits for every guard to be dropped.
+    pub struct ConnectGuard(Arc<watch::Sender<usize>>);
+
+    impl Drop for ConnectGuard {
+        fn drop(&mut self) {
+            self.0.send_modify(|count| *count = count.saturating_sub(1));
         }
     }
 
-    /// Records that `peer_id` was heard advertising at `address`.
-    fn record_paired_heard(&self, peer_id: &str, address: &str) {
-        let newly_present = match self.paired_heard.lock() {
-            Ok(mut heard) => heard
-                .insert(peer_id.to_string(), (Instant::now(), address.to_string()))
-                .is_none_or(|(previous, _)| previous.elapsed() >= BLUETOOTH_CHANNEL_TIMEOUT),
-            Err(_) => false,
-        };
-        // A device that appears is the moment waiting work can go to it
-        // (ADR-0008 D8). Only on that change: a device heard in every window
-        // must not make SpaceSync poll.
-        if newly_present {
-            self.bus.publish(Event::DeviceHeard { peer_device_id: peer_id.to_string(), kind: ChannelKind::Bluetooth });
+    /// Held while a pairing leg or a Bluetooth channel setup runs; see
+    /// `Scanner::pairing_steps`.
+    pub struct PairingStep(Arc<watch::Sender<usize>>);
+
+    impl Drop for PairingStep {
+        fn drop(&mut self) {
+            self.0.send_modify(|count| *count = count.saturating_sub(1));
         }
     }
 
-    /// Where `peer_id` was last heard advertising, if in
-    /// `LAST_HEARD_CONNECT_TIME`: a device heard just now is reached by one
-    /// connection, not a search.
-    pub fn last_heard_address(&self, peer_id: &str) -> Option<String> {
-        self.heard_in(peer_id, LAST_HEARD_CONNECT_TIME)
+    /// Marks a started discovery session; clears the mark when dropped.
+    pub(super) struct RunningScan<'a>(&'a AtomicBool);
+
+    impl Drop for RunningScan<'_> {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::SeqCst);
+        }
     }
 
-    /// Whether `peer_id` advertised within the channel timeout (ADR-0008 D9).
-    pub fn heard_recently(&self, peer_id: &str) -> bool {
-        self.heard_in(peer_id, BLUETOOTH_CHANNEL_TIMEOUT).is_some()
+    struct Request {
+        id: u64,
+        peer: String,
+        purpose: Purpose,
+        reply: Option<oneshot::Sender<Found>>,
     }
 
-    fn heard_in(&self, peer_id: &str, window: Duration) -> Option<String> {
-        let heard = self.paired_heard.lock().ok()?;
-        heard
-            .get(peer_id)
-            .filter(|(at, _)| at.elapsed() < window)
-            .map(|(_, address)| address.clone())
+    #[derive(Default)]
+    struct Requests {
+        next_id: u64,
+        searches: Vec<Request>,
     }
 
-    pub fn begin_pairing_step(&self) -> PairingStep {
-        self.pairing_steps.send_modify(|count| *count += 1);
-        PairingStep(self.pairing_steps.clone())
+    /// A session dial in progress (`Scanner::begin_dial`); unmarked on drop.
+    pub(super) struct DialMark<'a> {
+        scanner: &'a Scanner,
+        peer_id: String,
     }
 
-    /// Pairing steps held right now.
+    impl Drop for DialMark<'_> {
+        fn drop(&mut self) {
+            self.scanner.dialing.lock().unwrap().remove(&self.peer_id);
+        }
+    }
+
+    pub struct Scanner {
+        channel: std::sync::Weak<BluetoothChannelService>,
+        /// Pairing legs (request / accept / complete) in progress. The add-mode
+        /// candidate scan yields to them: it holds a discovery session and
+        /// re-dials the same phone every pass, and an adapter doing either while
+        /// a pairing dial runs refuses or stalls it -- ble-gatt answered the pair
+        /// dial with "a dial to this peer is already in flight" and one dial hung
+        /// until abandoned, so the Pair button reported "Couldn't reach".
+        pairing_steps: Arc<watch::Sender<usize>>,
+        /// Held for the length of one candidate probe; see `connect_for_pairing`.
+        candidate_probe: Mutex<()>,
+        /// One Bluetooth scan at a time. Every scan holds this for
+        /// as long as its discovery stream lives.
+        ///
+        /// Android's backend refuses a second scan while one is running ("a scan
+        /// is already active"), and each caller read that refusal as "the adapter
+        /// is unavailable" -- so the adapter check a person triggers by switching
+        /// a channel on, landing inside the dial loop's scan window, reported
+        /// their working Bluetooth as off, and the dial loop did the same in
+        /// reverse. Linux has no such refusal, but an adapter driving two
+        /// discovery sessions competes with itself (see
+        /// `connect_by_advertisement`), so the lease applies on every platform.
+        scan_lock: Mutex<()>,
+        /// Set while a discovery session is actually running: `scan()` returned
+        /// Ok and the stream is alive. Holding `scan_lock` is not enough -- the
+        /// holder may still be waiting on an adapter that will refuse it.
+        scan_running: AtomicBool,
+        /// Peers with an exchange attempt in flight -- one at a time per peer.
+        exchanges: StdMutex<HashSet<String>>,
+        /// Peers this device is dialling a session to right now (the connect
+        /// step of an exchange, not its search or its wait).
+        dialing: StdMutex<HashSet<String>>,
+        /// When this device's own connection to each peer became a session
+        /// (`note_connected`).
+        connected_at: StdMutex<HashMap<String, Instant>>,
+        /// Dials running now; the coordinator's scan waits for none.
+        connections: Arc<watch::Sender<usize>>,
+        requests: StdMutex<Requests>,
+        /// Wakes the scan loop whenever what is wanted changes.
+        changed: Notify,
+        started: Once,
+        failed_connects: StdMutex<HashMap<String, Instant>>,
+        /// When the last scans started, for Android's limit; see
+        /// `ANDROID_SCAN_STARTS`.
+        scan_starts: StdMutex<VecDeque<Instant>>,
+        /// When each paired device was last heard advertising, and at which
+        /// address. Written only on a fingerprint match, so "heard" means "heard
+        /// advertising as this device".
+        paired_heard: StdMutex<HashMap<String, (Instant, String)>>,
+        /// Set while Add Device is open; see `set_add_device_mode`.
+        add_device_mode: AtomicBool,
+        /// Set while the check for devices that left the Add Device list runs;
+        /// see `watch_stale`.
+        stale_watch: AtomicBool,
+        /// The devices around this one in Add Device mode.
+        pub(crate) available: AvailableDevices,
+        /// Told when a paired device is heard again.
+        bus: Arc<EventBus>,
+    }
+
     #[cfg(test)]
-    pub(crate) fn pairing_steps_held(&self) -> usize {
-        *self.pairing_steps.borrow()
+    impl Default for Scanner {
+        fn default() -> Self {
+            Self::new(Arc::default(), std::sync::Weak::new())
+        }
     }
 
-    /// Held for the length of one candidate probe. A dial to a peer the
-    /// probe may be dialling waits for it, rather than cancelling it.
-    pub async fn candidate_probe(&self) -> MutexGuard<'_, ()> {
-        self.candidate_probe.lock().await
-    }
+    impl Scanner {
+        pub(super) fn stop(&self) {
+            self.add_device_mode.store(false, Ordering::SeqCst);
+            if let Ok(mut requests) = self.requests.lock() {
+                requests.searches.clear();
+            }
+            self.changed.notify_waiters();
+        }
 
-    pub(super) async fn scan_lock(&self) -> MutexGuard<'_, ()> {
-        self.scan_lock.lock().await
-    }
+        pub(super) async fn peer_link(&self) -> Result<Arc<ble_gatt::PeerLink>, String> {
+            self.channel
+                .upgrade()
+                .ok_or_else(|| "Bluetooth channel closed".to_string())?
+                .peer_link()
+                .await
+        }
 
-    pub(super) fn try_scan_lock(&self) -> Option<MutexGuard<'_, ()>> {
-        self.scan_lock.try_lock().ok()
-    }
+        pub fn new(bus: Arc<EventBus>, channel: std::sync::Weak<BluetoothChannelService>) -> Self {
+            Self {
+                channel,
+                bus,
+                pairing_steps: Arc::new(watch::channel(0).0),
+                candidate_probe: Mutex::new(()),
+                scan_lock: Mutex::new(()),
+                scan_running: AtomicBool::new(false),
+                exchanges: StdMutex::new(HashSet::new()),
+                dialing: StdMutex::new(HashSet::new()),
+                connected_at: StdMutex::new(HashMap::new()),
+                connections: Arc::new(watch::channel(0).0),
+                requests: StdMutex::new(Requests::default()),
+                changed: Notify::new(),
+                started: Once::new(),
+                failed_connects: StdMutex::new(HashMap::new()),
+                scan_starts: StdMutex::new(VecDeque::new()),
+                paired_heard: StdMutex::new(HashMap::new()),
+                add_device_mode: AtomicBool::new(false),
+                stale_watch: AtomicBool::new(false),
+                available: AvailableDevices::default(),
+            }
+        }
 
-    pub(super) fn start_running_scan(&self) -> RunningScan<'_> {
-        self.scan_running.store(true, Ordering::SeqCst);
-        BluetoothAdapter::this_device().note_reachable();
-        RunningScan(&self.scan_running)
-    }
+        /// Records that `peer_id` was heard advertising at `address`.
+        fn record_paired_heard(&self, peer_id: &str, address: &str) {
+            let newly_present = match self.paired_heard.lock() {
+                Ok(mut heard) => heard
+                    .insert(peer_id.to_string(), (Instant::now(), address.to_string()))
+                    .is_none_or(|(previous, _)| previous.elapsed() >= BLUETOOTH_CHANNEL_TIMEOUT),
+                Err(_) => false,
+            };
+            // A device that appears is the moment waiting work can go to it
+            // (ADR-0008 D8). Only on that change: a device heard in every window
+            // must not make SpaceSync poll.
+            if newly_present {
+                self.bus.publish(Event::DeviceHeard {
+                    peer_device_id: peer_id.to_string(),
+                    kind: ChannelKind::Bluetooth,
+                });
+            }
+        }
 
-    pub(super) fn scan_is_running(&self) -> bool {
-        self.scan_running.load(Ordering::SeqCst)
-    }
+        /// Where `peer_id` was last heard advertising, if in
+        /// `LAST_HEARD_CONNECT_TIME`: a device heard just now is reached by one
+        /// connection, not a search.
+        pub fn last_heard_address(&self, peer_id: &str) -> Option<String> {
+            self.heard_in(peer_id, LAST_HEARD_CONNECT_TIME)
+        }
 
-    /// Whether this device is dialling the peer right now, or its own
-    /// connection became a session within `session::CROSSING_WINDOW`.
-    ///
-    /// The dial, not the whole exchange: an exchange that is searching or
-    /// waiting has no connection to keep. Counting it made a deadlock on
-    /// hardware: ble-gatt kept the phone's link and ended each PC dial, while
-    /// the PC, still in its exchange, refused the phone's session as a
-    /// crossing in which its own connection is kept.
-    pub fn connecting(&self, peer_id: &str) -> bool {
-        self.dialing.lock().unwrap().contains(peer_id)
-            || self
-                .connected_at
+        /// Whether `peer_id` advertised within the channel timeout (ADR-0008 D9).
+        pub fn heard_recently(&self, peer_id: &str) -> bool {
+            self.heard_in(peer_id, BLUETOOTH_CHANNEL_TIMEOUT).is_some()
+        }
+
+        fn heard_in(&self, peer_id: &str, window: Duration) -> Option<String> {
+            let heard = self.paired_heard.lock().ok()?;
+            heard
+                .get(peer_id)
+                .filter(|(at, _)| at.elapsed() < window)
+                .map(|(_, address)| address.clone())
+        }
+
+        pub fn begin_pairing_step(&self) -> PairingStep {
+            self.pairing_steps.send_modify(|count| *count += 1);
+            PairingStep(self.pairing_steps.clone())
+        }
+
+        /// Pairing steps held right now.
+        #[cfg(test)]
+        pub(crate) fn pairing_steps_held(&self) -> usize {
+            *self.pairing_steps.borrow()
+        }
+
+        /// Held for the length of one candidate probe. A dial to a peer the
+        /// probe may be dialling waits for it, rather than cancelling it.
+        pub async fn candidate_probe(&self) -> MutexGuard<'_, ()> {
+            self.candidate_probe.lock().await
+        }
+
+        pub(super) async fn scan_lock(&self) -> MutexGuard<'_, ()> {
+            self.scan_lock.lock().await
+        }
+
+        pub(super) fn try_scan_lock(&self) -> Option<MutexGuard<'_, ()>> {
+            self.scan_lock.try_lock().ok()
+        }
+
+        pub(super) fn start_running_scan(&self) -> RunningScan<'_> {
+            self.scan_running.store(true, Ordering::SeqCst);
+            BluetoothAdapter::this_device().note_reachable();
+            RunningScan(&self.scan_running)
+        }
+
+        pub(super) fn scan_is_running(&self) -> bool {
+            self.scan_running.load(Ordering::SeqCst)
+        }
+
+        /// Whether this device is dialling the peer right now, or its own
+        /// connection became a session within `session::CROSSING_WINDOW`.
+        ///
+        /// The dial, not the whole exchange: an exchange that is searching or
+        /// waiting has no connection to keep. Counting it made a deadlock on
+        /// hardware: ble-gatt kept the phone's link and ended each PC dial, while
+        /// the PC, still in its exchange, refused the phone's session as a
+        /// crossing in which its own connection is kept.
+        pub fn connecting(&self, peer_id: &str) -> bool {
+            self.dialing.lock().unwrap().contains(peer_id)
+                || self
+                    .connected_at
+                    .lock()
+                    .unwrap()
+                    .get(peer_id)
+                    .is_some_and(|at| {
+                        at.elapsed() < crate::services::space_sync_service::CROSSING_WINDOW
+                    })
+        }
+
+        /// Marks a session dial to `peer_id` until the returned guard drops.
+        pub(super) fn begin_dial(&self, peer_id: &str) -> DialMark<'_> {
+            self.dialing.lock().unwrap().insert(peer_id.to_string());
+            DialMark {
+                scanner: self,
+                peer_id: peer_id.to_string(),
+            }
+        }
+
+        /// Registers an exchange attempt with `peer_id`; false if one runs.
+        pub(super) fn begin_exchange(&self, peer_id: &str) -> bool {
+            self.exchanges.lock().unwrap().insert(peer_id.to_string())
+        }
+
+        pub(super) fn end_exchange(&self, peer_id: &str) {
+            self.exchanges.lock().unwrap().remove(peer_id);
+        }
+
+        /// This device's own connection to `peer_id` became a held session: it
+        /// is no longer connecting, but for `CROSSING_WINDOW` a connection from
+        /// the peer is still a crossing.
+        pub(super) fn note_connected(&self, peer_id: &str) {
+            self.connected_at
                 .lock()
                 .unwrap()
-                .get(peer_id)
-                .is_some_and(|at| at.elapsed() < crate::services::space_sync_service::CROSSING_WINDOW)
-    }
-
-    /// Marks a session dial to `peer_id` until the returned guard drops.
-    pub(super) fn begin_dial(&self, peer_id: &str) -> DialMark<'_> {
-        self.dialing.lock().unwrap().insert(peer_id.to_string());
-        DialMark { scanner: self, peer_id: peer_id.to_string() }
-    }
-
-    /// Registers an exchange attempt with `peer_id`; false if one runs.
-    pub(super) fn begin_exchange(&self, peer_id: &str) -> bool {
-        self.exchanges.lock().unwrap().insert(peer_id.to_string())
-    }
-
-    pub(super) fn end_exchange(&self, peer_id: &str) {
-        self.exchanges.lock().unwrap().remove(peer_id);
-    }
-
-    /// This device's own connection to `peer_id` became a held session: it
-    /// is no longer connecting, but for `CROSSING_WINDOW` a connection from
-    /// the peer is still a crossing.
-    pub(super) fn note_connected(&self, peer_id: &str) {
-        self.connected_at.lock().unwrap().insert(peer_id.to_string(), Instant::now());
-        self.end_exchange(peer_id);
-    }
-
-    fn connect_guard(&self) -> ConnectGuard {
-        self.connections.send_modify(|count| *count += 1);
-        ConnectGuard(self.connections.clone())
-    }
-
-    /// A guard for a dial the coordinator did not hand off: the running
-    /// scan sees the guard and stops, and this returns once it has (the
-    /// scan lease is free), so the dial never overlaps a scan. With
-    /// `SCAN_DURING_CONNECT` the scan keeps running and the dial starts at once.
-    pub async fn acquire_connect(&self) -> ConnectGuard {
-        let guard = self.connect_guard();
-        if !SCAN_DURING_CONNECT {
-            drop(self.scan_lock().await);
+                .insert(peer_id.to_string(), Instant::now());
+            self.end_exchange(peer_id);
         }
-        guard
-    }
 
-    fn start_once(self: &Arc<Self>) {
-        // Unit tests drive `hand_off` directly; a real scan loop there would
-        // reach for an adapter the test machine does not have.
-        if cfg!(test) {
-            return;
+        fn connect_guard(&self) -> ConnectGuard {
+            self.connections.send_modify(|count| *count += 1);
+            ConnectGuard(self.connections.clone())
         }
-        // Tauri's runtime, not `tokio::spawn`: this is reached from
-        // synchronous commands, which run on the main thread outside any
-        // Tokio context.
-        self.started.call_once(|| {
+
+        /// A guard for a dial the coordinator did not hand off: the running
+        /// scan sees the guard and stops, and this returns once it has (the
+        /// scan lease is free), so the dial never overlaps a scan. With
+        /// `SCAN_DURING_CONNECT` the scan keeps running and the dial starts at once.
+        pub async fn acquire_connect(&self) -> ConnectGuard {
+            let guard = self.connect_guard();
+            if !SCAN_DURING_CONNECT {
+                drop(self.scan_lock().await);
+            }
+            guard
+        }
+
+        fn start_once(self: &Arc<Self>) {
+            // Unit tests drive `hand_off` directly; a real scan loop there would
+            // reach for an adapter the test machine does not have.
+            if cfg!(test) {
+                return;
+            }
+            // Tauri's runtime, not `tokio::spawn`: this is reached from
+            // synchronous commands, which run on the main thread outside any
+            // Tokio context.
+            self.started.call_once(|| {
+                let scanner = self.clone();
+                tauri::async_runtime::spawn(async move {
+                    let Some(owner) = scanner.channel.upgrade() else {
+                        return;
+                    };
+                    tokio::select! {
+                        biased;
+                        () = owner.wait_until_stopping() => {},
+                        () = scanner.run() => {},
+                    }
+                });
+            });
+        }
+
+        /// Search for `peer` for up to `window`, ending early once it is heard.
+        pub async fn find(
+            self: &Arc<Self>,
+            peer: &str,
+            purpose: Purpose,
+            window: Duration,
+        ) -> Option<Found> {
+            let (reply, heard) = oneshot::channel();
+            let id = {
+                let mut requests = self.requests.lock().unwrap();
+                requests.next_id += 1;
+                let id = requests.next_id;
+                requests.searches.push(Request {
+                    id,
+                    peer: peer.to_string(),
+                    purpose,
+                    reply: Some(reply),
+                });
+                id
+            };
+            self.start_once();
+            self.changed.notify_one();
+            log::info!("[transport][ble] {purpose:?} search for {peer} started (up to {window:?})");
+            let started = Instant::now();
+
+            let found = tokio::time::timeout(window, heard)
+                .await
+                .ok()
+                .and_then(Result::ok);
+
+            self.requests
+                .lock()
+                .unwrap()
+                .searches
+                .retain(|request| request.id != id);
+            self.changed.notify_one();
+            log::info!(
+                "[transport][ble] {purpose:?} search for {peer} ended after {:?}: {}",
+                started.elapsed(),
+                if found.is_some() {
+                    "heard"
+                } else {
+                    "not heard"
+                }
+            );
+            if found.is_some() && !SCAN_DURING_CONNECT {
+                // The hand-off wakes this task before the coordinator has dropped
+                // its discovery stream; the lease comes free only once it has, so
+                // the caller's dial never overlaps the scan. `Found` holds a dial
+                // guard, so no new scan starts meanwhile.
+                drop(self.scan_lock().await);
+            }
+            found
+        }
+
+        /// Add Device opened or closed. While it is open, the scan runs without
+        /// a stop, records every Fini device it hears (`AvailableDevices`), and
+        /// serves only setup searches: delivery searches wait, so that the radio
+        /// stays on the scan the person is watching.
+        pub fn set_add_device_mode(self: &Arc<Self>, on: bool) {
+            if on {
+                self.available.remove_heard();
+            }
+            self.add_device_mode.store(on, Ordering::SeqCst);
+            self.start_once();
+            self.changed.notify_one();
+            if on {
+                self.watch_stale();
+            }
+        }
+
+        /// While Add Device is open, removes the devices that stopped
+        /// advertising from the list and tells the UI. Without this a device
+        /// that left stayed in the list: the list drops old records only when it
+        /// is read, and only a new advertisement made the UI read it.
+        fn watch_stale(self: &Arc<Self>) {
+            if self.stale_watch.swap(true, Ordering::SeqCst) {
+                return;
+            }
             let scanner = self.clone();
             tauri::async_runtime::spawn(async move {
-                let Some(owner) = scanner.channel.upgrade() else { return; };
-                tokio::select! {
-                    biased;
-                    () = owner.wait_until_stopping() => {},
-                    () = scanner.run() => {},
+                while scanner.in_add_device_mode() {
+                    tokio::time::sleep(STALE_CHECK).await;
+                    if !scanner.in_add_device_mode() {
+                        break;
+                    }
+                    if scanner.available.remove_stale() {
+                        scanner.bus.publish(Event::AvailableDevicesChanged);
+                    }
                 }
+                scanner.stale_watch.store(false, Ordering::SeqCst);
             });
-        });
-    }
+        }
 
-    /// Search for `peer` for up to `window`, ending early once it is heard.
-    pub async fn find(self: &Arc<Self>, peer: &str, purpose: Purpose, window: Duration) -> Option<Found> {
-        let (reply, heard) = oneshot::channel();
-        let id = {
+        fn in_add_device_mode(&self) -> bool {
+            self.add_device_mode.load(Ordering::SeqCst)
+        }
+
+        /// Whether the scan has a reason to run.
+        fn scan_wanted(&self, wanted: &HashMap<[u8; FINGERPRINT_LEN], String>) -> bool {
+            !wanted.is_empty() || self.in_add_device_mode()
+        }
+
+        /// The peers the next scan listens for, by advertised fingerprint.
+        fn wanted(&self) -> HashMap<[u8; FINGERPRINT_LEN], String> {
+            let adding = self.in_add_device_mode();
+            let requests = self.requests.lock().unwrap();
+            requests
+                .searches
+                .iter()
+                .filter(|request| !adding || request.purpose != Purpose::Delivery)
+                .map(|request| (fingerprint_of(&request.peer), request.peer.clone()))
+                .collect()
+        }
+
+        /// Hand `address` to every search waiting for `peer`. True if any was.
+        fn hand_off(&self, peer: &str, address: &str) -> bool {
             let mut requests = self.requests.lock().unwrap();
-            requests.next_id += 1;
-            let id = requests.next_id;
-            requests.searches.push(Request {
-                id,
-                peer: peer.to_string(),
-                purpose,
-                reply: Some(reply),
-            });
-            id
-        };
-        self.start_once();
-        self.changed.notify_one();
-        log::info!("[transport][ble] {purpose:?} search for {peer} started (up to {window:?})");
-        let started = Instant::now();
-
-        let found = tokio::time::timeout(window, heard).await.ok().and_then(Result::ok);
-
-        self.requests.lock().unwrap().searches.retain(|request| request.id != id);
-        self.changed.notify_one();
-        log::info!(
-            "[transport][ble] {purpose:?} search for {peer} ended after {:?}: {}",
-            started.elapsed(),
-            if found.is_some() { "heard" } else { "not heard" }
-        );
-        if found.is_some() && !SCAN_DURING_CONNECT {
-            // The hand-off wakes this task before the coordinator has dropped
-            // its discovery stream; the lease comes free only once it has, so
-            // the caller's dial never overlaps the scan. `Found` holds a dial
-            // guard, so no new scan starts meanwhile.
-            drop(self.scan_lock().await);
-        }
-        found
-    }
-
-    /// Add Device opened or closed. While it is open, the scan runs without
-    /// a stop, records every Fini device it hears (`AvailableDevices`), and
-    /// serves only setup searches: delivery searches wait, so that the radio
-    /// stays on the scan the person is watching.
-    pub fn set_add_device_mode(self: &Arc<Self>, on: bool) {
-        if on {
-            self.available.remove_heard();
-        }
-        self.add_device_mode.store(on, Ordering::SeqCst);
-        self.start_once();
-        self.changed.notify_one();
-        if on {
-            self.watch_stale();
-        }
-    }
-
-    /// While Add Device is open, removes the devices that stopped
-    /// advertising from the list and tells the UI. Without this a device
-    /// that left stayed in the list: the list drops old records only when it
-    /// is read, and only a new advertisement made the UI read it.
-    fn watch_stale(self: &Arc<Self>) {
-        if self.stale_watch.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        let scanner = self.clone();
-        tauri::async_runtime::spawn(async move {
-            while scanner.in_add_device_mode() {
-                tokio::time::sleep(STALE_CHECK).await;
-                if !scanner.in_add_device_mode() { break; }
-                if scanner.available.remove_stale() {
-                    scanner.bus.publish(Event::AvailableDevicesChanged);
+            let mut handed = false;
+            for request in requests
+                .searches
+                .iter_mut()
+                .filter(|request| request.peer == peer)
+            {
+                if let Some(reply) = request.reply.take() {
+                    log::info!(
+                        "[transport][ble] {:?} search heard {peer} at {address}",
+                        request.purpose
+                    );
+                    handed |= reply
+                        .send(Found {
+                            address: address.to_string(),
+                            _connect: self.connect_guard(),
+                        })
+                        .is_ok();
                 }
             }
-            scanner.stale_watch.store(false, Ordering::SeqCst);
-        });
-    }
+            handed
+        }
 
-    fn in_add_device_mode(&self) -> bool {
-        self.add_device_mode.load(Ordering::SeqCst)
-    }
+        /// A dial to `address` after a hand-off failed: the search skips that
+        /// address for `FAILED_CONNECT_COOLDOWN` and keeps listening for the peer's
+        /// current one.
+        pub fn note_connect_failed(&self, address: &str) {
+            self.failed_connects
+                .lock()
+                .unwrap()
+                .insert(address.to_string(), Instant::now());
+        }
 
-    /// Whether the scan has a reason to run.
-    fn scan_wanted(&self, wanted: &HashMap<[u8; FINGERPRINT_LEN], String>) -> bool {
-        !wanted.is_empty() || self.in_add_device_mode()
-    }
-
-    /// The peers the next scan listens for, by advertised fingerprint.
-    fn wanted(&self) -> HashMap<[u8; FINGERPRINT_LEN], String> {
-        let adding = self.in_add_device_mode();
-        let requests = self.requests.lock().unwrap();
-        requests
-            .searches
-            .iter()
-            .filter(|request| !adding || request.purpose != Purpose::Delivery)
-            .map(|request| (fingerprint_of(&request.peer), request.peer.clone()))
-            .collect()
-    }
-
-    /// Hand `address` to every search waiting for `peer`. True if any was.
-    fn hand_off(&self, peer: &str, address: &str) -> bool {
-        let mut requests = self.requests.lock().unwrap();
-        let mut handed = false;
-        for request in requests.searches.iter_mut().filter(|request| request.peer == peer) {
-            if let Some(reply) = request.reply.take() {
-                log::info!("[transport][ble] {:?} search heard {peer} at {address}", request.purpose);
-                handed |= reply
-                    .send(Found {
-                        address: address.to_string(),
-                        _connect: self.connect_guard(),
-                    })
-                    .is_ok();
+        /// How long until Android accepts one more scan start; zero when it
+        /// accepts one now, and always zero on other platforms.
+        pub(crate) fn scan_start_wait(&self) -> Duration {
+            if !cfg!(target_os = "android") {
+                return Duration::ZERO;
+            }
+            let mut starts = self.scan_starts.lock().unwrap();
+            while starts
+                .front()
+                .is_some_and(|at| at.elapsed() >= ANDROID_SCAN_START_PERIOD)
+            {
+                starts.pop_front();
+            }
+            match starts.front() {
+                Some(oldest) if starts.len() >= ANDROID_SCAN_STARTS => {
+                    // Android counts in its own clock: a small margin keeps the
+                    // start out of its period.
+                    ANDROID_SCAN_START_PERIOD.saturating_sub(oldest.elapsed())
+                        + Duration::from_millis(500)
+                }
+                _ => Duration::ZERO,
             }
         }
-        handed
-    }
 
-    /// A dial to `address` after a hand-off failed: the search skips that
-    /// address for `FAILED_CONNECT_COOLDOWN` and keeps listening for the peer's
-    /// current one.
-    pub fn note_connect_failed(&self, address: &str) {
-        self.failed_connects.lock().unwrap().insert(address.to_string(), Instant::now());
-    }
-
-    /// How long until Android accepts one more scan start; zero when it
-    /// accepts one now, and always zero on other platforms.
-    pub(crate) fn scan_start_wait(&self) -> Duration {
-        if !cfg!(target_os = "android") {
-            return Duration::ZERO;
+        pub(crate) fn note_scan_started(&self) {
+            self.scan_starts.lock().unwrap().push_back(Instant::now());
         }
-        let mut starts = self.scan_starts.lock().unwrap();
-        while starts.front().is_some_and(|at| at.elapsed() >= ANDROID_SCAN_START_PERIOD) {
-            starts.pop_front();
+
+        fn connect_recently_failed(&self, address: &str) -> bool {
+            let mut failed = self.failed_connects.lock().unwrap();
+            failed.retain(|_, at| at.elapsed() < FAILED_CONNECT_COOLDOWN);
+            failed.contains_key(address)
         }
-        match starts.front() {
-            Some(oldest) if starts.len() >= ANDROID_SCAN_STARTS => {
-                // Android counts in its own clock: a small margin keeps the
-                // start out of its period.
-                ANDROID_SCAN_START_PERIOD.saturating_sub(oldest.elapsed()) + Duration::from_millis(500)
-            }
-            _ => Duration::ZERO,
-        }
-    }
 
-    pub(crate) fn note_scan_started(&self) {
-        self.scan_starts.lock().unwrap().push_back(Instant::now());
-    }
+        async fn run(self: Arc<Self>) {
+            use futures_util::StreamExt;
 
-    fn connect_recently_failed(&self, address: &str) -> bool {
-        let mut failed = self.failed_connects.lock().unwrap();
-        failed.retain(|_, at| at.elapsed() < FAILED_CONNECT_COOLDOWN);
-        failed.contains_key(address)
-    }
+            let mut connections = self.connections.subscribe();
+            loop {
+                // Never start a scan while a dial runs (see `SCAN_DURING_CONNECT`).
+                if !SCAN_DURING_CONNECT {
+                    let _ = connections.wait_for(|count| *count == 0).await;
+                }
 
-    async fn run(self: Arc<Self>) {
-        use futures_util::StreamExt;
-
-        let mut connections = self.connections.subscribe();
-        loop {
-            // Never start a scan while a dial runs (see `SCAN_DURING_CONNECT`).
-            if !SCAN_DURING_CONNECT {
-                let _ = connections.wait_for(|count| *count == 0).await;
-            }
-
-            let mut wanted = self.wanted();
-            if !self.scan_wanted(&wanted) {
-                // Only a new search, or Add Device, changes anything.
-                self.changed.notified().await;
-                continue;
-            }
-
-            let bluetooth = BluetoothAdapter::this_device();
-            let Ok(shared) = self.peer_link().await else {
-                bluetooth.note_unreachable();
-                let _ = tokio::time::timeout(SCAN_FAILURE_PAUSE, self.changed.notified()).await;
-                continue;
-            };
-            let wait = self.scan_start_wait();
-            if !wait.is_zero() {
-                log::info!(
-                    "[transport][ble] Android's scan start limit is used; next scan in {:.1} s",
-                    wait.as_secs_f32()
-                );
-                tokio::time::sleep(wait).await;
-                continue;
-            }
-            let scan = self.scan_lock().await;
-            self.note_scan_started();
-            let mut discovered = match shared.discover().await {
-                Ok(stream) => stream,
-                Err(err) => {
-                    log::warn!("[transport][ble] search scan refused: {err}");
-                    bluetooth.note_scan_refused(&err);
-                    drop(scan);
-                    let _ = tokio::time::timeout(SCAN_FAILURE_PAUSE, self.changed.notified()).await;
+                let mut wanted = self.wanted();
+                if !self.scan_wanted(&wanted) {
+                    // Only a new search, or Add Device, changes anything.
+                    self.changed.notified().await;
                     continue;
                 }
-            };
-            let running = self.start_running_scan();
-            log::info!(
-                "[transport][ble] shared scan window started for {} device(s), add device {}",
-                wanted.len(),
-                if self.in_add_device_mode() { "on" } else { "off" }
-            );
 
-            // One window at a time: the wanted set is re-read between
-            // windows, and at once whenever a search starts or ends. On Linux
-            // in Add Device mode the windows are short with a pause between
-            // them (`ADD_DEVICE_SCAN_WINDOW`), so this device's own
-            // advertisement gets air time.
-            let window = if self.in_add_device_mode() && cfg!(target_os = "linux") {
-                ADD_DEVICE_SCAN_WINDOW
-            } else {
-                SCAN_WINDOW
-            };
-            let window_end = tokio::time::Instant::now() + window;
-            let mut deadline = window_end;
-            loop {
-                tokio::select! {
-                    next = tokio::time::timeout_at(deadline, discovered.next()) => match next {
-                        Ok(Some(Ok((_endpoint, candidate)))) => {
-                            let payload = candidate
-                                .manufacturer_data
-                                .get(&FINI_MANUFACTURER_ID)
-                                .map(|payload| payload.as_slice());
-                            let advertised = advertised_fingerprint(payload);
-                            if self.in_add_device_mode() {
-                                if let Some(fingerprint) = advertised {
-                                    let add_device_flag = payload
-                                        .and_then(|payload| payload.first())
-                                        .is_some_and(|flags| flags & ADD_MODE_FLAG_BYTE != 0);
-                                    // The UI reads the list again only when
-                                    // it changes (ADR-0010 D9).
-                                    if self.available.record_heard(
-                                        fingerprint,
-                                        &candidate.address.0,
-                                        candidate.name.clone(),
-                                        add_device_flag,
-                                    ) {
-                                        self.bus.publish(Event::AvailableDevicesChanged);
+                let bluetooth = BluetoothAdapter::this_device();
+                let Ok(shared) = self.peer_link().await else {
+                    bluetooth.note_unreachable();
+                    let _ = tokio::time::timeout(SCAN_FAILURE_PAUSE, self.changed.notified()).await;
+                    continue;
+                };
+                let wait = self.scan_start_wait();
+                if !wait.is_zero() {
+                    log::info!(
+                        "[transport][ble] Android's scan start limit is used; next scan in {:.1} s",
+                        wait.as_secs_f32()
+                    );
+                    tokio::time::sleep(wait).await;
+                    continue;
+                }
+                let scan = self.scan_lock().await;
+                self.note_scan_started();
+                let mut discovered = match shared.discover().await {
+                    Ok(stream) => stream,
+                    Err(err) => {
+                        log::warn!("[transport][ble] search scan refused: {err}");
+                        bluetooth.note_scan_refused(&err);
+                        drop(scan);
+                        let _ =
+                            tokio::time::timeout(SCAN_FAILURE_PAUSE, self.changed.notified()).await;
+                        continue;
+                    }
+                };
+                let running = self.start_running_scan();
+                log::info!(
+                    "[transport][ble] shared scan window started for {} device(s), add device {}",
+                    wanted.len(),
+                    if self.in_add_device_mode() {
+                        "on"
+                    } else {
+                        "off"
+                    }
+                );
+
+                // One window at a time: the wanted set is re-read between
+                // windows, and at once whenever a search starts or ends. On Linux
+                // in Add Device mode the windows are short with a pause between
+                // them (`ADD_DEVICE_SCAN_WINDOW`), so this device's own
+                // advertisement gets air time.
+                let window = if self.in_add_device_mode() && cfg!(target_os = "linux") {
+                    ADD_DEVICE_SCAN_WINDOW
+                } else {
+                    SCAN_WINDOW
+                };
+                let window_end = tokio::time::Instant::now() + window;
+                let mut deadline = window_end;
+                loop {
+                    tokio::select! {
+                        next = tokio::time::timeout_at(deadline, discovered.next()) => match next {
+                            Ok(Some(Ok((_endpoint, candidate)))) => {
+                                let payload = candidate
+                                    .manufacturer_data
+                                    .get(&FINI_MANUFACTURER_ID)
+                                    .map(|payload| payload.as_slice());
+                                let advertised = advertised_fingerprint(payload);
+                                if self.in_add_device_mode() {
+                                    if let Some(fingerprint) = advertised {
+                                        let add_device_flag = payload
+                                            .and_then(|payload| payload.first())
+                                            .is_some_and(|flags| flags & ADD_MODE_FLAG_BYTE != 0);
+                                        // The UI reads the list again only when
+                                        // it changes (ADR-0010 D9).
+                                        if self.available.record_heard(
+                                            fingerprint,
+                                            &candidate.address.0,
+                                            candidate.name.clone(),
+                                            add_device_flag,
+                                        ) {
+                                            self.bus.publish(Event::AvailableDevicesChanged);
+                                        }
                                     }
                                 }
+                                let Some(peer) = advertised.and_then(|fp| wanted.get(&fp)) else {
+                                    continue;
+                                };
+                                self.record_paired_heard(peer, &candidate.address.0);
+                                if self.connect_recently_failed(&candidate.address.0) {
+                                    continue;
+                                }
+                                if self.hand_off(peer, &candidate.address.0) && !SCAN_DURING_CONNECT {
+                                    break;
+                                }
                             }
-                            let Some(peer) = advertised.and_then(|fp| wanted.get(&fp)) else {
-                                continue;
-                            };
-                            self.record_paired_heard(peer, &candidate.address.0);
-                            if self.connect_recently_failed(&candidate.address.0) {
-                                continue;
-                            }
-                            if self.hand_off(peer, &candidate.address.0) && !SCAN_DURING_CONNECT {
+                            Ok(Some(Err(_))) | Ok(None) | Err(_) => break,
+                        },
+                        // A dial started outside a hand-off: stop for it.
+                        _ = connections.wait_for(|count| *count > 0), if !SCAN_DURING_CONNECT => break,
+                        // What is wanted changed: keep the scan running over the
+                        // new set rather than restarting the radio, and stop only
+                        // once nothing is wanted any more -- with
+                        // `SCAN_DURING_CONNECT`, `SCAN_LINGER` later.
+                        _ = self.changed.notified() => {
+                            wanted = self.wanted();
+                            if self.scan_wanted(&wanted) {
+                                deadline = window_end;
+                            } else if SCAN_DURING_CONNECT {
+                                deadline = deadline.min(tokio::time::Instant::now() + SCAN_LINGER);
+                            } else {
                                 break;
                             }
                         }
-                        Ok(Some(Err(_))) | Ok(None) | Err(_) => break,
-                    },
-                    // A dial started outside a hand-off: stop for it.
-                    _ = connections.wait_for(|count| *count > 0), if !SCAN_DURING_CONNECT => break,
-                    // What is wanted changed: keep the scan running over the
-                    // new set rather than restarting the radio, and stop only
-                    // once nothing is wanted any more -- with
-                    // `SCAN_DURING_CONNECT`, `SCAN_LINGER` later.
-                    _ = self.changed.notified() => {
-                        wanted = self.wanted();
-                        if self.scan_wanted(&wanted) {
-                            deadline = window_end;
-                        } else if SCAN_DURING_CONNECT {
-                            deadline = deadline.min(tokio::time::Instant::now() + SCAN_LINGER);
-                        } else {
-                            break;
-                        }
+                    }
+                }
+                // Stop discovery before any dial the hand-off starts.
+                drop(running);
+                drop(discovered);
+                drop(scan);
+                if self.in_add_device_mode() && cfg!(target_os = "linux") {
+                    let _ =
+                        tokio::time::timeout(ADD_DEVICE_SCAN_PAUSE, self.changed.notified()).await;
+                }
+            }
+        }
+    }
+
+    // ---- A device heard in Add Device ----
+
+    impl Scanner {
+        /// One plain link (no key yet) to the newest address the scan heard the
+        /// device with `fingerprint` at: what pairing's identify step talks over
+        /// (`DeviceConnectionState::identify_heard_device`). Returns the link,
+        /// the address, and guards that keep any scan paused until dropped.
+        /// The connection is never cut short: ble-gatt gives it its own 20 s,
+        /// and an abandoned connect makes BlueZ crash (two crashes in the spike).
+        ///
+        /// When a connect ends with an error, it is tried again, to the newest
+        /// heard address, until `IDENTIFY_TRY_AGAIN_TIME` after the first try.
+        /// Right after a pair is removed, the release of the old link made BlueZ
+        /// cancel the first connect (`le-connection-abort-by-local`), and the
+        /// pairing stopped.
+        pub async fn connect_heard_device(
+            &self,
+            fingerprint: [u8; FINGERPRINT_LEN],
+        ) -> Result<(super::BleDataLink, String, impl Sized + '_), String> {
+            let device_gone =
+                || "that device is not heard any more -- open Add Device on it again".to_string();
+            // A search for a paired device may start a scan; holding a connect
+            // guard keeps it paused until the caller is done.
+            let probe = self.candidate_probe().await;
+            let connect_guard = self.acquire_connect().await;
+            let started = Instant::now();
+            loop {
+                let address = self
+                    .available
+                    .heard_address(fingerprint)
+                    .ok_or_else(device_gone)?;
+                match super::BleDataLink::connect(self.peer_link().await?, &address).await {
+                    Ok(link) => return Ok((link, address, (probe, connect_guard))),
+                    Err(err) if started.elapsed() < IDENTIFY_TRY_AGAIN_TIME => {
+                        log::info!("[transport][ble] connect to {address} ended with an error ({err}); trying again");
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                    Err(err) => {
+                        return Err(format!(
+                        "the device did not answer ({err}) -- make sure Add Device is open on it"
+                    ))
                     }
                 }
             }
-            // Stop discovery before any dial the hand-off starts.
-            drop(running);
-            drop(discovered);
-            drop(scan);
-            if self.in_add_device_mode() && cfg!(target_os = "linux") {
-                let _ = tokio::time::timeout(ADD_DEVICE_SCAN_PAUSE, self.changed.notified()).await;
+        }
+    }
+
+    /// A Fini device near this one that is in Add Device mode, as an identify
+    /// step learned it.
+    #[derive(Clone)]
+    pub struct AvailableDevice {
+        pub address: String,
+        pub device_id: String,
+        pub hostname: String,
+    }
+
+    // ---- Devices available for Add Device ----
+
+    /// The Fini devices around this one while Add Device is open: what their
+    /// advertisements told the scan, and what an identify step learned.
+    #[derive(Default)]
+    pub struct AvailableDevices {
+        /// Every Fini device the scan heard while Add Device is open, by
+        /// advertised fingerprint: from its advertisement alone, with no
+        /// connection.
+        heard: StdMutex<HashMap<[u8; FINGERPRINT_LEN], HeardDevice>>,
+        /// What identify steps learned, by device id: the device, and the iroh
+        /// key that a pair request connects to.
+        identified: StdMutex<HashMap<String, (AvailableDevice, String)>>,
+    }
+
+    /// How long a device stays in the Add Device list after the scan last heard
+    /// it with the Add Device flag. A phone advertises several times a second, so
+    /// a device that stops (it left Add Device, or went away) drops out quickly.
+    const HEARD_FRESH: Duration = Duration::from_secs(15);
+
+    /// How often the open Add Device list is checked for devices that left
+    /// (`Scanner::watch_stale`).
+    const STALE_CHECK: Duration = Duration::from_secs(2);
+
+    /// What one advertisement told the scan.
+    #[derive(Clone)]
+    struct HeardDevice {
+        address: String,
+        name: Option<String>,
+        add_device_flag: bool,
+        at: Instant,
+    }
+
+    /// A device for the Add Device list, from the advertisement alone.
+    #[derive(Clone, Debug)]
+    pub struct HeardInAddDevice {
+        pub fingerprint: [u8; FINGERPRINT_LEN],
+        pub address: String,
+        /// The short name from the scan response, if the device sent one.
+        pub name: Option<String>,
+        /// The device id and full name, if an identify step learned them.
+        pub identified: Option<(String, String)>,
+    }
+
+    impl AvailableDevices {
+        /// Forgets what the scan heard, so that a new Add Device starts empty:
+        /// a device listed now must be in Add Device now.
+        pub fn remove_heard(&self) {
+            if let Ok(mut heard) = self.heard.lock() {
+                heard.clear();
             }
         }
-    }
-}
 
-// ---- A device heard in Add Device ----
-
-impl Scanner {
-    /// One plain link (no key yet) to the newest address the scan heard the
-    /// device with `fingerprint` at: what pairing's identify step talks over
-    /// (`DeviceConnectionState::identify_heard_device`). Returns the link,
-    /// the address, and guards that keep any scan paused until dropped.
-    /// The connection is never cut short: ble-gatt gives it its own 20 s,
-    /// and an abandoned connect makes BlueZ crash (two crashes in the spike).
-    ///
-    /// When a connect ends with an error, it is tried again, to the newest
-    /// heard address, until `IDENTIFY_TRY_AGAIN_TIME` after the first try.
-    /// Right after a pair is removed, the release of the old link made BlueZ
-    /// cancel the first connect (`le-connection-abort-by-local`), and the
-    /// pairing stopped.
-    pub async fn connect_heard_device(
-        &self, fingerprint: [u8; FINGERPRINT_LEN],
-    ) -> Result<(super::BleDataLink, String, impl Sized + '_), String> {
-        let device_gone = || "that device is not heard any more -- open Add Device on it again".to_string();
-        // A search for a paired device may start a scan; holding a connect
-        // guard keeps it paused until the caller is done.
-        let probe = self.candidate_probe().await;
-        let connect_guard = self.acquire_connect().await;
-        let started = Instant::now();
-        loop {
-            let address = self.available.heard_address(fingerprint).ok_or_else(device_gone)?;
-            match super::BleDataLink::connect(self.peer_link().await?, &address).await {
-                Ok(link) => return Ok((link, address, (probe, connect_guard))),
-                Err(err) if started.elapsed() < IDENTIFY_TRY_AGAIN_TIME => {
-                    log::info!("[transport][ble] connect to {address} ended with an error ({err}); trying again");
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                }
-                Err(err) => {
-                    return Err(format!("the device did not answer ({err}) -- make sure Add Device is open on it"))
-                }
-            }
+        /// Removes the listed devices that were not heard with the Add Device
+        /// flag in the last `HEARD_FRESH`. True when one was removed: the Add
+        /// Device list changed.
+        pub fn remove_stale(&self) -> bool {
+            let Ok(mut heard) = self.heard.lock() else {
+                return false;
+            };
+            let before = heard.len();
+            heard.retain(|_, device| {
+                !(device.add_device_flag && device.at.elapsed() >= HEARD_FRESH)
+            });
+            heard.len() != before
         }
-    }
-}
 
-/// A Fini device near this one that is in Add Device mode, as an identify
-/// step learned it.
-#[derive(Clone)]
-pub struct AvailableDevice {
-    pub address: String,
-    pub device_id: String,
-    pub hostname: String,
-}
-
-// ---- Devices available for Add Device ----
-
-/// The Fini devices around this one while Add Device is open: what their
-/// advertisements told the scan, and what an identify step learned.
-#[derive(Default)]
-pub struct AvailableDevices {
-    /// Every Fini device the scan heard while Add Device is open, by
-    /// advertised fingerprint: from its advertisement alone, with no
-    /// connection.
-    heard: StdMutex<HashMap<[u8; FINGERPRINT_LEN], HeardDevice>>,
-    /// What identify steps learned, by device id: the device, and the iroh
-    /// key that a pair request connects to.
-    identified: StdMutex<HashMap<String, (AvailableDevice, String)>>,
-}
-
-/// How long a device stays in the Add Device list after the scan last heard
-/// it with the Add Device flag. A phone advertises several times a second, so
-/// a device that stops (it left Add Device, or went away) drops out quickly.
-const HEARD_FRESH: Duration = Duration::from_secs(15);
-
-/// How often the open Add Device list is checked for devices that left
-/// (`Scanner::watch_stale`).
-const STALE_CHECK: Duration = Duration::from_secs(2);
-
-/// What one advertisement told the scan.
-#[derive(Clone)]
-struct HeardDevice {
-    address: String,
-    name: Option<String>,
-    add_device_flag: bool,
-    at: Instant,
-}
-
-/// A device for the Add Device list, from the advertisement alone.
-#[derive(Clone, Debug)]
-pub struct HeardInAddDevice {
-    pub fingerprint: [u8; FINGERPRINT_LEN],
-    pub address: String,
-    /// The short name from the scan response, if the device sent one.
-    pub name: Option<String>,
-    /// The device id and full name, if an identify step learned them.
-    pub identified: Option<(String, String)>,
-}
-
-impl AvailableDevices {
-    /// Forgets what the scan heard, so that a new Add Device starts empty:
-    /// a device listed now must be in Add Device now.
-    pub fn remove_heard(&self) {
-        if let Ok(mut heard) = self.heard.lock() {
-            heard.clear();
-        }
-    }
-
-    /// Removes the listed devices that were not heard with the Add Device
-    /// flag in the last `HEARD_FRESH`. True when one was removed: the Add
-    /// Device list changed.
-    pub fn remove_stale(&self) -> bool {
-        let Ok(mut heard) = self.heard.lock() else { return false };
-        let before = heard.len();
-        heard.retain(|_, device| !(device.add_device_flag && device.at.elapsed() >= HEARD_FRESH));
-        heard.len() != before
-    }
-
-    /// Records one advertisement: the newest address of that device wins.
-    /// Returns true when the Add Device list changed: the device came into
-    /// it, left it, or got its name.
-    pub fn record_heard(
-        &self, fingerprint: [u8; FINGERPRINT_LEN], address: &str, name: Option<String>, add_device_flag: bool,
-    ) -> bool {
-        let Ok(mut heard) = self.heard.lock() else { return false };
-        let known = heard.get(&fingerprint);
-        let listed_before = known.is_some_and(|known| known.add_device_flag && known.at.elapsed() < HEARD_FRESH);
-        let name_before = known.and_then(|known| known.name.clone());
-        let name = name.or_else(|| name_before.clone());
-        let changed = listed_before != add_device_flag || (add_device_flag && name != name_before);
-        heard.insert(
-            fingerprint,
-            HeardDevice { address: address.to_string(), name, add_device_flag, at: Instant::now() },
-        );
-        changed
-    }
-
-    /// The devices for the Add Device list: heard with the Add Device flag
-    /// in the last `HEARD_FRESH`, without this device itself.
-    pub fn in_add_device(&self, mine: [u8; FINGERPRINT_LEN]) -> Vec<HeardInAddDevice> {
-        let heard: Vec<([u8; FINGERPRINT_LEN], HeardDevice)> = match self.heard.lock() {
-            Ok(heard) => heard
-                .iter()
-                .filter(|(fingerprint, device)| {
-                    **fingerprint != mine && device.add_device_flag && device.at.elapsed() < HEARD_FRESH
-                })
-                .map(|(fingerprint, device)| (*fingerprint, device.clone()))
-                .collect(),
-            Err(_) => return Vec::new(),
-        };
-        let identified: Vec<(String, String)> = match self.identified.lock() {
-            Ok(identified) => identified
-                .values()
-                .map(|(device, _)| (device.device_id.clone(), device.hostname.clone()))
-                .collect(),
-            Err(_) => Vec::new(),
-        };
-        heard
-            .into_iter()
-            .map(|(fingerprint, device)| HeardInAddDevice {
+        /// Records one advertisement: the newest address of that device wins.
+        /// Returns true when the Add Device list changed: the device came into
+        /// it, left it, or got its name.
+        pub fn record_heard(
+            &self,
+            fingerprint: [u8; FINGERPRINT_LEN],
+            address: &str,
+            name: Option<String>,
+            add_device_flag: bool,
+        ) -> bool {
+            let Ok(mut heard) = self.heard.lock() else {
+                return false;
+            };
+            let known = heard.get(&fingerprint);
+            let listed_before = known
+                .is_some_and(|known| known.add_device_flag && known.at.elapsed() < HEARD_FRESH);
+            let name_before = known.and_then(|known| known.name.clone());
+            let name = name.or_else(|| name_before.clone());
+            let changed =
+                listed_before != add_device_flag || (add_device_flag && name != name_before);
+            heard.insert(
                 fingerprint,
-                address: device.address,
-                name: device.name,
-                identified: identified.iter().find(|(id, _)| fingerprint_of(id) == fingerprint).cloned(),
+                HeardDevice {
+                    address: address.to_string(),
+                    name,
+                    add_device_flag,
+                    at: Instant::now(),
+                },
+            );
+            changed
+        }
+
+        /// The devices for the Add Device list: heard with the Add Device flag
+        /// in the last `HEARD_FRESH`, without this device itself.
+        pub fn in_add_device(&self, mine: [u8; FINGERPRINT_LEN]) -> Vec<HeardInAddDevice> {
+            let heard: Vec<([u8; FINGERPRINT_LEN], HeardDevice)> = match self.heard.lock() {
+                Ok(heard) => heard
+                    .iter()
+                    .filter(|(fingerprint, device)| {
+                        **fingerprint != mine
+                            && device.add_device_flag
+                            && device.at.elapsed() < HEARD_FRESH
+                    })
+                    .map(|(fingerprint, device)| (*fingerprint, device.clone()))
+                    .collect(),
+                Err(_) => return Vec::new(),
+            };
+            let identified: Vec<(String, String)> = match self.identified.lock() {
+                Ok(identified) => identified
+                    .values()
+                    .map(|(device, _)| (device.device_id.clone(), device.hostname.clone()))
+                    .collect(),
+                Err(_) => Vec::new(),
+            };
+            heard
+                .into_iter()
+                .map(|(fingerprint, device)| HeardInAddDevice {
+                    fingerprint,
+                    address: device.address,
+                    name: device.name,
+                    identified: identified
+                        .iter()
+                        .find(|(id, _)| fingerprint_of(id) == fingerprint)
+                        .cloned(),
+                })
+                .collect()
+        }
+
+        /// The newest address the scan heard `fingerprint` at, if fresh.
+        pub fn heard_address(&self, fingerprint: [u8; FINGERPRINT_LEN]) -> Option<String> {
+            let heard = self.heard.lock().ok()?;
+            heard
+                .get(&fingerprint)
+                .filter(|device| device.at.elapsed() < HEARD_FRESH)
+                .map(|device| device.address.clone())
+        }
+
+        /// The iroh key `device_id` reported, if an identify step learned it.
+        pub fn key(&self, device_id: &str) -> Option<String> {
+            self.identified
+                .lock()
+                .ok()?
+                .get(device_id)
+                .map(|(_, key)| key.clone())
+        }
+
+        /// The newest address of `device_id`: where the scan last heard it, or
+        /// else where it was identified. Android changes its address on every
+        /// Add Device change, so the address a list row was built from can be
+        /// gone when the person presses Pair.
+        pub fn latest_address(&self, device_id: &str) -> Option<String> {
+            self.heard_address(fingerprint_of(device_id)).or_else(|| {
+                self.identified
+                    .lock()
+                    .ok()?
+                    .get(device_id)
+                    .map(|(device, _)| device.address.clone())
             })
-            .collect()
-    }
-
-    /// The newest address the scan heard `fingerprint` at, if fresh.
-    pub fn heard_address(&self, fingerprint: [u8; FINGERPRINT_LEN]) -> Option<String> {
-        let heard = self.heard.lock().ok()?;
-        heard.get(&fingerprint).filter(|device| device.at.elapsed() < HEARD_FRESH).map(|device| device.address.clone())
-    }
-
-    /// The iroh key `device_id` reported, if an identify step learned it.
-    pub fn key(&self, device_id: &str) -> Option<String> {
-        self.identified.lock().ok()?.get(device_id).map(|(_, key)| key.clone())
-    }
-
-    /// The newest address of `device_id`: where the scan last heard it, or
-    /// else where it was identified. Android changes its address on every
-    /// Add Device change, so the address a list row was built from can be
-    /// gone when the person presses Pair.
-    pub fn latest_address(&self, device_id: &str) -> Option<String> {
-        self.heard_address(fingerprint_of(device_id)).or_else(|| {
-            self.identified.lock().ok()?.get(device_id).map(|(device, _)| device.address.clone())
-        })
-    }
-
-    /// Records what an identify step learned.
-    pub fn record_identified(&self, device: &AvailableDevice, endpoint_id: String) {
-        if let Ok(mut identified) = self.identified.lock() {
-            identified.insert(device.device_id.clone(), (device.clone(), endpoint_id));
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn searching(radio: &Scanner, peer: &str) -> bool {
-        radio.requests.lock().unwrap().searches.iter().any(|request| request.peer == peer)
-    }
-
-    /// A connection started outside a hand-off waits until the scan holding
-    /// the adapter has stopped, and the scan sees the connection.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_connection_waits_for_the_running_scan_to_stop() {
-        let radio = Arc::new(Scanner::default());
-        let scan = radio.scan_lock().await;
-        let connection = tokio::spawn({
-            let radio = radio.clone();
-            async move { radio.acquire_connect().await }
-        });
-        while *radio.connections.borrow() == 0 {
-            tokio::task::yield_now().await;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(!connection.is_finished(), "no connection while the scan holds the adapter");
-
-        drop(scan);
-        let guard = tokio::time::timeout(Duration::from_secs(2), connection).await.unwrap().unwrap();
-        drop(guard);
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn searches_for_different_peers_share_one_scan() {
-        let radio = Arc::new(Scanner::default());
-        let first = tokio::spawn({
-            let radio = radio.clone();
-            async move { radio.find("coord-merge-a", Purpose::Delivery, Duration::from_secs(5)).await }
-        });
-        let second = tokio::spawn({
-            let radio = radio.clone();
-            async move { radio.find("coord-merge-b", Purpose::Delivery, Duration::from_secs(5)).await }
-        });
-        while !(searching(&radio, "coord-merge-a") && searching(&radio, "coord-merge-b")) {
-            tokio::task::yield_now().await;
         }
 
-        let wanted = radio.wanted();
-        assert_eq!(wanted.get(&fingerprint_of("coord-merge-a")).map(String::as_str), Some("coord-merge-a"));
-        assert_eq!(wanted.get(&fingerprint_of("coord-merge-b")).map(String::as_str), Some("coord-merge-b"));
-
-        assert!(radio.hand_off("coord-merge-a", "AA:00:00:00:00:01"));
-        assert!(radio.hand_off("coord-merge-b", "AA:00:00:00:00:02"));
-        assert_eq!(first.await.unwrap().map(|found| found.address).as_deref(), Some("AA:00:00:00:00:01"));
-        assert_eq!(second.await.unwrap().map(|found| found.address).as_deref(), Some("AA:00:00:00:00:02"));
+        /// Records what an identify step learned.
+        pub fn record_identified(&self, device: &AvailableDevice, endpoint_id: String) {
+            if let Ok(mut identified) = self.identified.lock() {
+                identified.insert(device.device_id.clone(), (device.clone(), endpoint_id));
+            }
+        }
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_heard_peer_reaches_every_search_waiting_for_it_and_pauses_the_scan() {
-        let radio = Arc::new(Scanner::default());
-        let delivery = tokio::spawn({
-            let radio = radio.clone();
-            async move { radio.find("coord-both", Purpose::Delivery, Duration::from_secs(5)).await }
-        });
-        let setup = tokio::spawn({
-            let radio = radio.clone();
-            async move { radio.find("coord-both", Purpose::Delivery, Duration::from_secs(5)).await }
-        });
-        while radio.requests.lock().unwrap().searches.iter().filter(|r| r.peer == "coord-both").count() < 2 {
-            tokio::task::yield_now().await;
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn searching(radio: &Scanner, peer: &str) -> bool {
+            radio
+                .requests
+                .lock()
+                .unwrap()
+                .searches
+                .iter()
+                .any(|request| request.peer == peer)
         }
 
-        assert!(radio.hand_off("coord-both", "AA:00:00:00:00:03"));
-        let delivery = delivery.await.unwrap().expect("delivery search hears the peer");
-        let setup = setup.await.unwrap().expect("setup search hears the peer");
-        assert_eq!(delivery.address, "AA:00:00:00:00:03");
-        assert_eq!(setup.address, "AA:00:00:00:00:03");
-        // Scanning waits while either dial is possible.
-        assert_eq!(*radio.connections.borrow(), 2);
+        /// A connection started outside a hand-off waits until the scan holding
+        /// the adapter has stopped, and the scan sees the connection.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_connection_waits_for_the_running_scan_to_stop() {
+            let radio = Arc::new(Scanner::default());
+            let scan = radio.scan_lock().await;
+            let connection = tokio::spawn({
+                let radio = radio.clone();
+                async move { radio.acquire_connect().await }
+            });
+            while *radio.connections.borrow() == 0 {
+                tokio::task::yield_now().await;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert!(
+                !connection.is_finished(),
+                "no connection while the scan holds the adapter"
+            );
 
-        drop(delivery);
-        drop(setup);
-        assert!(!searching(&radio, "coord-both"), "a finished search withdraws itself");
+            drop(scan);
+            let guard = tokio::time::timeout(Duration::from_secs(2), connection)
+                .await
+                .unwrap()
+                .unwrap();
+            drop(guard);
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn searches_for_different_peers_share_one_scan() {
+            let radio = Arc::new(Scanner::default());
+            let first = tokio::spawn({
+                let radio = radio.clone();
+                async move {
+                    radio
+                        .find("coord-merge-a", Purpose::Delivery, Duration::from_secs(5))
+                        .await
+                }
+            });
+            let second = tokio::spawn({
+                let radio = radio.clone();
+                async move {
+                    radio
+                        .find("coord-merge-b", Purpose::Delivery, Duration::from_secs(5))
+                        .await
+                }
+            });
+            while !(searching(&radio, "coord-merge-a") && searching(&radio, "coord-merge-b")) {
+                tokio::task::yield_now().await;
+            }
+
+            let wanted = radio.wanted();
+            assert_eq!(
+                wanted
+                    .get(&fingerprint_of("coord-merge-a"))
+                    .map(String::as_str),
+                Some("coord-merge-a")
+            );
+            assert_eq!(
+                wanted
+                    .get(&fingerprint_of("coord-merge-b"))
+                    .map(String::as_str),
+                Some("coord-merge-b")
+            );
+
+            assert!(radio.hand_off("coord-merge-a", "AA:00:00:00:00:01"));
+            assert!(radio.hand_off("coord-merge-b", "AA:00:00:00:00:02"));
+            assert_eq!(
+                first.await.unwrap().map(|found| found.address).as_deref(),
+                Some("AA:00:00:00:00:01")
+            );
+            assert_eq!(
+                second.await.unwrap().map(|found| found.address).as_deref(),
+                Some("AA:00:00:00:00:02")
+            );
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_heard_peer_reaches_every_search_waiting_for_it_and_pauses_the_scan() {
+            let radio = Arc::new(Scanner::default());
+            let delivery = tokio::spawn({
+                let radio = radio.clone();
+                async move {
+                    radio
+                        .find("coord-both", Purpose::Delivery, Duration::from_secs(5))
+                        .await
+                }
+            });
+            let setup = tokio::spawn({
+                let radio = radio.clone();
+                async move {
+                    radio
+                        .find("coord-both", Purpose::Delivery, Duration::from_secs(5))
+                        .await
+                }
+            });
+            while radio
+                .requests
+                .lock()
+                .unwrap()
+                .searches
+                .iter()
+                .filter(|r| r.peer == "coord-both")
+                .count()
+                < 2
+            {
+                tokio::task::yield_now().await;
+            }
+
+            assert!(radio.hand_off("coord-both", "AA:00:00:00:00:03"));
+            let delivery = delivery
+                .await
+                .unwrap()
+                .expect("delivery search hears the peer");
+            let setup = setup.await.unwrap().expect("setup search hears the peer");
+            assert_eq!(delivery.address, "AA:00:00:00:00:03");
+            assert_eq!(setup.address, "AA:00:00:00:00:03");
+            // Scanning waits while either dial is possible.
+            assert_eq!(*radio.connections.borrow(), 2);
+
+            drop(delivery);
+            drop(setup);
+            assert!(
+                !searching(&radio, "coord-both"),
+                "a finished search withdraws itself"
+            );
+        }
+
+        /// A dial that just failed keeps that address out of hand-offs, and only
+        /// until the cooldown has passed: the peer's next private address, or the
+        /// same one once it answers again, is dialled as usual.
+        #[test]
+        fn a_failed_address_is_skipped_until_its_cooldown_expires() {
+            let radio = Scanner::default();
+            radio.note_connect_failed("AA:00:00:00:00:10");
+            assert!(radio.connect_recently_failed("AA:00:00:00:00:10"));
+            assert!(
+                !radio.connect_recently_failed("AA:00:00:00:00:11"),
+                "only the failed address is skipped"
+            );
+
+            let expired = Instant::now()
+                .checked_sub(FAILED_CONNECT_COOLDOWN)
+                .expect("the clock is past one cooldown");
+            radio
+                .failed_connects
+                .lock()
+                .unwrap()
+                .insert("AA:00:00:00:00:10".to_string(), expired);
+            assert!(
+                !radio.connect_recently_failed("AA:00:00:00:00:10"),
+                "the cooldown has passed"
+            );
+            assert!(
+                !radio
+                    .failed_connects
+                    .lock()
+                    .unwrap()
+                    .contains_key("AA:00:00:00:00:10"),
+                "an expired entry is dropped"
+            );
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_search_that_hears_nothing_ends_with_its_window_and_withdraws() {
+            let radio = Arc::new(Scanner::default());
+            let found = radio
+                .find("coord-silent", Purpose::Delivery, Duration::from_millis(50))
+                .await;
+            assert!(found.is_none());
+            assert!(!searching(&radio, "coord-silent"));
+            assert!(!radio.hand_off("coord-silent", "AA:00:00:00:00:04"));
+        }
     }
-
-    /// A dial that just failed keeps that address out of hand-offs, and only
-    /// until the cooldown has passed: the peer's next private address, or the
-    /// same one once it answers again, is dialled as usual.
-    #[test]
-    fn a_failed_address_is_skipped_until_its_cooldown_expires() {
-        let radio = Scanner::default();
-        radio.note_connect_failed("AA:00:00:00:00:10");
-        assert!(radio.connect_recently_failed("AA:00:00:00:00:10"));
-        assert!(!radio.connect_recently_failed("AA:00:00:00:00:11"), "only the failed address is skipped");
-
-        let expired = Instant::now()
-            .checked_sub(FAILED_CONNECT_COOLDOWN)
-            .expect("the clock is past one cooldown");
-        radio.failed_connects.lock().unwrap().insert("AA:00:00:00:00:10".to_string(), expired);
-        assert!(!radio.connect_recently_failed("AA:00:00:00:00:10"), "the cooldown has passed");
-        assert!(
-            !radio.failed_connects.lock().unwrap().contains_key("AA:00:00:00:00:10"),
-            "an expired entry is dropped"
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_search_that_hears_nothing_ends_with_its_window_and_withdraws() {
-        let radio = Arc::new(Scanner::default());
-        let found = radio.find("coord-silent", Purpose::Delivery, Duration::from_millis(50)).await;
-        assert!(found.is_none());
-        assert!(!searching(&radio, "coord-silent"));
-        assert!(!radio.hand_off("coord-silent", "AA:00:00:00:00:04"));
-    }
-}
 }

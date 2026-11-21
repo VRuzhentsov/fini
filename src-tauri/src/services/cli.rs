@@ -9,26 +9,26 @@ use crate::models::{
     UpdateSpaceInput,
 };
 
-use crate::services::backup;
-use crate::services::cli_update::{maybe_auto_update, run_update, UpdateOptions};
-use crate::services::db::{db_default_path, DbConnection, DbPool, WriteTransaction};
+use crate::models::{is_overdue, parse_utc_timestamp, EditScope, Quest};
+use crate::repositories::quest_repository::append_focus_history;
 use crate::repositories::quest_repository::QuestChange;
-use crate::services::device_service::{DevicePairRequestAckInput, DevicePairRequestInput};
 use crate::repositories::OutboxRepository;
+use crate::repositories::QuestRepository;
+use crate::services::backup;
 use crate::services::bluetooth_channel_service::BluetoothChannelService;
 use crate::services::channel_service::{ChannelService, LinkHandlers};
+use crate::services::cli_update::{maybe_auto_update, run_update, UpdateOptions};
+use crate::services::db::{db_default_path, DbConnection, DbPool, WriteTransaction};
 use crate::services::device_service::DeviceService;
+use crate::services::device_service::{DevicePairRequestAckInput, DevicePairRequestInput};
 use crate::services::event_bus_service::EventBus;
 use crate::services::network_channel_service::NetworkChannelService;
-use crate::services::space_sync_service::{SpaceResolutionMode, SpaceSyncService};
-use crate::repositories::QuestRepository;
-use crate::models::{is_overdue, parse_utc_timestamp, EditScope, Quest};
-#[cfg(any(feature = "cli-plane", test))]
-use chrono::Utc;
-use crate::repositories::quest_repository::append_focus_history;
 use crate::services::reminder::ReminderService;
 use crate::services::settings::{self, ThemeMode};
 use crate::services::space::SpaceRepository;
+use crate::services::space_sync_service::{SpaceResolutionMode, SpaceSyncService};
+#[cfg(any(feature = "cli-plane", test))]
+use chrono::Utc;
 
 const EXIT_SUCCESS: i32 = 0;
 const EXIT_NOT_FOUND: i32 = 3;
@@ -162,7 +162,9 @@ enum QuestCommand {
         about = "Replace a quest's checklist. For a repeating quest --scope this edits only its oldest open day; --scope future edits the quest's template, which reaches every open day (ADR-0012)"
     )]
     ChecklistSetTemplate(ChecklistSetTemplateArgs),
-    #[command(about = "Complete every open occurrence of a repeating quest dated today or before (ADR-0012)")]
+    #[command(
+        about = "Complete every open occurrence of a repeating quest dated today or before (ADR-0012)"
+    )]
     CompleteThroughToday(IdArg),
 }
 
@@ -637,20 +639,34 @@ impl CliContext {
             .map(std::path::Path::to_path_buf)
             .unwrap_or_else(|| std::path::PathBuf::from("."));
         let pool = DbPool::open(&db_path).map_err(CliError::runtime)?;
-        let identity = crate::repositories::DeviceRepository::new(&mut *pool.get().map_err(CliError::runtime)?)
-            .load_or_create_identity(&app_data_dir)
-            .map_err(CliError::runtime)?;
+        let identity = crate::repositories::DeviceRepository::new(
+            &mut *pool.get().map_err(CliError::runtime)?,
+        )
+        .load_or_create_identity(&app_data_dir)
+        .map_err(CliError::runtime)?;
         let bus = std::sync::Arc::new(EventBus::default());
         let network = NetworkChannelService::new(identity.clone(), pool.clone(), bus.clone());
         let bluetooth = BluetoothChannelService::new(identity.clone(), pool.clone(), bus.clone());
-        let space_sync =
-            SpaceSyncService::new(identity.clone(), pool.clone(), bus.clone(), network.clone(), bluetooth.clone());
+        let space_sync = SpaceSyncService::new(
+            identity.clone(),
+            pool.clone(),
+            bus.clone(),
+            network.clone(),
+            bluetooth.clone(),
+        );
         let devices = DeviceService::new(identity, pool.clone(), bus, network.clone(), bluetooth);
-        network.set_link_handlers(LinkHandlers { peer: devices.clone(), session: space_sync.clone() });
+        network.set_link_handlers(LinkHandlers {
+            peer: devices.clone(),
+            session: space_sync.clone(),
+        });
         // The CLI connects out for sync and cannot connect to what it has not
         // found, so it starts discovery, though it serves nobody.
         network.start_discovery();
-        Ok(Self { pool, devices, space_sync })
+        Ok(Self {
+            pool,
+            devices,
+            space_sync,
+        })
     }
 
     fn device_id(&self) -> &str {
@@ -743,7 +759,11 @@ fn write_change(
         .write_transaction(|conn| {
             let previous_space_id = QuestRepository::new(conn).get(id)?.space_id;
             let change = write(conn)?;
-            OutboxRepository::new(conn).record_change(ctx.device_id(), &previous_space_id, &change)?;
+            OutboxRepository::new(conn).record_change(
+                ctx.device_id(),
+                &previous_space_id,
+                &change,
+            )?;
             Ok(change.quest)
         })
         .map_err(CliError::from_string)?;
@@ -804,17 +824,19 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
         QuestCommand::List(args) => {
             let status = args.status.unwrap_or_else(|| "active".to_string());
             let quests: Vec<_> = sort_quests_for_list(
-                QuestRepository::new(&mut conn).all().map_err(CliError::from_string)?,
+                QuestRepository::new(&mut conn)
+                    .all()
+                    .map_err(CliError::from_string)?,
             )
             .into_iter()
             .filter(|quest| quest.status == status)
-                .filter(|quest| {
-                    args.space_id
-                        .as_ref()
-                        .map(|id| &quest.space_id == id)
-                        .unwrap_or(true)
-                })
-                .collect();
+            .filter(|quest| {
+                args.space_id
+                    .as_ref()
+                    .map(|id| &quest.space_id == id)
+                    .unwrap_or(true)
+            })
+            .collect();
             Ok(json!({ "quests": quests }))
         }
         QuestCommand::Get(args) => serde_json::to_value(
@@ -861,7 +883,11 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
             let quest = conn
                 .write_transaction(|conn| {
                     let quest = QuestRepository::new(conn).create(input)?;
-                    OutboxRepository::new(conn).record_quest(ctx.device_id(), &quest.space_id, &quest.id)?;
+                    OutboxRepository::new(conn).record_quest(
+                        ctx.device_id(),
+                        &quest.space_id,
+                        &quest.id,
+                    )?;
                     Ok(quest)
                 })
                 .map_err(CliError::from_string)?;
@@ -912,14 +938,33 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
             )
         }
         QuestCommand::ChecklistAdd(args) => write_change(ctx, &mut conn, &args.quest_id, |conn| {
-            QuestRepository::new(conn).add_checklist_item(&args.quest_id, &args.text, EditScope::All, Some(ctx.device_id()))
+            QuestRepository::new(conn).add_checklist_item(
+                &args.quest_id,
+                &args.text,
+                EditScope::All,
+                Some(ctx.device_id()),
+            )
         }),
-        QuestCommand::ChecklistCheck(args) => write_change(ctx, &mut conn, &args.quest_id, |conn| {
-            QuestRepository::new(conn).toggle_checklist_item(&args.quest_id, &args.item_id, true, None)
-        }),
-        QuestCommand::ChecklistUncheck(args) => write_change(ctx, &mut conn, &args.quest_id, |conn| {
-            QuestRepository::new(conn).toggle_checklist_item(&args.quest_id, &args.item_id, false, None)
-        }),
+        QuestCommand::ChecklistCheck(args) => {
+            write_change(ctx, &mut conn, &args.quest_id, |conn| {
+                QuestRepository::new(conn).toggle_checklist_item(
+                    &args.quest_id,
+                    &args.item_id,
+                    true,
+                    None,
+                )
+            })
+        }
+        QuestCommand::ChecklistUncheck(args) => {
+            write_change(ctx, &mut conn, &args.quest_id, |conn| {
+                QuestRepository::new(conn).toggle_checklist_item(
+                    &args.quest_id,
+                    &args.item_id,
+                    false,
+                    None,
+                )
+            })
+        }
         QuestCommand::ChecklistEdit(args) => write_change(ctx, &mut conn, &args.quest_id, |conn| {
             QuestRepository::new(conn).edit_checklist_item_text(
                 &args.quest_id,
@@ -929,12 +974,21 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
                 Some(ctx.device_id()),
             )
         }),
-        QuestCommand::ChecklistRemove(args) => write_change(ctx, &mut conn, &args.quest_id, |conn| {
-            QuestRepository::new(conn).remove_checklist_item(&args.quest_id, &args.item_id, EditScope::All, Some(ctx.device_id()))
-        }),
-        QuestCommand::CompleteThroughToday(args) => write_change(ctx, &mut conn, &args.id, |conn| {
-            QuestRepository::new(conn).complete_through_today(&args.id, Some(ctx.device_id()))
-        }),
+        QuestCommand::ChecklistRemove(args) => {
+            write_change(ctx, &mut conn, &args.quest_id, |conn| {
+                QuestRepository::new(conn).remove_checklist_item(
+                    &args.quest_id,
+                    &args.item_id,
+                    EditScope::All,
+                    Some(ctx.device_id()),
+                )
+            })
+        }
+        QuestCommand::CompleteThroughToday(args) => {
+            write_change(ctx, &mut conn, &args.id, |conn| {
+                QuestRepository::new(conn).complete_through_today(&args.id, Some(ctx.device_id()))
+            })
+        }
         QuestCommand::ChecklistActivity(args) => {
             let activity = QuestRepository::new(&mut conn)
                 .get_checklist_activity(&args.quest_id)
@@ -942,16 +996,26 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
             Ok(json!({ "quest_id": args.quest_id, "activity": activity }))
         }
         QuestCommand::ChecklistSetTemplate(args) => {
-            let scope = if args.scope == "future" { EditScope::All } else { EditScope::Day };
+            let scope = if args.scope == "future" {
+                EditScope::All
+            } else {
+                EditScope::Day
+            };
             // Text-matching lines keep the ids of the quest's template, so an
             // unchanged item keeps its identity (and its ticks on open days).
             let template = QuestRepository::new(&mut conn)
                 .get(&args.quest_id)
                 .map_err(CliError::from_string)?
                 .description;
-            let normalized_checklist = normalize_future_template(&args.checklist, template.as_deref());
+            let normalized_checklist =
+                normalize_future_template(&args.checklist, template.as_deref());
             write_change(ctx, &mut conn, &args.quest_id, |conn| {
-                QuestRepository::new(conn).set_checklist(&args.quest_id, &normalized_checklist, scope, Some(ctx.device_id()))
+                QuestRepository::new(conn).set_checklist(
+                    &args.quest_id,
+                    &normalized_checklist,
+                    scope,
+                    Some(ctx.device_id()),
+                )
             })
         }
     }
@@ -1056,7 +1120,13 @@ fn update_quest_from_cli(
         repeat_rule,
     };
     write_change(ctx, conn, &args.id, |conn| {
-        let change = QuestRepository::new(conn).update(&args.id, patch, EditScope::All, None, Some(ctx.device_id()))?;
+        let change = QuestRepository::new(conn).update(
+            &args.id,
+            patch,
+            EditScope::All,
+            None,
+            Some(ctx.device_id()),
+        )?;
         if args.trigger_reminder_focus {
             append_focus_history(conn, &change.quest.id, &change.quest.space_id, "reminder")?;
         } else if args.set_focus
@@ -1330,34 +1400,56 @@ fn handle_device(ctx: &CliContext, command: DeviceCommand) -> CliResult<Value> {
         DeviceCommand::Identity => to_json(devices.identity())?,
         DeviceCommand::AddMode { command } => {
             let on = matches!(command, DeviceAddModeCommand::Enter);
-            devices.set_add_device_mode(on, true).map_err(CliError::from_string)?;
+            devices
+                .set_add_device_mode(on, true)
+                .map_err(CliError::from_string)?;
             json!({ "ok": true })
         }
         DeviceCommand::Discovery | DeviceCommand::Presence => to_json(devices.heard_devices())?,
         DeviceCommand::Pair { command } => handle_device_pair(ctx, command)?,
         DeviceCommand::Paired { command } => match command {
-            DevicePairedCommand::List => to_json(devices.paired_devices().map_err(CliError::from_string)?)?,
+            DevicePairedCommand::List => {
+                to_json(devices.paired_devices().map_err(CliError::from_string)?)?
+            }
             DevicePairedCommand::Save(args) => to_json(
                 devices
-                    .save_paired_device(&mut *ctx.open_db()?, &args.peer_device_id, &args.display_name, None, false, None, args.endpoint_id)
+                    .save_paired_device(
+                        &mut *ctx.open_db()?,
+                        &args.peer_device_id,
+                        &args.display_name,
+                        None,
+                        false,
+                        None,
+                        args.endpoint_id,
+                    )
                     .map_err(CliError::from_string)?,
             )?,
             DevicePairedCommand::UpdateLastSeen(args) => {
                 devices
-                    .update_last_seen(&mut *ctx.open_db()?, &args.peer_device_id, &args.last_seen_at)
+                    .update_last_seen(
+                        &mut *ctx.open_db()?,
+                        &args.peer_device_id,
+                        &args.last_seen_at,
+                    )
                     .map_err(CliError::from_string)?;
                 json!({ "ok": true })
             }
             DevicePairedCommand::Unpair(args) => {
-                devices.unpair(&mut *ctx.open_db()?, &args.peer_device_id).map_err(CliError::from_string)?;
+                devices
+                    .unpair(&mut *ctx.open_db()?, &args.peer_device_id)
+                    .map_err(CliError::from_string)?;
                 json!({ "ok": true })
             }
         },
         DeviceCommand::Updates { command } => match command {
-            DeviceUpdatesCommand::ConsumeSpaceMapping => to_json(ctx.space_sync.take_space_mapping_updates())?,
+            DeviceUpdatesCommand::ConsumeSpaceMapping => {
+                to_json(ctx.space_sync.take_space_mapping_updates())?
+            }
         },
         DeviceCommand::Debug { command } => match command {
-            DeviceDebugCommand::Status => to_json(devices.debug_status().map_err(CliError::from_string)?)?,
+            DeviceDebugCommand::Status => {
+                to_json(devices.debug_status().map_err(CliError::from_string)?)?
+            }
         },
     };
     Ok(value)
@@ -1378,23 +1470,37 @@ fn handle_device_pair(ctx: &CliContext, command: DevicePairCommand) -> CliResult
                 .map_err(CliError::from_string)?;
             json!({ "ok": true })
         }
-        DevicePairCommand::Incoming => to_json(devices.incoming_requests().map_err(CliError::from_string)?)?,
-        DevicePairCommand::OutgoingUpdates => to_json(devices.outgoing_updates().map_err(CliError::from_string)?)?,
-        DevicePairCommand::OutgoingCompletions => to_json(devices.outgoing_completions().map_err(CliError::from_string)?)?,
+        DevicePairCommand::Incoming => {
+            to_json(devices.incoming_requests().map_err(CliError::from_string)?)?
+        }
+        DevicePairCommand::OutgoingUpdates => {
+            to_json(devices.outgoing_updates().map_err(CliError::from_string)?)?
+        }
+        DevicePairCommand::OutgoingCompletions => to_json(
+            devices
+                .outgoing_completions()
+                .map_err(CliError::from_string)?,
+        )?,
         DevicePairCommand::Accept(args) => to_json(
             devices
-                .accept_pair_request(DevicePairRequestAckInput { request_id: args.request_id })
+                .accept_pair_request(DevicePairRequestAckInput {
+                    request_id: args.request_id,
+                })
                 .map_err(CliError::from_string)?,
         )?,
         DevicePairCommand::Complete(args) => {
             devices
-                .complete_pair_request(DevicePairRequestAckInput { request_id: args.request_id })
+                .complete_pair_request(DevicePairRequestAckInput {
+                    request_id: args.request_id,
+                })
                 .map_err(CliError::from_string)?;
             json!({ "ok": true })
         }
         DevicePairCommand::Acknowledge(args) => {
             devices
-                .acknowledge_pair_request(DevicePairRequestAckInput { request_id: args.request_id })
+                .acknowledge_pair_request(DevicePairRequestAckInput {
+                    request_id: args.request_id,
+                })
                 .map_err(CliError::from_string)?;
             json!({ "ok": true })
         }
@@ -1407,17 +1513,28 @@ fn handle_sync(ctx: &CliContext, command: SyncCommand) -> CliResult<Value> {
     let space_sync = &ctx.space_sync;
     let value = match command {
         SyncCommand::Mappings { command } => match command {
-            SyncMappingsCommand::List(args) => {
-                to_json(space_sync.list_mappings(&mut *ctx.open_db()?, &args.peer_device_id).map_err(CliError::from_string)?)?
-            }
+            SyncMappingsCommand::List(args) => to_json(
+                space_sync
+                    .list_mappings(&mut *ctx.open_db()?, &args.peer_device_id)
+                    .map_err(CliError::from_string)?,
+            )?,
             SyncMappingsCommand::Update(args) => to_json(
                 space_sync
-                    .update_mappings(&mut *ctx.open_db()?,&args.peer_device_id, args.mapped_space_id)
+                    .update_mappings(
+                        &mut *ctx.open_db()?,
+                        &args.peer_device_id,
+                        args.mapped_space_id,
+                    )
                     .map_err(CliError::from_string)?,
             )?,
             SyncMappingsCommand::ApplyRemote(args) => to_json(
                 space_sync
-                    .apply_remote_mappings(&mut *ctx.open_db()?,&args.peer_device_id, args.mapped_space_id, Vec::new())
+                    .apply_remote_mappings(
+                        &mut *ctx.open_db()?,
+                        &args.peer_device_id,
+                        args.mapped_space_id,
+                        Vec::new(),
+                    )
                     .map_err(CliError::from_string)?,
             )?,
             SyncMappingsCommand::ResolveCustom(args) => to_json(
@@ -1453,9 +1570,11 @@ fn handle_sync(ctx: &CliContext, command: SyncCommand) -> CliResult<Value> {
                 to_json(result)?
             }
         }
-        SyncCommand::Status { peer_device_id } => {
-            to_json(space_sync.status(&mut *ctx.open_db()?, peer_device_id).map_err(CliError::from_string)?)?
-        }
+        SyncCommand::Status { peer_device_id } => to_json(
+            space_sync
+                .status(&mut *ctx.open_db()?, peer_device_id)
+                .map_err(CliError::from_string)?,
+        )?,
     };
     Ok(value)
 }
@@ -1706,7 +1825,6 @@ pub(crate) fn sort_quests_for_list(mut loaded: Vec<Quest>) -> Vec<Quest> {
 
     loaded
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -2008,7 +2126,10 @@ mod tests {
             .count()
             .get_result(&mut conn)
             .expect("count occurrence marks");
-        assert_eq!(marks, 0, "--repeat null makes a one-time quest, with no day rows");
+        assert_eq!(
+            marks, 0,
+            "--repeat null makes a one-time quest, with no day rows"
+        );
 
         std::env::remove_var("FINI_DB_PATH");
         let _ = std::fs::remove_file(db_path);

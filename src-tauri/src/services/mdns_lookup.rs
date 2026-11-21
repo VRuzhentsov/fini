@@ -68,7 +68,9 @@ pub struct MdnsLookup {
 
 impl std::fmt::Debug for MdnsLookup {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MdnsLookup").field("instance", &self.instance).finish_non_exhaustive()
+        f.debug_struct("MdnsLookup")
+            .field("instance", &self.instance)
+            .finish_non_exhaustive()
     }
 }
 
@@ -81,14 +83,22 @@ impl MdnsLookup {
         port: u16,
         user_data: Option<UserData>,
     ) -> Result<(Self, mpsc::Receiver<MdnsEvent>), String> {
-        let daemon = ServiceDaemon::new().map_err(|err| format!("the mDNS daemon did not start: {err}"))?;
+        let daemon =
+            ServiceDaemon::new().map_err(|err| format!("the mDNS daemon did not start: {err}"))?;
         // The endpoint binds IPv4 only, so IPv6 records are of no use.
-        daemon.disable_interface(IfKind::IPv6).map_err(|err| err.to_string())?;
-        let browse = daemon.browse(SERVICE_TYPE).map_err(|err| format!("mDNS browse failed: {err}"))?;
+        daemon
+            .disable_interface(IfKind::IPv6)
+            .map_err(|err| err.to_string())?;
+        let browse = daemon
+            .browse(SERVICE_TYPE)
+            .map_err(|err| format!("mDNS browse failed: {err}"))?;
         let (sender, events) = mpsc::channel(64);
         let peers = Arc::new(Mutex::new(HashMap::new()));
         let browse_task = tokio::spawn(run_browse(browse, endpoint_id, peers.clone(), sender));
-        let record = Record { port, user_data: user_data.map(|data| data.to_string()) };
+        let record = Record {
+            port,
+            user_data: user_data.map(|data| data.to_string()),
+        };
         let lookup = Self {
             daemon,
             instance: instance_name(&endpoint_id),
@@ -127,12 +137,21 @@ impl MdnsLookup {
             properties.insert(USER_DATA_KEY.to_string(), user_data.clone());
         }
         let host = format!("{}.local.", self.instance);
-        let info = ServiceInfo::new(SERVICE_TYPE, &self.instance, &host, (), record.port, properties)
-            .map_err(|err| format!("the mDNS record is not valid: {err}"))?
-            // The daemon gives on each interface the address of that
-            // interface, and follows address changes.
-            .enable_addr_auto();
-        self.daemon.register(info).map_err(|err| format!("mDNS register failed: {err}"))
+        let info = ServiceInfo::new(
+            SERVICE_TYPE,
+            &self.instance,
+            &host,
+            (),
+            record.port,
+            properties,
+        )
+        .map_err(|err| format!("the mDNS record is not valid: {err}"))?
+        // The daemon gives on each interface the address of that
+        // interface, and follows address changes.
+        .enable_addr_auto();
+        self.daemon
+            .register(info)
+            .map_err(|err| format!("mDNS register failed: {err}"))
     }
 
     fn fullname(&self) -> String {
@@ -160,7 +179,9 @@ impl AddressLookup for MdnsLookup {
 
     fn resolve(&self, endpoint_id: EndpointId) -> Option<BoxStream<'static, Result<Item, Error>>> {
         let info = self.peers.lock().unwrap().get(&endpoint_id).cloned()?;
-        Some(Box::pin(stream::once(async move { Ok(Item::new(info, PROVENANCE, None)) })))
+        Some(Box::pin(stream::once(async move {
+            Ok(Item::new(info, PROVENANCE, None))
+        })))
     }
 }
 
@@ -211,7 +232,9 @@ async fn run_browse(
 /// The endpoint id in lower-case base32, as `iroh-mdns-address-lookup`
 /// writes it.
 fn instance_name(endpoint_id: &EndpointId) -> String {
-    data_encoding::BASE32_NOPAD.encode(endpoint_id.as_bytes()).to_ascii_lowercase()
+    data_encoding::BASE32_NOPAD
+        .encode(endpoint_id.as_bytes())
+        .to_ascii_lowercase()
 }
 
 /// The endpoint id in a full instance name
@@ -231,12 +254,20 @@ fn endpoint_info(service: &ResolvedService) -> Option<EndpointInfo> {
     if addrs.is_empty() {
         return None;
     }
-    let user_data = service.get_property_val_str(USER_DATA_KEY).and_then(|value| value.parse().ok());
-    Some(EndpointInfo::new(endpoint_id).with_ip_addrs(addrs).with_user_data(user_data))
+    let user_data = service
+        .get_property_val_str(USER_DATA_KEY)
+        .and_then(|value| value.parse().ok());
+    Some(
+        EndpointInfo::new(endpoint_id)
+            .with_ip_addrs(addrs)
+            .with_user_data(user_data),
+    )
 }
 
 fn to_socket_addrs(ips: Vec<Ipv4Addr>, port: u16) -> Vec<SocketAddr> {
-    ips.into_iter().map(|ip| SocketAddr::new(IpAddr::V4(ip), port)).collect()
+    ips.into_iter()
+        .map(|ip| SocketAddr::new(IpAddr::V4(ip), port))
+        .collect()
 }
 
 #[cfg(test)]

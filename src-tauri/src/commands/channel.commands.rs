@@ -10,7 +10,9 @@ use crate::services::channel_service::ChannelService;
 /// Whether this device's Bluetooth radio can be used now, asked directly.
 /// The Device page calls it right after a person switches Bluetooth on.
 #[tauri::command]
-pub async fn channel_probe_bluetooth(bluetooth: State<'_, Arc<BluetoothChannelService>>) -> Result<bool, String> {
+pub async fn channel_probe_bluetooth(
+    bluetooth: State<'_, Arc<BluetoothChannelService>>,
+) -> Result<bool, String> {
     Ok(bluetooth.probe().await)
 }
 
@@ -21,7 +23,10 @@ pub async fn channel_probe_bluetooth(bluetooth: State<'_, Arc<BluetoothChannelSe
 #[cfg(feature = "devtools")]
 #[tauri::command]
 pub async fn channel_set_test_switch(
-    network_channel: State<'_, Arc<crate::services::network_channel_service::NetworkChannelService>>,
+    network_channel: State<
+        '_,
+        Arc<crate::services::network_channel_service::NetworkChannelService>,
+    >,
     space_sync: State<'_, Arc<crate::services::space_sync_service::SpaceSyncService>>,
     bluetooth: Option<bool>,
     network: Option<bool>,
@@ -36,7 +41,10 @@ pub async fn channel_set_test_switch(
     if let Some(on) = bluetooth {
         #[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
         {
-            if !crate::services::bluetooth_channel_service::BluetoothAdapter::this_device().set_switch(on).await {
+            if !crate::services::bluetooth_channel_service::BluetoothAdapter::this_device()
+                .set_switch(on)
+                .await
+            {
                 return Err("this device has no usable Bluetooth adapter".to_string());
             }
             if !on {

@@ -616,7 +616,9 @@ fn candidate_filename(target: &str) -> &'static str {
 }
 
 fn is_cli_linux_target(target: &str) -> bool {
-    target.starts_with("cli-linux-") || target.ends_with("-unknown-linux-gnu") || target.ends_with("-unknown-linux-musl")
+    target.starts_with("cli-linux-")
+        || target.ends_with("-unknown-linux-gnu")
+        || target.ends_with("-unknown-linux-musl")
 }
 
 fn is_cli_windows_target(target: &str) -> bool {

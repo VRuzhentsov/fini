@@ -101,7 +101,8 @@ fn past_due_reminders(
     let mut result = Vec::new();
     for (reminder, stored) in rows {
         let fired = |day: &Quest| reminder.moment(day).is_some_and(|at| at <= *now);
-        let Some(quest) = QuestRepository::new(conn).missed_reminder_occurrence(&stored, fired)? else {
+        let Some(quest) = QuestRepository::new(conn).missed_reminder_occurrence(&stored, fired)?
+        else {
             continue;
         };
         let space: Space = spaces::table
