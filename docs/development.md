@@ -140,7 +140,7 @@ Use this default hierarchy:
 |---|---|
 | `Makefile` | Local developer shortcuts with memorable names; each recipe calls an npm script or a local-only tool (adb, a dev server) |
 | `npm run` | JS/TS/frontend/package scripts, Vite/Tauri package scripts, JS/TS tests, and the CI gate steps (`gate:*`, `test:e2e:*`, `build:android:e2e`) |
-| `scripts/*.mts` | The logic behind an npm script that is more than one command (`ci-gate.mts`, `e2e-android.mts`, `with-devtools-capability.mts`). Node 24 runs them as they are (type stripping): use only types that can be erased, so no `enum` and no parameter properties. Older scripts are still `.mjs` |
+| `scripts/*.mts` | The logic behind an npm script that is more than one command (`ci-gate.mts`, `e2e-android.mts`, `e2e-build.mts`, `e2e-headed.mts`, `with-devtools-capability.mts`). Node 24 runs them as they are (type stripping): use only types that can be erased, so no `enum` and no parameter properties. Older scripts are still `.mjs` |
 | `cargo xtask` | Non-trivial Rust repo automation, file parsing/editing, manifest updates, packaging/release orchestration |
 | CI workflow steps | One `run: npm run <script>` (or `cargo xtask ...`) for each step; no `make` |
 

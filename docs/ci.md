@@ -74,7 +74,8 @@ The scripts that build the same stages on a developer's computer:
 
 | Script | What it does |
 |---|---|
-| `scripts/ci-gate.mts` | `npm run gate:*`: builds a `linux` stage (`build` or `e2e`) and runs the command of the step in it. With podman, it uses the podman flags of `container-stage`, and the GHCR layer cache when `FINI_CONTAINER_CACHE` is set. In the `e2e` container (`FINI_E2E_CONTAINER_RUNNER=1`), `gate:e2e:run` builds the e2e binaries and runs `scripts/e2e-runner.sh`; CI calls it there |
+| `scripts/ci-gate.mts` | `npm run gate:*`: builds a `linux` stage (`build` or `e2e`) and runs the command of the step in it. With podman, it uses the podman flags of `container-stage`, and the GHCR layer cache when `FINI_CONTAINER_CACHE` is set. In the `e2e` container (`FINI_E2E_CONTAINER_RUNNER=1`), `gate:e2e:run` builds the e2e binaries and runs `scripts/e2e-runner.sh`; CI calls it there. `npm run test:e2e:ci` (step `e2e`) runs Playwright in that container, and the two `gate:e2e:*` steps with `CI=1` on the host |
+| `scripts/e2e-build.mts` | `npm run build:desktop:e2e`, `build:windows:e2e` and `build:android:e2e`: the e2e builds with the devtools capability |
 | `scripts/e2e-android.mts` | `npm run test:e2e:android`: builds the `android` `e2e` stage and runs Playwright in it, with `/dev/kvm`. In the container (`FINI_E2E_CONTAINER_RUNNER=1`), it runs Playwright at once; CI calls it there |
 | `containers/run.sh` | Runs a command in the `build` stage of `linux` or `android`. The Makefile uses it for the Android targets |
 

@@ -57,7 +57,7 @@ This runs `cargo test --manifest-path src-tauri/Cargo.toml --features cli-plane,
 make e2e-headed
 ```
 
-Builds `fini-app` with `--features ui-plane,devtools` and `fini` with `--features cli-plane,devtools`, then runs the projects `ui` and `multi-device`. The `testDevices` fixture starts the virtual Linux test devices. `make e2e` is an alias for `make e2e-headed`.
+Builds `fini-app` with `--features ui-plane,desktop-updater,devtools`, `fini` with `--features cli-plane` and the mock broker in `src-tauri/target/debug-e2e` (`scripts/e2e-build.mts desktop`), then runs the projects `ui` and `multi-device` (`scripts/e2e-headed.mts`). The `testDevices` fixture starts the virtual Linux test devices. `make e2e` is an alias for `make e2e-headed`.
 
 ### E2E — containerized CI parity
 

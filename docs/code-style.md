@@ -93,7 +93,7 @@ as narrow as possible, and call it out in the report.
   `${VAR:-default}`: in a `scripts/*.mts` file that the script calls.
 - Names: `<task>:<target>[:<variant>]`, as `test:e2e:smoke` and `build:android:e2e`.
 
-Good: `"test:e2e": "node scripts/e2e-desktop.mts"`. Bad:
+Good: `"build:desktop:e2e": "node scripts/e2e-build.mts desktop"`. Bad:
 `"test:e2e": "FINI_APP_BINARY=$t/fini-app TZ=UTC npx playwright test --config … --project ui"`.
 
 ## Vue frontend

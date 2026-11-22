@@ -6,7 +6,7 @@
 // .github/actions/container-stage, and runs the same commands.
 //
 //   node scripts/ci-gate.mts <fe-unit|be-compile|be-unit|e2e-build-image|
-//                             e2e-run|e2e-artifacts|e2e-cleanup>
+//                             e2e-run|e2e|e2e-artifacts|e2e-cleanup>
 //
 // `e2e-run` in the `linux` `e2e` container (FINI_E2E_CONTAINER_RUNNER=1)
 // builds the e2e binaries and runs scripts/e2e-runner.sh; CI calls it there.
@@ -15,7 +15,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { E2eEnv } from '../specs/e2e/e2e-project.ts';
+import { E2eEnv, E2eProject } from '../specs/e2e/e2e-project.ts';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const env = process.env;
@@ -209,6 +209,22 @@ const steps: Record<string, () => unknown> = {
         '-e', `FINI_E2E_KEEP=${settings.keep}`,
       ],
     });
+  },
+
+  // `npm run test:e2e:ci`. In the `e2e` container (scripts/e2e-runner.sh): one
+  // Playwright run of `cli`, `ui` and `multi-device`. On the host: the steps
+  // `e2e-build-image` and `e2e-run`, with CI=1.
+  e2e: () => {
+    if (env.FINI_E2E_CONTAINER_RUNNER === '1') {
+      run('npx', [
+        'playwright', 'test', '--config', 'specs/e2e/playwright.config.ts',
+        '--project', E2eProject.Cli, '--project', E2eProject.Ui, '--project', E2eProject.MultiDevice,
+      ]);
+      return;
+    }
+    env.CI = '1';
+    steps['e2e-build-image']();
+    steps['e2e-run']();
   },
 
   'e2e-artifacts': () => {
