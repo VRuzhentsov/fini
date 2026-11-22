@@ -81,6 +81,21 @@ suppression such as crate-level `allow(dead_code, unused_imports)` as a
 user-owned exception: add it only after explicit user approval, keep its scope
 as narrow as possible, and call it out in the report.
 
+## package.json scripts
+
+**A script is a short name for one task.** Write one command, or a sequence of
+`npm run <script>` calls, in fewer than 100 characters. Put the other parts here:
+
+- Flags and options: in the config file of the tool (`vite.config.ts`,
+  `specs/e2e/playwright.config.ts`, `jest.config.cjs`, `tsconfig.json`,
+  `src-tauri/tauri.conf.json`).
+- Environment variables, more than one step, `if`, `export` and
+  `${VAR:-default}`: in a `scripts/*.mts` file that the script calls.
+- Names: `<task>:<target>[:<variant>]`, as `test:e2e:smoke` and `build:android:e2e`.
+
+Good: `"test:e2e": "node scripts/e2e-desktop.mts"`. Bad:
+`"test:e2e": "FINI_APP_BINARY=$t/fini-app TZ=UTC npx playwright test --config … --project ui"`.
+
 ## Vue frontend
 
 These rules apply to Vue code under `src/`: view components, templates,
@@ -183,6 +198,8 @@ Keep the parent responsible for form/lifecycle orchestration and pass narrow sta
 - No value from a closed set (state, kind, colour, problem code) is written as
   a string literal; it goes through its named const.
 - Derived state is computed when it is read, not stored.
+- Each `package.json` script is one short command; flags go in tool config,
+  environment variables and logic go in `scripts/*.mts`.
 - No new code duplicates an existing store, utility or composable.
 - Vue templates: conditionals use `renderFlags` for product/platform rendering
   decisions; non-trivial lists use a named computed list source; event

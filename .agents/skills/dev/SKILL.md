@@ -99,7 +99,7 @@ Load the scoped skill when its condition applies. When no skill fits, continue w
 | Ticket has GitHub label `design`, or work designs/refines native Figma components, variants, screens, visual systems, or Fini UI surfaces | `fini-design` |
 | Change Vue frontend code under `src/`, especially view components, templates, conditional rendering, lists, or frontend tests | `fini-frontend`; also load `fini-test` for test authoring/execution |
 | Change SQLite schema, Diesel schema, data migrations, migration rollback, or database migration tests | `fini-dev-db`; also load `fini-test` for migration coverage |
-| Add or change Makefile targets, npm scripts, `xtask`, CI command orchestration, build tooling, packaging tooling, or repo-local automation architecture | `fini-scripting` |
+| Add or change Makefile targets, npm scripts, `xtask`, CI command orchestration, build tooling, packaging tooling, or repo-local automation architecture | `fini-scripting`; before you edit `package.json`, read `docs/code-style.md`, "package.json scripts" |
 | Make a release, bump a release version for shipping, push a release tag, inspect release readiness, fix release automation, or verify release CI | `fini-release`; also load `fini-versioning` for metadata semantics and `fini-scripting` when automation changes are needed |
 | Change package metadata, app version display, CLI version output, Android versioning, or CI release version sync outside an operational release | `fini-versioning`; also follow `fini-scripting` when automation changes are needed |
 | Prepare a major release, Play Store listing assets, Android marketplace screenshots, or release screenshot packages | `fini-release-prep`; also follow `fini-scripting` when automation changes are needed |
