@@ -25,6 +25,7 @@ impl<'a> ReminderService<'a> {
         }
     }
 
+    #[cfg(feature = "cli-plane")]
     pub fn reconcile(&mut self, quest: &Quest) -> Result<(), String> {
         if quest.status == "active" && quest.due.is_some() {
             self.upsert_for_quest(quest).map(|_| ())
@@ -37,6 +38,7 @@ impl<'a> ReminderService<'a> {
         self.repository.upsert_for_quest(&quest.id)
     }
 
+    #[cfg(feature = "cli-plane")]
     pub fn delete_for_quest(&mut self, quest_id: &str) -> Result<(), String> {
         self.repository.delete_for_quest(quest_id)
     }
@@ -60,6 +62,7 @@ impl<'a> ReminderService<'a> {
             .collect())
     }
 
+    #[cfg(feature = "cli-plane")]
     pub fn create(&mut self, input: CreateReminderInput) -> Result<Reminder, String> {
         let reminder = self.repository.create(input)?;
         self.readable(reminder)
@@ -110,6 +113,7 @@ impl<'a> ReminderService<'a> {
         self.repository.update(id, input)
     }
 
+    #[cfg(feature = "cli-plane")]
     pub fn delete(&mut self, id: &str) -> Result<(), String> {
         self.repository.delete(id)
     }

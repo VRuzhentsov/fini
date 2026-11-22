@@ -58,6 +58,7 @@ pub struct BackupExportResult {
     pub manifest: BackupManifest,
 }
 
+#[cfg(feature = "cli-plane")]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BackupArchiveInspection {
     pub valid: bool,
@@ -65,6 +66,7 @@ pub struct BackupArchiveInspection {
     pub contents: BackupArchiveContents,
 }
 
+#[cfg(feature = "cli-plane")]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BackupArchiveContents {
     pub spaces: Vec<ManifestSpace>,
@@ -80,6 +82,7 @@ pub struct BackupImportPreflight {
 
 /// A read-only archive recovery plan. This describes whether a later import could proceed;
 /// it never applies an archive or starts recovery.
+#[cfg(any(feature = "cli-plane", test))]
 #[derive(Debug, Serialize)]
 pub struct BackupImportDryRunPlan {
     pub dry_run: bool,
@@ -90,6 +93,7 @@ pub struct BackupImportDryRunPlan {
     pub conflicts: Vec<BackupConflict>,
 }
 
+#[cfg(any(feature = "cli-plane", test))]
 impl BackupImportDryRunPlan {
     pub fn from_preflight(preflight: BackupImportPreflight) -> Self {
         let ready_to_apply =
@@ -365,6 +369,7 @@ pub fn preflight_import(
 }
 
 /// Read and validate a backup archive without accessing a local Fini database.
+#[cfg(feature = "cli-plane")]
 pub fn inspect_backup(path: &Path) -> Result<BackupArchiveInspection, String> {
     let extracted = extract_backup(path)?;
     let result = (|| {

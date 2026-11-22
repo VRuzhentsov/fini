@@ -1087,6 +1087,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn compile_version_binary(dir: &Path, name: &str, version: &str) -> PathBuf {
         let source = dir.join(format!("{name}.rs"));
         let binary = dir.join(name);
@@ -1173,6 +1174,7 @@ mod tests {
         gz.finish().expect("finish gzip")
     }
 
+    #[cfg(unix)]
     fn make_tar_gz_from_file(path: &str, source: &Path) -> Vec<u8> {
         let bytes = fs::read(source).expect("read source binary");
         make_tar_gz(&[(path, bytes.as_slice())])

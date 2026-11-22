@@ -410,6 +410,10 @@ fn show_plugin(app: &AppHandle, reminder_id: &str, quest_id: &str, body: &str) {
         }
         Err(e) => eprintln!("[notification] plugin show failed for {reminder_id}: {e}"),
     }
+
+    // Only the devtools event record uses the quest id.
+    #[cfg(not(feature = "devtools"))]
+    let _ = quest_id;
 }
 
 /// Dispatch a notification action received from either Linux notify-rust or mobile plugin.

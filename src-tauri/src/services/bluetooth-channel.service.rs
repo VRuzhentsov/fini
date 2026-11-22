@@ -68,6 +68,7 @@ pub struct BluetoothChannelService {
     stopping: tokio::sync::watch::Sender<bool>,
     initialization: tokio::sync::RwLock<()>,
     admission: std::sync::Mutex<()>,
+    #[cfg(any(target_os = "linux", target_os = "windows", test))]
     shutdown_result: tokio::sync::OnceCell<Result<(), String>>,
     /// Scoped pairing uses until each first session acquires the channel.
     pairing_links:
@@ -89,6 +90,7 @@ impl BluetoothChannelService {
             stopping: tokio::sync::watch::channel(false).0,
             initialization: tokio::sync::RwLock::new(()),
             admission: std::sync::Mutex::new(()),
+            #[cfg(any(target_os = "linux", target_os = "windows", test))]
             shutdown_result: tokio::sync::OnceCell::new(),
             pairing_links: std::sync::Mutex::default(),
 
@@ -118,6 +120,8 @@ impl BluetoothChannelService {
     }
 
     /// True owner shutdown only. Each drain has a bound; errors remain in the result.
+    /// Android does not use it: the Activity does not own the channel.
+    #[cfg(any(target_os = "linux", target_os = "windows", test))]
     pub async fn shutdown(&self) -> Result<(), String> {
         {
             let _admission = self.admission.lock().unwrap_or_else(|err| err.into_inner());
@@ -3413,6 +3417,7 @@ mod scanner {
     }
 
     impl Scanner {
+        #[cfg(any(target_os = "linux", target_os = "windows", test))]
         pub(super) fn stop(&self) {
             self.add_device_mode.store(false, Ordering::SeqCst);
             if let Ok(mut requests) = self.requests.lock() {

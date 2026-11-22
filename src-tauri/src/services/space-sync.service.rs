@@ -1764,23 +1764,22 @@ mod apply {
             return Ok(());
         }
 
-        let mut next_order = spaces::table
+        let first_order = spaces::table
             .select(diesel::dsl::max(spaces::item_order))
             .first::<Option<i64>>(conn)
             .map_err(|e| e.to_string())?
             .unwrap_or(0)
             + 1;
 
-        for space_id in missing {
+        for (order, space_id) in (first_order..).zip(missing) {
             diesel::insert_or_ignore_into(spaces::table)
                 .values((
                     spaces::id.eq(&space_id),
                     spaces::name.eq(placeholder_space_name(&space_id)),
-                    spaces::item_order.eq(next_order),
+                    spaces::item_order.eq(order),
                 ))
                 .execute(conn)
                 .map_err(|e| e.to_string())?;
-            next_order += 1;
         }
 
         Ok(())
