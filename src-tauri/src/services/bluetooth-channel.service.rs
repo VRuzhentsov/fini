@@ -853,9 +853,16 @@ impl BluetoothChannelService {
             let found = if remaining.is_zero() {
                 None
             } else {
-                self.scanner
-                    .find(peer_id, Purpose::Delivery, remaining)
-                    .await
+                // A search that went on after an unpair kept this exchange,
+                // so the first session of the next pair did not start.
+                tokio::select! {
+                    biased;
+                    found = self.scanner.find(peer_id, Purpose::Delivery, remaining) => found,
+                    () = self.wait_until_off(peer_id) => {
+                        log::info!("[transport][ble] stopped the delivery search for {peer_id}: it has no Bluetooth channel any more");
+                        return;
+                    }
+                }
             };
             let Some(found) = found else {
                 match last_error {
@@ -1173,25 +1180,9 @@ mod tests {
     /// connect to `PEER` fails at once and marks its address as failed: the
     /// mark shows that a connect ran.
     fn fixture(label: &str, device_id: &str) -> Fixture {
-        use crate::schema::paired_devices;
-        use diesel::prelude::*;
-
         let db_path =
             std::env::temp_dir().join(format!("fini-test-bluetooth-{label}-{}.db", Uuid::new_v4()));
-        let mut conn = crate::services::db::open_db_at_path(&db_path);
-        diesel::insert_into(paired_devices::table)
-            .values((
-                paired_devices::peer_device_id.eq(PEER),
-                paired_devices::display_name.eq("Peer A"),
-                paired_devices::paired_at.eq("2026-04-07T00:00:00Z"),
-                paired_devices::last_seen_at.eq(Option::<String>::None),
-                paired_devices::pair_state.eq("paired"),
-            ))
-            .execute(&mut conn)
-            .unwrap();
-        ChannelRepository::new(&mut conn)
-            .configure(PEER, ChannelKind::Bluetooth, true, None)
-            .unwrap();
+        pair_with_peer(&mut crate::services::db::open_db_at_path(&db_path));
         let secret_key = iroh::SecretKey::generate();
         let identity = Identity {
             device_id: device_id.to_string(),
@@ -1214,6 +1205,26 @@ mod tests {
             sessions,
             db_path,
         }
+    }
+
+    /// Pairs with `PEER`, with its Bluetooth channel on.
+    fn pair_with_peer(conn: &mut diesel::SqliteConnection) {
+        use crate::schema::paired_devices;
+        use diesel::prelude::*;
+
+        diesel::insert_into(paired_devices::table)
+            .values((
+                paired_devices::peer_device_id.eq(PEER),
+                paired_devices::display_name.eq("Peer A"),
+                paired_devices::paired_at.eq("2026-04-07T00:00:00Z"),
+                paired_devices::last_seen_at.eq(Option::<String>::None),
+                paired_devices::pair_state.eq("paired"),
+            ))
+            .execute(conn)
+            .unwrap();
+        ChannelRepository::new(conn)
+            .configure(PEER, ChannelKind::Bluetooth, true, None)
+            .unwrap();
     }
 
     async fn wait_until(what: &str, within: Duration, done: impl Fn() -> bool) {
@@ -1278,6 +1289,47 @@ mod tests {
         wait_until(
             "a connect to the peer starts",
             Duration::from_secs(2),
+            || service.scanner.connect_recently_failed(PEER_ADDRESS),
+        )
+        .await;
+        service.shutdown().await.unwrap();
+    }
+
+    /// An unpair stops a delivery search that runs: the exchange ends at
+    /// once, not at the end of `SEARCH_WINDOW`. Then the exchange of a new
+    /// pair with the same device starts and connects.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_unpair_stops_the_delivery_search() {
+        // Smaller than `PEER`: this device connects first, with no wait.
+        let fixture = fixture("unpair-search", "aa-this-device");
+        let service = &fixture.service;
+
+        // Not heard yet: the exchange starts a delivery search.
+        service.start_exchange(PEER);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !service.scanner.begin_exchange(PEER),
+            "the exchange runs its delivery search"
+        );
+
+        DeviceRepository::new(&mut service.pool.connection())
+            .remove(PEER)
+            .unwrap();
+        wait_until("the exchange ends", Duration::from_secs(3), || {
+            let ended = service.scanner.begin_exchange(PEER);
+            if ended {
+                service.scanner.end_exchange(PEER);
+            }
+            ended
+        })
+        .await;
+
+        pair_with_peer(&mut service.pool.connection());
+        service.scanner.record_paired_heard(PEER, PEER_ADDRESS);
+        service.start_exchange(PEER);
+        wait_until(
+            "the exchange of the new pair connects",
+            Duration::from_secs(3),
             || service.scanner.connect_recently_failed(PEER_ADDRESS),
         )
         .await;
@@ -3274,6 +3326,25 @@ mod scanner {
         }
     }
 
+    /// A search that `Scanner::find` registered. Dropping it withdraws the
+    /// search, also when the caller of `find` stops waiting for it.
+    struct SearchMark<'a> {
+        scanner: &'a Scanner,
+        id: u64,
+    }
+
+    impl Drop for SearchMark<'_> {
+        fn drop(&mut self) {
+            self.scanner
+                .requests
+                .lock()
+                .unwrap()
+                .searches
+                .retain(|request| request.id != self.id);
+            self.scanner.changed.notify_one();
+        }
+    }
+
     pub struct Scanner {
         channel: std::sync::Weak<BluetoothChannelService>,
         /// Pairing legs (request / accept / complete) in progress. The add-mode
@@ -3569,17 +3640,14 @@ mod scanner {
             log::info!("[transport][ble] {purpose:?} search for {peer} started (up to {window:?})");
             let started = Instant::now();
 
+            let search = SearchMark { scanner: self, id };
+
             let found = tokio::time::timeout(window, heard)
                 .await
                 .ok()
                 .and_then(Result::ok);
 
-            self.requests
-                .lock()
-                .unwrap()
-                .searches
-                .retain(|request| request.id != id);
-            self.changed.notify_one();
+            drop(search);
             log::info!(
                 "[transport][ble] {purpose:?} search for {peer} ended after {:?}: {}",
                 started.elapsed(),
