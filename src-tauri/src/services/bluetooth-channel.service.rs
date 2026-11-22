@@ -594,7 +594,18 @@ impl BluetoothChannelService {
             if visible || link.is_some() {
                 let apply = async {
                     if link.is_none() {
-                        link = Some(self.peer_link().await?);
+                        // No managed owner means no advertisement: try again
+                        // like after a failed update.
+                        match self.peer_link().await {
+                            Ok(shared) => link = Some(shared),
+                            Err(err) => {
+                                if !self.stopping() {
+                                    uncertain = true;
+                                    BluetoothAdapter::this_device().note_unreachable();
+                                }
+                                return Err(err);
+                            }
+                        }
                     }
                     let shared = link.as_ref().expect("the managed owner exists");
                     self.advertiser
@@ -613,6 +624,10 @@ impl BluetoothChannelService {
                 } else {
                     0
                 };
+            } else {
+                // Not wanted and no owner: nothing to try again.
+                uncertain = false;
+                failed_updates = 0;
             }
             // A failed update leaves the advertisement hidden or old: try it
             // again after a wait that grows, or when the adapter changes.
