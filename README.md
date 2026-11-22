@@ -131,7 +131,7 @@ archive for the wrong ABI:
 
 | Platform | CLI artifact |
 |---|---|
-| Linux x64 | `fini-vX.Y.Z-linux-x86_64-unknown-linux-musl-cli.tar.gz` |
+| Linux x64 | `fini-vX.Y.Z-linux-x86_64-unknown-linux-musl-cli.tar.gz` (also as `fini-vX.Y.Z-linux-x86_64-unknown-linux-gnu-cli.tar.gz` for CLIs at v0.3.19 or older) |
 | Windows x64 | `fini-vX.Y.Z-windows-x86_64-pc-windows-msvc-cli.zip` |
 | Windows arm64 | `fini-vX.Y.Z-windows-aarch64-pc-windows-msvc-cli.zip` |
 
