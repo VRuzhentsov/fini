@@ -41,6 +41,10 @@ semicolon_if_nothing_returned = "warn"
 undocumented_unsafe_blocks = "warn"
 # Only the CLI writes to stdout; its modules allow it.
 print_stdout = "warn"
+# One inherent `impl` block for each type (docs/code-style.md). Clippy does
+# not compare the impls of a type that has a lifetime (`impl Foo<'_>`);
+# `npm run lint:rust-impl` checks each file for those too.
+multiple_inherent_impl = "deny"
 
 [patch.crates-io]
 sherpa-onnx-sys = { path = "patches/sherpa-onnx-sys" }
