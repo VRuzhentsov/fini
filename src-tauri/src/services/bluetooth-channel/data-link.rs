@@ -54,6 +54,21 @@ impl BleDataLink {
     pub(super) fn into_channel(mut self) -> Option<PeerChannel> {
         self.channel.take()
     }
+
+    /// Central role: connect to a peer's Bluetooth address over a plain link,
+    /// for Fini's own pre-pairing frames (identify, pair request/accept/
+    /// complete). Sessions use `BluetoothChannel::connect_session`.
+    pub(super) async fn connect(shared: Arc<PeerLink>, address: &str) -> Result<Self, String> {
+        let peer = PeerAddress(address.to_string());
+        let channel = shared
+            .request(&peer)
+            .await
+            .map_err(|err| err.to_string())?
+            .accept()
+            .await
+            .map_err(|err| format!("ble connect to {address} failed: {err}"))?;
+        Ok(BleDataLink::new(channel))
+    }
 }
 
 #[async_trait]
@@ -135,22 +150,5 @@ impl DataLink for BleDataLink {
             }
         }
         Some(Ok(bytes))
-    }
-}
-
-/// Central role: connect to a peer's Bluetooth address over a plain link,
-/// for Fini's own pre-pairing frames (identify, pair request/accept/
-/// complete). Sessions use `BluetoothChannel::connect_session`.
-impl BleDataLink {
-    pub(super) async fn connect(shared: Arc<PeerLink>, address: &str) -> Result<Self, String> {
-        let peer = PeerAddress(address.to_string());
-        let channel = shared
-            .request(&peer)
-            .await
-            .map_err(|err| err.to_string())?
-            .accept()
-            .await
-            .map_err(|err| format!("ble connect to {address} failed: {err}"))?;
-        Ok(BleDataLink::new(channel))
     }
 }

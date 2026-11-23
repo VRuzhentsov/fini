@@ -389,6 +389,27 @@ impl RepeatRule {
             && self.unit == other.unit
             && self.days_of_week == other.days_of_week
     }
+
+    pub fn parse(value: Option<&str>) -> Option<Self> {
+        let value = value.filter(|value| !value.is_empty())?;
+        let rule: RepeatRule = serde_json::from_str(value).ok()?;
+        matches!(rule.preset.as_deref(), Some(preset) if preset != "none").then_some(rule)
+    }
+
+    /// The last date the rule allows (`end = "on_date"`), if any.
+    fn end_date(&self) -> Option<NaiveDate> {
+        (self.end.as_deref() == Some("on_date"))
+            .then_some(self.end_date.as_deref())
+            .flatten()
+            .and_then(|date| NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
+    }
+
+    /// How many completed occurrences end the rule (`end = "after_n"`), if any.
+    fn end_after(&self) -> Option<i64> {
+        (self.end.as_deref() == Some("after_n"))
+            .then_some(self.end_after)
+            .flatten()
+    }
 }
 
 /// Maps the two-letter weekday tokens the UI uses ("Mo".."Su") to `chrono::Weekday`.
@@ -488,29 +509,6 @@ fn compute_next_due(
         }
         Some("none") | None => None,
         _ => None,
-    }
-}
-
-impl RepeatRule {
-    pub fn parse(value: Option<&str>) -> Option<Self> {
-        let value = value.filter(|value| !value.is_empty())?;
-        let rule: RepeatRule = serde_json::from_str(value).ok()?;
-        matches!(rule.preset.as_deref(), Some(preset) if preset != "none").then_some(rule)
-    }
-
-    /// The last date the rule allows (`end = "on_date"`), if any.
-    fn end_date(&self) -> Option<NaiveDate> {
-        (self.end.as_deref() == Some("on_date"))
-            .then_some(self.end_date.as_deref())
-            .flatten()
-            .and_then(|date| NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
-    }
-
-    /// How many completed occurrences end the rule (`end = "after_n"`), if any.
-    fn end_after(&self) -> Option<i64> {
-        (self.end.as_deref() == Some("after_n"))
-            .then_some(self.end_after)
-            .flatten()
     }
 }
 

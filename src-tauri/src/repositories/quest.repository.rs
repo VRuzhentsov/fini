@@ -441,21 +441,9 @@ impl QuestRepository<'_> {
             .map_err(|error| error.to_string())?;
         Ok(quest)
     }
-}
 
-// ── Quests as a person sees and changes them (ADR-0012) ─────────────────────
+    // ---- Manual order (rank keys, models/rank.rs) ----
 
-/// The Focus fallback order (src/views/FocusView.md): the list order
-/// (`Quest::list_order`).
-fn fallback_order(mut quests: Vec<Quest>) -> Vec<Quest> {
-    let now = Utc::now();
-    quests.sort_by(|a, b| a.list_order(b, &now));
-    quests
-}
-
-// ── Manual order (rank keys, models/rank.rs) ────────────────────────────────
-
-impl QuestRepository<'_> {
     /// The rank key of a new quest: after the largest valid key of all
     /// quests, so that it is at the bottom of the list.
     fn bottom_rank(&mut self) -> Result<String, String> {
@@ -559,14 +547,9 @@ impl QuestRepository<'_> {
             .map(|_| ())
             .map_err(|error| error.to_string())
     }
-}
 
-/// A change of the status only.
-fn status_patch(status: &str) -> QuestUpdatePatch {
-    QuestUpdatePatch::unchanged(UpdateQuestInputBuilder::default().status(status).build())
-}
+    // ---- Quests as a person sees and changes them (ADR-0012) ----
 
-impl<'a> QuestRepository<'a> {
     // ---- Reading (ADR-0012 D2, D6) ----
 
     /// Every quest, in no order: a one-time quest as stored; a repeating
@@ -1588,6 +1571,19 @@ impl<'a> QuestRepository<'a> {
             .load(self.conn)
             .map_err(|e| e.to_string())
     }
+}
+
+/// The Focus fallback order (src/views/FocusView.md): the list order
+/// (`Quest::list_order`).
+fn fallback_order(mut quests: Vec<Quest>) -> Vec<Quest> {
+    let now = Utc::now();
+    quests.sort_by(|a, b| a.list_order(b, &now));
+    quests
+}
+
+/// A change of the status only.
+fn status_patch(status: &str) -> QuestUpdatePatch {
+    QuestUpdatePatch::unchanged(UpdateQuestInputBuilder::default().status(status).build())
 }
 
 // ── "Focus N" badge: how many times the quest became the Focus quest ───────

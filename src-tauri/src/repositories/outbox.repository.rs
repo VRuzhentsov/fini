@@ -15,9 +15,9 @@ use uuid::Uuid;
 use crate::models::{CreateSyncAck, CreateSyncOutboxEntry, CreateSyncSeen, SyncOutboxEntry};
 #[cfg(any(feature = "ui-plane", feature = "cli-plane", test))]
 use crate::models::{Quest, QuestOccurrence};
+use crate::repositories::Repository;
 #[cfg(any(feature = "ui-plane", feature = "cli-plane", test))]
 use crate::repositories::{quest_repository::QuestChange, QuestRepository};
-use crate::repositories::Repository;
 #[cfg(any(feature = "ui-plane", feature = "cli-plane", test))]
 use crate::schema::checklist_activity;
 use crate::schema::{peer_control_outbox, sync_acks, sync_outbox, sync_seen};
@@ -307,16 +307,14 @@ impl OutboxRepository<'_> {
     pub fn sent(&mut self, id: i32) {
         let _ = diesel::delete(peer_control_outbox::table.find(id)).execute(&mut *self.conn);
     }
-}
 
-// ── Sync events of quests ────────────────────────────────────────────────────
+    // ---- Sync events of quests ----
 
-#[cfg(any(feature = "ui-plane", feature = "cli-plane", test))]
-impl OutboxRepository<'_> {
     /// Records the stored quest row (never a resolved occurrence view: a
     /// repeating quest syncs as one entity, ADR-0012 D11). A quest that moved
     /// from `previous_space_id` is a delete there and an upsert in its new
     /// space, with its marks.
+    #[cfg(any(feature = "ui-plane", feature = "cli-plane", test))]
     pub fn record_quest(
         &mut self,
         origin_device_id: &str,
@@ -371,6 +369,7 @@ impl OutboxRepository<'_> {
 
     /// Records each of the stored quest rows `quest_ids`, each in its own
     /// space: the quests that a move wrote (`QuestRepository::move_quest`).
+    #[cfg(any(feature = "ui-plane", feature = "cli-plane", test))]
     pub fn record_quests(
         &mut self,
         origin_device_id: &str,
@@ -385,6 +384,7 @@ impl OutboxRepository<'_> {
 
     /// Records one occurrence mark: the entity `quest_occurrence`, keyed by
     /// (quest_id, period_key) (ADR-0012 D11).
+    #[cfg(any(feature = "ui-plane", feature = "cli-plane", test))]
     pub fn record_occurrence(
         &mut self,
         origin_device_id: &str,
@@ -403,6 +403,7 @@ impl OutboxRepository<'_> {
     }
 
     /// Records a removed mark (a day opened again with nothing left to keep).
+    #[cfg(any(feature = "ui-plane", feature = "cli-plane", test))]
     fn record_occurrence_removed(
         &mut self,
         origin_device_id: &str,
@@ -422,6 +423,7 @@ impl OutboxRepository<'_> {
 
     /// Records the checklist activity of `quest` that this device made and
     /// that is not in the outbox yet.
+    #[cfg(any(feature = "ui-plane", feature = "cli-plane", test))]
     fn record_checklist_activity(
         &mut self,
         origin_device_id: &str,
@@ -467,6 +469,7 @@ impl OutboxRepository<'_> {
 
     /// Records what a change wrote: the quest row, and each changed or
     /// removed mark.
+    #[cfg(any(feature = "ui-plane", feature = "cli-plane", test))]
     pub fn record_change(
         &mut self,
         origin_device_id: &str,

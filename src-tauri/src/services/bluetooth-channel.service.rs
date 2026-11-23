@@ -89,140 +89,6 @@ pub struct BluetoothChannelService {
     refused_at: std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
 }
 
-impl BluetoothChannelService {
-    pub fn new(identity: Identity, pool: DbPool, bus: Arc<EventBus>) -> Arc<Self> {
-        BluetoothAdapter::this_device().set_bus(bus.clone());
-        Arc::new_cyclic(|me| Self {
-            scanner: Arc::new(Scanner::new(bus.clone(), me.clone())),
-            advertiser: Arc::new(Advertiser::new(&identity)),
-            delivery: DeliverySchedule::new(bus.clone()),
-            endpoint: tokio::sync::OnceCell::new(),
-            peer_link: tokio::sync::OnceCell::new(),
-            stopping: tokio::sync::watch::channel(false).0,
-            initialization: tokio::sync::RwLock::new(()),
-            admission: std::sync::Mutex::new(()),
-            #[cfg(any(target_os = "linux", target_os = "windows", test))]
-            shutdown_result: tokio::sync::OnceCell::new(),
-            pairing_links: std::sync::Mutex::default(),
-
-            refused_at: std::sync::Mutex::default(),
-            identity,
-            pool,
-            bus,
-            me: me.clone(),
-            handlers: LinkHandlerSlot::default(),
-        })
-    }
-
-    /// This object as an `Arc`, for a task it starts.
-    fn arc(&self) -> Arc<Self> {
-        self.me
-            .upgrade()
-            .expect("the Bluetooth channel lives as long as its tasks")
-    }
-
-    fn stopping(&self) -> bool {
-        *self.stopping.borrow()
-    }
-
-    async fn wait_until_stopping(&self) {
-        let mut stopping = self.stopping.subscribe();
-        let _ = stopping.wait_for(|stopping| *stopping).await;
-    }
-
-    /// True owner shutdown only. Each drain has a bound; errors remain in the result.
-    /// Android does not use it: the Activity does not own the channel.
-    #[cfg(any(target_os = "linux", target_os = "windows", test))]
-    pub async fn shutdown(&self) -> Result<(), String> {
-        {
-            let _admission = self.admission.lock().unwrap_or_else(|err| err.into_inner());
-            self.stopping.send_replace(true);
-        }
-        self.scanner.stop();
-        self.shutdown_result
-            .get_or_init(|| async {
-                let mut errors = Vec::new();
-                let initialization =
-                    match tokio::time::timeout(Duration::from_secs(2), self.initialization.write())
-                        .await
-                    {
-                        Ok(guard) => Some(guard),
-                        Err(err) => {
-                            errors.push(format!("Bluetooth initialization drain timed out: {err}"));
-                            None
-                        }
-                    };
-                if let Some((endpoint, _)) = self.endpoint.get() {
-                    if let Err(err) =
-                        tokio::time::timeout(Duration::from_secs(2), endpoint.close()).await
-                    {
-                        errors.push(format!("Bluetooth endpoint close timed out: {err}"));
-                    }
-                }
-                let held = self
-                    .pairing_links
-                    .lock()
-                    .map(|mut links| {
-                        links
-                            .drain()
-                            .map(|(_, (_, _, channel))| channel)
-                            .collect::<Vec<_>>()
-                    })
-                    .map_err(|err| err.to_string());
-                match held {
-                    Ok(held) => {
-                        let drain = async {
-                            let mut releases = futures_util::stream::FuturesUnordered::new();
-                            for channel in held {
-                                releases.push(async move { channel.release().await });
-                            }
-                            use futures_util::StreamExt;
-                            while let Some(result) = releases.next().await {
-                                if let Err(err) = result {
-                                    errors
-                                        .push(format!("Bluetooth held use release failed: {err}"));
-                                }
-                            }
-                        };
-                        if let Err(err) = tokio::time::timeout(Duration::from_secs(2), drain).await
-                        {
-                            errors.push(format!("Bluetooth held use drain timed out: {err}"));
-                        }
-                    }
-                    Err(err) => errors.push(format!("Bluetooth held use lock failed: {err}")),
-                }
-                // Always attempt managed close, even when an earlier drain failed.
-                if let Some(link) = self.peer_link.get() {
-                    match tokio::time::timeout(Duration::from_secs(6), link.close()).await {
-                        Ok(Ok(())) => {}
-                        Ok(Err(err)) => errors.push(format!("Bluetooth owner close failed: {err}")),
-                        Err(err) => errors.push(format!("Bluetooth owner close timed out: {err}")),
-                    }
-                }
-                drop(initialization);
-                if errors.is_empty() {
-                    Ok(())
-                } else {
-                    Err(errors.join("; "))
-                }
-            })
-            .await
-            .clone()
-    }
-
-    /// Whether a session with the peer runs on Bluetooth now.
-    pub fn has_session(&self, peer_id: &str) -> bool {
-        self.handlers.has_session(peer_id, ChannelKind::Bluetooth)
-    }
-
-    /// The iroh key pinned for the pair, if any.
-    fn pinned_key(&self, peer_id: &str) -> Option<String> {
-        tokio::task::block_in_place(|| {
-            DeviceRepository::new(&mut self.pool.connection()).pinned_key(peer_id)
-        })
-    }
-}
-
 /// When a delivery search does not find the device, the next one waits this
 /// long, one step further each time and then the last step always: 1, 5 and
 /// 15 minutes, then every 15 (ADR-0008 D12).
@@ -585,6 +451,138 @@ impl ChannelService for BluetoothChannelService {
 }
 
 impl BluetoothChannelService {
+    pub fn new(identity: Identity, pool: DbPool, bus: Arc<EventBus>) -> Arc<Self> {
+        BluetoothAdapter::this_device().set_bus(bus.clone());
+        Arc::new_cyclic(|me| Self {
+            scanner: Arc::new(Scanner::new(bus.clone(), me.clone())),
+            advertiser: Arc::new(Advertiser::new(&identity)),
+            delivery: DeliverySchedule::new(bus.clone()),
+            endpoint: tokio::sync::OnceCell::new(),
+            peer_link: tokio::sync::OnceCell::new(),
+            stopping: tokio::sync::watch::channel(false).0,
+            initialization: tokio::sync::RwLock::new(()),
+            admission: std::sync::Mutex::new(()),
+            #[cfg(any(target_os = "linux", target_os = "windows", test))]
+            shutdown_result: tokio::sync::OnceCell::new(),
+            pairing_links: std::sync::Mutex::default(),
+
+            refused_at: std::sync::Mutex::default(),
+            identity,
+            pool,
+            bus,
+            me: me.clone(),
+            handlers: LinkHandlerSlot::default(),
+        })
+    }
+
+    /// This object as an `Arc`, for a task it starts.
+    fn arc(&self) -> Arc<Self> {
+        self.me
+            .upgrade()
+            .expect("the Bluetooth channel lives as long as its tasks")
+    }
+
+    fn stopping(&self) -> bool {
+        *self.stopping.borrow()
+    }
+
+    async fn wait_until_stopping(&self) {
+        let mut stopping = self.stopping.subscribe();
+        let _ = stopping.wait_for(|stopping| *stopping).await;
+    }
+
+    /// True owner shutdown only. Each drain has a bound; errors remain in the result.
+    /// Android does not use it: the Activity does not own the channel.
+    #[cfg(any(target_os = "linux", target_os = "windows", test))]
+    pub async fn shutdown(&self) -> Result<(), String> {
+        {
+            let _admission = self.admission.lock().unwrap_or_else(|err| err.into_inner());
+            self.stopping.send_replace(true);
+        }
+        self.scanner.stop();
+        self.shutdown_result
+            .get_or_init(|| async {
+                let mut errors = Vec::new();
+                let initialization =
+                    match tokio::time::timeout(Duration::from_secs(2), self.initialization.write())
+                        .await
+                    {
+                        Ok(guard) => Some(guard),
+                        Err(err) => {
+                            errors.push(format!("Bluetooth initialization drain timed out: {err}"));
+                            None
+                        }
+                    };
+                if let Some((endpoint, _)) = self.endpoint.get() {
+                    if let Err(err) =
+                        tokio::time::timeout(Duration::from_secs(2), endpoint.close()).await
+                    {
+                        errors.push(format!("Bluetooth endpoint close timed out: {err}"));
+                    }
+                }
+                let held = self
+                    .pairing_links
+                    .lock()
+                    .map(|mut links| {
+                        links
+                            .drain()
+                            .map(|(_, (_, _, channel))| channel)
+                            .collect::<Vec<_>>()
+                    })
+                    .map_err(|err| err.to_string());
+                match held {
+                    Ok(held) => {
+                        let drain = async {
+                            let mut releases = futures_util::stream::FuturesUnordered::new();
+                            for channel in held {
+                                releases.push(async move { channel.release().await });
+                            }
+                            use futures_util::StreamExt;
+                            while let Some(result) = releases.next().await {
+                                if let Err(err) = result {
+                                    errors
+                                        .push(format!("Bluetooth held use release failed: {err}"));
+                                }
+                            }
+                        };
+                        if let Err(err) = tokio::time::timeout(Duration::from_secs(2), drain).await
+                        {
+                            errors.push(format!("Bluetooth held use drain timed out: {err}"));
+                        }
+                    }
+                    Err(err) => errors.push(format!("Bluetooth held use lock failed: {err}")),
+                }
+                // Always attempt managed close, even when an earlier drain failed.
+                if let Some(link) = self.peer_link.get() {
+                    match tokio::time::timeout(Duration::from_secs(6), link.close()).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(err)) => errors.push(format!("Bluetooth owner close failed: {err}")),
+                        Err(err) => errors.push(format!("Bluetooth owner close timed out: {err}")),
+                    }
+                }
+                drop(initialization);
+                if errors.is_empty() {
+                    Ok(())
+                } else {
+                    Err(errors.join("; "))
+                }
+            })
+            .await
+            .clone()
+    }
+
+    /// Whether a session with the peer runs on Bluetooth now.
+    pub fn has_session(&self, peer_id: &str) -> bool {
+        self.handlers.has_session(peer_id, ChannelKind::Bluetooth)
+    }
+
+    /// The iroh key pinned for the pair, if any.
+    fn pinned_key(&self, peer_id: &str) -> Option<String> {
+        tokio::task::block_in_place(|| {
+            DeviceRepository::new(&mut self.pool.connection()).pinned_key(peer_id)
+        })
+    }
+
     /// Follow advertisement state. Incoming requests have their own task.
     async fn run_server(&self) {
         if self.stopping() || !self.advertiser.claim_peripheral_role() {

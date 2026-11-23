@@ -773,11 +773,9 @@ impl Scanner {
             }
         }
     }
-}
 
-// ---- A device heard in Add Device ----
+    // ---- A device heard in Add Device ----
 
-impl Scanner {
     /// One plain link (no key yet) to the newest address the scan heard the
     /// device with `fingerprint` at: what pairing's identify step talks over
     /// (`DeviceConnectionState::identify_heard_device`). Returns the link,
