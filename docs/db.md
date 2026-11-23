@@ -30,6 +30,36 @@ app start (lib.rs setup) or CLI start (run_cli)
   one costs nothing: it holds only the connection. Code that needs five
   repositories makes five on the same connection.
 
+## The Repository trait
+
+Each repository implements the trait `Repository` (`repositories/mod.rs`).
+The trait holds what all repositories do in the same way: `new` makes the
+repository on a connection. To call `new`, a caller has the trait in scope
+(`use crate::repositories::Repository`).
+
+```
+Repository<'a>                trait: fn new(conn: &'a mut SqliteConnection) -> Self
+  ├─ ChannelRepository        channels
+  ├─ DeviceRepository         paired_devices
+  ├─ OutboxRepository         sync_outbox, sync_acks, sync_seen, peer_control_outbox
+  ├─ QuestRepository          quests, quest_occurrences, focus_history, checklist_activity
+  ├─ ReminderRepository       reminders
+  ├─ SpaceMappingRepository   pair_space_mappings
+  └─ SpaceRepository          spaces
+```
+
+- A repository is one struct that holds `conn`. Its file has its
+  `impl Repository` block and one inherent `impl` block
+  ([`code-style.md`](code-style.md), "Write one inherent `impl` block for
+  each type").
+- The trait has no methods that read, write or delete rows. The methods
+  with the same names (`get`, `create`, `update`, `delete`) do not have the
+  same arguments and results in all repositories, so one generic method
+  does not fit them. Add a method to the trait only when all repositories
+  do it in the same way, and write it one time, as a default method.
+- `npm run lint:rust-impl` fails when a `struct …Repository` has no
+  `impl Repository for` in its file.
+
 ## Rules
 
 1. Take a connection from the pool. Do not open the database file anywhere

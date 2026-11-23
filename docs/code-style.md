@@ -87,12 +87,28 @@ the frontend and the scripts, and `npm run lint:file-size` for the Rust and
 Kotlin files. Generated and vendored code (`src-tauri/gen/`,
 `src-tauri/patches/`, `src-tauri/src/schema.rs`) is not checked.
 
+**Write one inherent `impl` block for each type.** Put all the methods of a
+type in one `impl Type` block, in the file of the type. Use a `// ---- … ----`
+comment to divide the block into parts, and a `#[cfg]` on each method that
+only some builds have. Trait impls (`impl Trait for Type`) are separate
+blocks. The exception: a submodule that owns a part of the type has its own
+`impl Type` block, with
+`#[allow(clippy::multiple_inherent_impl, reason = "...")]`
+(`services/bluetooth-channel/endpoint.rs`). Clippy
+`multiple_inherent_impl` checks the crate, and `npm run lint:rust-impl`
+checks each file, also for the types that have a lifetime.
+
+**Implement `Repository` for each repository.** Each `struct …Repository`
+has an `impl Repository for` in its file (`docs/db.md`, "The Repository
+trait"). `npm run lint:rust-impl` checks it.
+
 **Obey the added clippy lints.** `src-tauri/Cargo.toml`, `[lints.clippy]`,
 adds lints to the default clippy set: no `dbg!`, `todo!` or `unimplemented!`;
 no clone that is not necessary; a `;` after a last statement that gives `()`;
-a `// SAFETY:` comment on each `unsafe` block; and no `print!`/`println!`
-outside the CLI. Do not disable a lint for a crate or a module. Put each
-`#[allow]` on the smallest item, with a `reason = "..."` of one line.
+a `// SAFETY:` comment on each `unsafe` block; no `print!`/`println!`
+outside the CLI; and one inherent `impl` block for each type. Do not disable
+a lint for a crate or a module. Put each `#[allow]` on the smallest item,
+with a `reason = "..."` of one line.
 
 **Obey the ESLint rule sets.** `eslint.config.js` uses the recommended rule
 sets of ESLint, typescript-eslint and eslint-plugin-vue. It turns off only the
@@ -221,6 +237,8 @@ Keep the parent responsible for form/lifecycle orchestration and pass narrow sta
 - Each new name, comment and log message passes the STE check in `naming.md`.
 - No function has more than 300 lines of code, and no file more than 2500
   lines (`npm run lint`, and clippy for Rust).
+- Each Rust type has one inherent `impl` block, and each repository
+  implements `Repository` (`npm run lint`, and clippy).
 - No value from a closed set (state, kind, colour, problem code) is written as
   a string literal; it goes through its named const.
 - Derived state is computed when it is read, not stored.
