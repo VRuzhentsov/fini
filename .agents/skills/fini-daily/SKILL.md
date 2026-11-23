@@ -111,11 +111,11 @@ Treat the configured issue tracker as the authoritative source for auto-starting
 
 The daily recommendation should make the review-artifact expectation explicit in the suggested assignment prompt. A delegated ticket is not fully handed off when only a branch exists; it should have a review URL, or a stated blocker explaining why the review artifact could not be created.
 
-Classify candidate tickets with these readiness states:
+Classify each candidate ticket with a readiness state. The states are defined in `docs/development.md`, "Ticket readiness". Use the state in the report:
 
-- `ready-to-start`: the ticket has a clear goal, bounded scope, expected behavior, and a practical verification path. It may be recommended for delegated implementation when it has no exclusion label and no stronger review artifact should be finished first.
-- `needs-clarification`: the ticket is potentially useful, but scope, product intent, expected behavior, or verification is ambiguous. Recommend one concise clarification question instead of implementation.
-- `needs-human-review`: the ticket touches security, privacy, data migration, release behavior, broad architecture, user-visible product direction, or another high-risk area. Include it for visibility, but do not recommend autonomous pickup without explicit maintainer direction.
+- `ready-to-start`: it may be recommended for delegated implementation when it has no exclusion label and no stronger review artifact should be finished first.
+- `needs-clarification`: recommend one concise clarification question instead of implementation.
+- `needs-human-review`: include it for visibility, but do not recommend autonomous pickup without explicit maintainer direction.
 
 Treat these Fini signals as project-specific triage inputs:
 
@@ -205,7 +205,7 @@ Do not spam. Send progress updates at meaningful phase transitions, not after ev
 ## Boundaries
 
 - The daily report is read-only: do not edit issues, labels, code, or docs unless the user explicitly delegates implementation or maintenance.
-- If implementing a delegated issue, follow `fini-dev` first and obey the repo workflow.
+- If implementing a delegated issue, follow `dev` first and obey the repo workflow.
 - Do not merge PRs or push directly to `main`.
 - Do not expose tokens or secret file contents.
 - If Telegram delivery is unavailable, return the report text and state the delivery blocker.

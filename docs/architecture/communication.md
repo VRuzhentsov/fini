@@ -96,10 +96,11 @@ has the channel on. It does not know what goes through the connection.
   (`SpaceSyncService::has_session_on`). A device that was only heard is not
   green.
 - Each channel connects by itself to each paired device that has the channel
-  on and has no session (`ChannelService::keep_serving`). On Bluetooth, only
-  the device with the smaller id connects; the other one advertises and
-  accepts (`BluetoothChannelService::start_exchange`). The first session
-  after a pairing goes over the pairing link.
+  on and has no session (`ChannelService::keep_serving`). Bluetooth uses one
+  shared `PeerLink` for plain frames and iroh. It accepts incoming attempts
+  independently of outgoing attempts. BLE compares signed `i32` nonces for
+  crossed attempts, not device UUIDs. The nonce is not a signature.
+  The first session after a pairing uses a held `PeerChannel`.
 - `ChannelService::is_on` tells if the channel is on for a device. A
   Bluetooth connect stops when the channel goes off during it.
 - A connection that hears nothing for 15 s ends: the channel turns grey.
@@ -108,13 +109,40 @@ has the channel on. It does not know what goes through the connection.
   advertise (`refresh_advertising`), and Network does not run its mDNS
   lookup (`NetworkChannelService::set_any_pair_on`), unless Add Device is
   open. A device that has the channel on for another pair stays reachable,
-  and its gate refuses the session (code 2).
+  and it rejects the session (code 2).
 - A channel switched off ends its session with a bye (code 0). The other
   device turns grey at once. It does not wait: it finds the device again in
   the usual way when that device advertises again, as after a link that
   was lost out of range.
-- Bluetooth stops its GATT server only when the last live link is closed,
-  so that the bye goes out before the link stops.
+- Managed advertising visibility and channel lifetime are separate. Hiding
+  the advertisement must preserve the server and its live channels.
+- `BluetoothChannelService::run_server` watches Add Device and wanted state.
+  It subscribes to these watches and the event bus before reading state.
+  While wanted is true and it has no owner, `AdapterChanged` wakes it after recovery.
+  Shared owner publication sends this event, also when the scanner initializes first.
+  An event bus overrun makes it read owner and adapter state again.
+  Before a `Driver` exists, this path does not watch the system
+  for adapter changes. Recovery needs an existing availability event
+  or a later call to `peer_link()`.
+  `Advertiser::update` sends the flags,
+  fingerprint and full name through `PeerLink::update_advertisement`.
+  The core retains its own service data. Native advertisement and readable
+  metadata writes are separate operations, not one atomic change.
+  A failed write or visibility change reports its error and attempts a hide
+  fence. The next update must complete a hidden update before show.
+  A failed hide is not a completed fence. While an update has failed,
+  `run_server` tries the update again after 1 s, doubles the wait after each
+  failure up to 30 s (`advertising_retry_wait`), and tries again at once on
+  `AdapterChanged` or an event bus overrun. A change of the Add Device or
+  wanted state also tries again at once. A successful update stops the
+  retries.
+- Desktop `RunEvent::Exit` calls `BluetoothChannelService::shutdown`.
+  Shutdown stops new work and lazy initialization. It drains only existing
+  endpoint and held uses, then attempts managed owner close even after a
+  drain error. Each step has a time limit. Repeated calls return the stored
+  result. A timeout or error does not prove native teardown.
+  Add Device exit, a channel switch and Android Activity or page destruction
+  do not close the whole owner.
 - Android lets an app start 5 scans in 30 s, and a scan above that hears
   nothing without an error. The scanner counts its starts and waits for a
   free one (`ANDROID_SCAN_STARTS`). The Bluetooth check that runs when a
@@ -123,9 +151,10 @@ has the channel on. It does not know what goes through the connection.
 ### States of a channel
 
 One channel of one pair, as one device sees it. The colour is the colour of
-the row on the Device page. On Network the two devices connect; on
-Bluetooth only the device with the smaller id connects, and the other one
-accepts.
+the row on the Device page. Both devices can connect on either channel. On
+Bluetooth, the device with the larger device id answers first: before each
+connect it waits up to 8 s (`ANSWER_FIRST_WAIT`) for the session that the
+peer opens, and connects only when no session came (see "Crossing").
 
 ```mermaid
 stateDiagram-v2
@@ -133,20 +162,20 @@ stateDiagram-v2
     state "Searching (grey)" as Searching
     state "Connecting (grey)" as Connecting
     state "Green: a session" as Green
-    state "Refused (grey)" as Refused
+    state "Rejected (grey)" as Rejected
 
     [*] --> Off
     Off --> Searching: switched on here
     Searching --> Connecting: the peer is heard (or it connects to this device)
     Connecting --> Green: TLS proves the key, the gate accepts
     Connecting --> Searching: the connect fails (link closed, again after 2 s)
-    Connecting --> Refused: close code 1 or 2
-    Refused --> Searching: after REJECTED_WAIT_TIME (30 s)
-    Refused --> Connecting: the peer switched on, and connects to this device once
+    Connecting --> Rejected: close code 1 or 2
+    Rejected --> Searching: after REJECTED_WAIT_TIME (30 s)
+    Rejected --> Connecting: the peer switched on, and connects to this device once
     Green --> Searching: the link is lost, 15 s of silence, or a bye (code 0) from the peer
     Searching --> Off: switched off here
     Connecting --> Off: switched off here
-    Refused --> Off: switched off here
+    Rejected --> Off: switched off here
     Green --> Off: switched off here (bye, code 0, to the peer)
 ```
 
@@ -168,8 +197,11 @@ Before pairing there is no pinned key. Over Bluetooth, the identify step
 uses a plain link (`BleDataLink`) and gets the key. The pair request then
 uses an iroh connection on that same BLE link (`keep_identify_link`): the
 accepting side gives the link to iroh when the first QUIC packet comes
-(`BleDataLink::recv`). A device whose key is known already skips the
-identify step.
+(`BleDataLink::recv`). When Add Device identifies a paired device again,
+`DeviceService::identify_paired_device` uses the existing iroh `PEER_ALPN`
+path and pinned key. It checks the returned device ID and key, then holds a
+scoped channel for pairing. It does not close a surviving sync session or
+read plain frames from that session's channel.
 
 ### Close codes
 
@@ -187,29 +219,48 @@ other side reads it (`DataLink::close_code`).
 After code 1 or 2, the next Bluetooth connect waits `REJECTED_WAIT_TIME`
 (Network: `FAILURE_COOLDOWN`).
 
-On Bluetooth, the device with the bigger id does not connect. When it
-refused a device with code 2 less than `REJECTED_WAIT_TIME` ago and the
-channel is then switched on here, it connects to that device once
-(`BluetoothChannelService::connect_once_after_switch_on`). Without this, the
-other device stayed grey until its wait ended (32 s measured).
+After a recent code 2 rejection, switch-on starts a connect here
+(`BluetoothChannelService::connect_once_after_switch_on`). The peer can
+still be in its rejection wait, and then it does not connect. So this
+connect does not wait `ANSWER_FIRST_WAIT`, also on the device that answers
+first. App start also starts eligible exchanges.
 
 ### Bluetooth links after a session
 
-- The side that closed the session keeps the BLE link until its close went
-  out. ble-gatt-iroh then closes the link (transport hooks).
-- The side that receives the close closes the BLE link at once
-  (`run_exchange`). QUIC sends nothing more after a close, and a link kept
-  up for the drain (33 s measured) made the next connect fail.
-- A connect that fails closes its link, and tries again after 2 s.
+- Endpoint hooks track each iroh user. Ending one session releases only
+  that use, rather than every user of its address.
+- `PeerChannel::release` ends one scoped use. The core owns native cleanup
+  for the last use. A pairing holds a real channel until the first session
+  acquires it or the pairing hold expires.
+- A failed pairing exchange drops its own `IrohDataLink`. The stream drain
+  and endpoint hooks release that iroh user. They do not close all links
+  for its key. Real unpair keeps its peer-level close; a channel switch
+  keeps its session close.
+- A canceled outgoing connect drops its future without a peer-wide close.
+  This does not provide an awaited pre-handshake retirement barrier. The
+  application retains its delivery and rejection wait times.
 
 ### Crossing
 
-On Network, the two devices can connect to each other at the same time. (On
-Bluetooth only one of them connects.) Each device keeps
+The BLE core resolves crossed carrier attempts. The separate Fini session
+rule applies to both channels: each device keeps
 the connection that the device with the smaller id started. A device's own
-connection counts for 3 s after its session starts
-(`CROSSING_WINDOW`). A connection from the peer after that time means the
-peer started again: the new session replaces the old one.
+connection counts while it is made and for 3 s after its session starts
+(`CROSSING_WINDOW`). On Bluetooth, only the session connect counts, not an
+exchange that searches or waits. A connection from the peer after that time
+means the peer started again: the new session replaces the old one.
+
+On Bluetooth, two connects that cross ended each other on hardware, so
+only one device connects first (`BluetoothChannelService::answers_first`):
+
+- The device with the smaller device id connects at once.
+- The device with the larger device id answers first. Before each connect
+  of an exchange it waits up to `ANSWER_FIRST_WAIT` (8 s) for a session
+  that the peer opens. The `SessionChanged` event ends the wait at once.
+  When a session came, this device does not connect. When none came (the
+  peer has no work, or does not hear this device), it connects itself.
+- The connect after switch-on (`connect_once_after_switch_on`) and the
+  first session over the link of a pairing do not wait.
 
 ## SpaceSync
 
@@ -249,6 +300,21 @@ A pair syncs only the spaces that the two devices map.
   channel, a reconnect, or a tick does not ask again.
 
 ## Not done yet
+
+- The app and broker use the ble-gatt release tag `v0.2.1`
+  (`2202f7d8fa3d341d7ea02d6efe3daa309427a0e8`). Consumer compilation is not
+  runtime proof. Advertisement changes, initialization during shutdown,
+  pairing failure with another user, re-identify during a sync session and
+  real app BLE delivery still need manual proof.
+- `PeerLink` cancels a dropped managed request. The iroh transport starts
+  acquisition from packet demand. Its public hooks expose connection start
+  and authenticated users, not an awaited cancellation handle for each
+  pre-handshake connect. Determine the sole-user retirement boundary before
+  claiming address reuse after cancellation. Preserve an incoming winner or
+  another user while checking this case.
+- Readable name refresh is unavailable for an already-owned inbound channel.
+  Available device selection uses flags and fingerprint. A missing short name has
+  a display fallback; Identify supplies the full name, device ID and key.
 
 - A held Bluetooth link uses high connection priority. It should use low
   power while idle. This needs a ble-gatt change.

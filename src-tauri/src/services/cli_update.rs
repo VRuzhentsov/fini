@@ -303,7 +303,7 @@ fn cli_asset_for_release(
 
 fn cli_asset_target_substrings(target: &str) -> Vec<String> {
     match target {
-        "cli-linux-x86_64" => vec!["x86_64-unknown-linux-gnu".to_string(), target.to_string()],
+        "cli-linux-x86_64" => vec!["x86_64-unknown-linux-musl".to_string(), target.to_string()],
         "cli-linux-aarch64" => vec!["aarch64-unknown-linux-gnu".to_string(), target.to_string()],
         "cli-windows-x86_64" => vec!["x86_64-pc-windows-msvc".to_string(), target.to_string()],
         "cli-windows-aarch64" => vec!["aarch64-pc-windows-msvc".to_string(), target.to_string()],
@@ -616,7 +616,9 @@ fn candidate_filename(target: &str) -> &'static str {
 }
 
 fn is_cli_linux_target(target: &str) -> bool {
-    target.starts_with("cli-linux-") || target.ends_with("-unknown-linux-gnu")
+    target.starts_with("cli-linux-")
+        || target.ends_with("-unknown-linux-gnu")
+        || target.ends_with("-unknown-linux-musl")
 }
 
 fn is_cli_windows_target(target: &str) -> bool {
@@ -680,6 +682,7 @@ fn schedule_windows_self_replacement(
     Ok(())
 }
 
+#[cfg(any(windows, test))]
 fn windows_self_replacement_script(pending_path: &Path, executable_path: &Path) -> String {
     let pending = windows_cmd_quote(pending_path);
     let target = windows_cmd_quote(executable_path);
@@ -688,6 +691,7 @@ fn windows_self_replacement_script(pending_path: &Path, executable_path: &Path) 
     )
 }
 
+#[cfg(any(windows, test))]
 fn windows_cmd_quote(path: &Path) -> String {
     let escaped = path.display().to_string().replace('\"', "\"\"");
     format!("\"{escaped}\"")
@@ -977,6 +981,36 @@ mod tests {
         assert_eq!(asset.name, archive);
     }
 
+    /// A CLI at v0.3.19 or older is a glibc build, and its `fini update`
+    /// looks first for its own target, `x86_64-unknown-linux-gnu`. The
+    /// release has a copy of the musl archive under that old name for it
+    /// (release-tag.yml, "Copy Linux CLI archive to the old asset name"), so
+    /// that it does not depend on the fallback of `asset_for`.
+    #[test]
+    fn old_glibc_cli_finds_the_copy_under_the_old_asset_name() {
+        let next_patch = next_patch_version();
+        let musl = versioned_cli_asset_name(&next_patch);
+        let old_name = format!("fini-{next_patch}-linux-x86_64-unknown-linux-gnu-cli.tar.gz");
+        let release = release_with_assets(&next_patch, &[musl.as_str(), old_name.as_str()]);
+
+        let old_cli = cli_asset_for_release(&release, "x86_64-unknown-linux-gnu")
+            .expect("the glibc target selects the copy under the old name");
+        let musl_cli = cli_asset_for_release(&release, "x86_64-unknown-linux-musl")
+            .expect("the musl target selects the musl archive");
+        let label = cli_asset_for_release(&release, "cli-linux-x86_64")
+            .expect("the Linux x64 label selects the musl archive");
+
+        assert_eq!(old_cli.name, old_name);
+        assert_eq!(musl_cli.name, musl);
+        assert_eq!(label.name, musl);
+        assert_eq!(
+            compatible_cli_release(&[release], "x86_64-unknown-linux-gnu")
+                .expect("the glibc target finds the release")
+                .version,
+            next_patch
+        );
+    }
+
     #[test]
     fn compatible_release_selection_skips_releases_without_matching_cli_asset() {
         let next_patch = next_patch_version();
@@ -1053,6 +1087,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn compile_version_binary(dir: &Path, name: &str, version: &str) -> PathBuf {
         let source = dir.join(format!("{name}.rs"));
         let binary = dir.join(name);
@@ -1082,7 +1117,7 @@ mod tests {
     }
 
     fn versioned_cli_asset_name(version: &str) -> String {
-        format!("fini-{version}-linux-x86_64-unknown-linux-gnu-cli.tar.gz")
+        format!("fini-{version}-linux-x86_64-unknown-linux-musl-cli.tar.gz")
     }
 
     fn current_package_version() -> String {
@@ -1139,6 +1174,7 @@ mod tests {
         gz.finish().expect("finish gzip")
     }
 
+    #[cfg(unix)]
     fn make_tar_gz_from_file(path: &str, source: &Path) -> Vec<u8> {
         let bytes = fs::read(source).expect("read source binary");
         make_tar_gz(&[(path, bytes.as_slice())])

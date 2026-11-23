@@ -10,6 +10,8 @@ const ARCHES = new Map([
 
 const CLI_ARCHES = new Map([
   ...ARCHES,
+  // The release CLI for Linux: static musl, x86_64 only (docs/container.md, "CLI").
+  ['x86_64-unknown-linux-musl', 'x86_64'],
   ['x86_64-unknown-linux-gnu', 'x86_64'],
   ['aarch64-unknown-linux-gnu', 'aarch64'],
   ['x86_64-pc-windows-msvc', 'x86_64'],

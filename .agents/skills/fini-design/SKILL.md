@@ -35,18 +35,8 @@ If `../fini-design/` is missing, stop and tell the user — design work cannot p
 
 ### Bundle layout
 
-| Path | Purpose |
-|---|---|
-| `README.md` | Authoritative handoff directives. Re-read on every session. |
-| `chats/*.md` | Design intent transcripts. Read FIRST. |
-| `project/README.md` | Design system reference: tone, vocabulary, principles, voice. |
-| `project/preview/*.html` | Per-surface prototypes (`quest-card`, `reminder`, `composer`, `nav`, `settings-section`, `device-list`, `device-view`, etc.). |
-| `project/preview/_*.{css,html,js}` | Shared partials imported by prototype pages. |
-| `project/colors_and_type.css` | Token definitions (color, type, scale). |
-| `project/ui_kits/app/` | Assembled kit (`Fini App.html`, `index.html`, `kit.css`, `Components.jsx`, `_theme.js`). |
-| `project/assets/` | Icons, app icon. |
-| `project/uploads/` | Supplemental references (pasted images, grilling notes). |
-| `project/tmp/` | Scratch screenshots. Ignore unless the chat cites them. |
+The bundle layout table is in `docs/development.md`, "Design source". Read it
+before the intake below.
 
 ## Required intake order
 
@@ -68,9 +58,7 @@ The prototypes are reference, not production code. Recreate the visual output in
 - Match visual output pixel-for-pixel. Do not copy the prototype's HTML structure unless it happens to fit the target.
 - Map prototype tokens to the existing app tokens. Do not introduce a parallel token system. If a prototype token has no app equivalent, surface that as a question before adding one.
 - Reuse existing Vue components in `src/components/` first. Read before creating.
-- In Vue templates, start with DaisyUI component classes for known controls/surfaces and Tailwind utilities for layout, spacing, sizing, states, and small visual adjustments.
-- Use scoped custom CSS/classes only when the framework utilities cannot achieve the needed quality, when an existing semantic component class should be reused, or when a narrow interaction/layout behavior would be less maintainable as utilities.
-- Keep custom CSS small and local. Avoid broad one-off class taxonomies, parallel style systems, and copying prototype class names into production Vue.
+- In Vue templates, follow `docs/code-style.md`, "Styles: DaisyUI and Tailwind first". Do not copy prototype class names into production Vue.
 - Match the exact vocabulary in `project/README.md` ("Quest", "Space", "Focus", "Abandon", etc.). Do not rename product concepts.
 - Sentence case for buttons and labels; uppercase tracked-out only for app-chrome section headers (`SPACES`, `DEVICES`, `VOICE MODEL`).
 
@@ -109,6 +97,6 @@ This skill owns:
 Hand off when:
 - Multi-file Vue implementation work begins → pair with `frontend-design` for code generation patterns.
 - Direct Figma-to-code generation against a Figma node → `figma:figma-implement-design`.
-- Production code review of the resulting Vue → standard repo review flow via `fini-dev`.
+- Production code review of the resulting Vue → standard repo review flow via `dev`.
 
-Per `fini-dev` routing, design-to-code work loads this skill first.
+Per `dev` routing, design-to-code work loads this skill first.

@@ -10,6 +10,7 @@ use crate::models::{Quest, Reminder};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
+#[allow(clippy::large_enum_variant)]
 pub enum Event {
     /// A session on one channel to one paired device started or ended: the
     /// channel row turns green or grey.
@@ -41,11 +42,17 @@ pub enum Event {
     SyncQueueChanged,
     /// A channel heard a paired device: a connection to it can start now.
     #[serde(rename_all = "camelCase")]
-    DeviceHeard { peer_device_id: String, kind: ChannelKind },
+    DeviceHeard {
+        peer_device_id: String,
+        kind: ChannelKind,
+    },
     /// A connection to a paired device failed or was rejected, or the wait
     /// after that ended: the work for it can go another way, or try again.
     #[serde(rename_all = "camelCase")]
-    ConnectChanged { peer_device_id: String, kind: ChannelKind },
+    ConnectChanged {
+        peer_device_id: String,
+        kind: ChannelKind,
+    },
     /// A person changed a quest or one of its days on this device, and the
     /// change is saved. `quest` is the quest as the UI shows it.
     QuestChanged { quest: Quest },
@@ -53,5 +60,8 @@ pub enum Event {
     /// reminders with it; they go with the event, so that their
     /// notifications can still be cancelled.
     #[serde(rename_all = "camelCase")]
-    QuestDeleted { quest_id: String, reminders: Vec<Reminder> },
+    QuestDeleted {
+        quest_id: String,
+        reminders: Vec<Reminder>,
+    },
 }

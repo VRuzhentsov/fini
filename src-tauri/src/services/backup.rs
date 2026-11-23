@@ -58,6 +58,7 @@ pub struct BackupExportResult {
     pub manifest: BackupManifest,
 }
 
+#[cfg(feature = "cli-plane")]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BackupArchiveInspection {
     pub valid: bool,
@@ -65,6 +66,7 @@ pub struct BackupArchiveInspection {
     pub contents: BackupArchiveContents,
 }
 
+#[cfg(feature = "cli-plane")]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BackupArchiveContents {
     pub spaces: Vec<ManifestSpace>,
@@ -80,6 +82,7 @@ pub struct BackupImportPreflight {
 
 /// A read-only archive recovery plan. This describes whether a later import could proceed;
 /// it never applies an archive or starts recovery.
+#[cfg(any(feature = "cli-plane", test))]
 #[derive(Debug, Serialize)]
 pub struct BackupImportDryRunPlan {
     pub dry_run: bool,
@@ -90,6 +93,7 @@ pub struct BackupImportDryRunPlan {
     pub conflicts: Vec<BackupConflict>,
 }
 
+#[cfg(any(feature = "cli-plane", test))]
 impl BackupImportDryRunPlan {
     pub fn from_preflight(preflight: BackupImportPreflight) -> Self {
         let ready_to_apply =
@@ -365,6 +369,7 @@ pub fn preflight_import(
 }
 
 /// Read and validate a backup archive without accessing a local Fini database.
+#[cfg(feature = "cli-plane")]
 pub fn inspect_backup(path: &Path) -> Result<BackupArchiveInspection, String> {
     let extracted = extract_backup(path)?;
     let result = (|| {
@@ -475,7 +480,8 @@ pub fn apply_import(
             }
 
             for occurrence in &backup_occurrences {
-                let action = conflict_action(&resolution_map, "quest_occurrence", &occurrence.sync_id());
+                let action =
+                    conflict_action(&resolution_map, "quest_occurrence", &occurrence.sync_id());
                 upsert_occurrence_for_import(tx, occurrence, action)?;
             }
 
@@ -905,7 +911,11 @@ fn collect_conflicts(
         {
             if occurrence_value(&local)? != occurrence_value(&backup)? {
                 let summary = |mark: &QuestOccurrence| {
-                    format!("{} ({})", mark.period_key, mark.status.as_deref().unwrap_or("open"))
+                    format!(
+                        "{} ({})",
+                        mark.period_key,
+                        mark.status.as_deref().unwrap_or("open")
+                    )
                 };
                 conflicts.push(BackupConflict {
                     entity_type: "quest_occurrence".to_string(),
@@ -1165,7 +1175,7 @@ fn mapped_quest(quest: &Quest, space_map: &HashMap<String, String>) -> Quest {
         title: quest.title.clone(),
         description: quest.description.clone(),
         status: quest.status.clone(),
-        energy: quest.energy.clone(),
+        energy: quest.energy,
         priority: quest.priority,
         due: quest.due.clone(),
         due_time: quest.due_time.clone(),
@@ -1238,8 +1248,6 @@ mod tests {
             .execute(conn)
             .expect("insert custom space");
     }
-
-
 
     #[test]
     fn dry_run_plan_reports_unresolved_conflicts_without_selecting_a_resolution() {
@@ -1335,7 +1343,6 @@ mod tests {
         let _ = fs::remove_file(source_db_path);
         let _ = fs::remove_file(target_db_path);
     }
-
 
     #[test]
     fn backup_roundtrip_preserves_checklist_activity() {

@@ -10,8 +10,10 @@ import { supportsChannel } from '../supported-devices.ts';
  * devices open Add device -> Bluetooth, each lists the other, Pair, Accept,
  * the code, Done, and the Bluetooth row turns green on both.
  *
- * The 10 s standard (`docs/architecture/communication.md`) is asserted for the
- * listing: from the moment both devices search until each lists the other.
+ * The 10 s standard (`docs/architecture/communication.md`) is the target for
+ * the listing: from the moment both devices search until each lists the other.
+ * A listing that takes longer gives a warning, not a failure (the decision of
+ * the user); the test fails only if a device is not listed in STEP_TIMEOUT_MS.
  * The other steps have no fixed limit; their times are recorded as test
  * annotations, so a run shows how long a person waits at each step.
  *
@@ -41,6 +43,14 @@ function recordStepTime(step: string, startedAt: number): number {
   const ms = Date.now() - startedAt;
   test.info().annotations.push({ type: 'step time', description: `${step}: ${(ms / 1000).toFixed(1)} s` });
   return ms;
+}
+
+/** Records a warning, not a failure, when a listing takes longer than the 10 s standard. */
+function warnIfSlowerThanStandard(step: string, ms: number): void {
+  if (ms <= DISCOVERY_STANDARD_MS) return;
+  const description = `${step} in ${ms} ms, longer than the ${DISCOVERY_STANDARD_MS} ms standard`;
+  test.info().annotations.push({ type: 'warning', description });
+  console.warn(`warning: ${description}`);
 }
 
 interface ChannelStatus {
@@ -93,8 +103,8 @@ test('a new pair over Bluetooth, from zero to green', async ({ testDeviceA, test
     dialogA.waitForDevice(identityB.hostname).then(() => recordStepTime(`${testDeviceA.slug} lists ${testDeviceB.slug}`, searching)),
     dialogB.waitForDevice(identityA.hostname).then(() => recordStepTime(`${testDeviceB.slug} lists ${testDeviceA.slug}`, searching)),
   ]);
-  expect(listedByA, `${testDeviceA.slug} lists ${testDeviceB.slug} in the standard time`).toBeLessThanOrEqual(DISCOVERY_STANDARD_MS);
-  expect(listedByB, `${testDeviceB.slug} lists ${testDeviceA.slug} in the standard time`).toBeLessThanOrEqual(DISCOVERY_STANDARD_MS);
+  warnIfSlowerThanStandard(`${testDeviceA.slug} lists ${testDeviceB.slug}`, listedByA);
+  warnIfSlowerThanStandard(`${testDeviceB.slug} lists ${testDeviceA.slug}`, listedByB);
 
   const pairPressed = Date.now();
   await dialogA.pair(identityB.hostname);
@@ -110,9 +120,9 @@ test('a new pair over Bluetooth, from zero to green', async ({ testDeviceA, test
   await Promise.all([dialogA.waitForPaired(), dialogB.waitForPaired()]);
   recordStepTime('code -> Paired on both', codeTyped);
 
-  // The first session uses the link of the pairing, so the channel becomes
-  // green while the dialogs still show Paired. The test reads the Rust side,
-  // because the row is behind the dialog.
+  // The first session uses the link of the pairing, with no answer-first
+  // wait, so the channel becomes green while the dialogs still show Paired.
+  // The test reads the Rust side, because the row is behind the dialog.
   const paired = Date.now();
   await Promise.all([
     waitForGreen(testDeviceA, identityB.device_id).then(() => recordStepTime(`Paired -> ${testDeviceA.slug} green`, paired)),

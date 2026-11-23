@@ -10,7 +10,9 @@ use tauri::AppHandle;
 #[cfg(target_os = "linux")]
 use tauri::Manager;
 
+#[cfg(target_os = "linux")]
 use crate::services::db::DbPool;
+#[cfg(target_os = "linux")]
 use crate::services::reconciler;
 
 pub fn spawn(app: &AppHandle) {

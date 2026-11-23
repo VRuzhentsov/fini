@@ -184,17 +184,12 @@ pub struct CreateQuestInput {
     pub is_checklist: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum QuestFieldPatch<T> {
+    #[default]
     Unchanged,
     Set(T),
     Clear,
-}
-
-impl<T> Default for QuestFieldPatch<T> {
-    fn default() -> Self {
-        Self::Unchanged
-    }
 }
 
 /// A missing JSON key deserializes via `#[serde(default)]` to `Unchanged` (this impl is never
@@ -379,7 +374,8 @@ fn parse_weekday_token(s: &str) -> Option<chrono::Weekday> {
 /// `date` is assumed to be on or after `anchor` (only ever called with forward-scanned dates).
 fn weeks_since_anchor(anchor: &NaiveDate, date: &NaiveDate) -> i64 {
     use chrono::Datelike;
-    let anchor_monday = *anchor - chrono::Duration::days(anchor.weekday().num_days_from_monday() as i64);
+    let anchor_monday =
+        *anchor - chrono::Duration::days(anchor.weekday().num_days_from_monday() as i64);
     let date_monday = *date - chrono::Duration::days(date.weekday().num_days_from_monday() as i64);
     (date_monday - anchor_monday).num_days() / 7
 }
@@ -469,14 +465,16 @@ impl RepeatRule {
     /// The last date the rule allows (`end = "on_date"`), if any.
     fn end_date(&self) -> Option<NaiveDate> {
         (self.end.as_deref() == Some("on_date"))
-            .then(|| self.end_date.as_deref())
+            .then_some(self.end_date.as_deref())
             .flatten()
             .and_then(|date| NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
     }
 
     /// How many completed occurrences end the rule (`end = "after_n"`), if any.
     fn end_after(&self) -> Option<i64> {
-        (self.end.as_deref() == Some("after_n")).then_some(self.end_after).flatten()
+        (self.end.as_deref() == Some("after_n"))
+            .then_some(self.end_after)
+            .flatten()
     }
 }
 
@@ -517,7 +515,12 @@ impl<'q> RepeatingQuest<'q> {
             .filter(|mark| mark.quest_id == quest.id)
             .map(|mark| (mark.period_key.as_str(), mark))
             .collect();
-        Some(Self { quest, rule, start, marks })
+        Some(Self {
+            quest,
+            rule,
+            start,
+            marks,
+        })
     }
 
     pub fn quest(&self) -> &Quest {
@@ -531,9 +534,11 @@ impl<'q> RepeatingQuest<'q> {
     /// Every date of the rule from its start, ending at its end date.
     pub fn dates(&self) -> impl Iterator<Item = NaiveDate> + '_ {
         let end = self.rule.end_date();
-        std::iter::successors(Some(self.start), move |date| compute_next_due(date, &self.rule, &self.start))
-            .take(MAX_OCCURRENCE_STEPS)
-            .take_while(move |date| end.is_none_or(|end| *date <= end))
+        std::iter::successors(Some(self.start), move |date| {
+            compute_next_due(date, &self.rule, &self.start)
+        })
+        .take(MAX_OCCURRENCE_STEPS)
+        .take_while(move |date| end.is_none_or(|end| *date <= end))
     }
 
     pub fn mark(&self, period_key: &str) -> Option<&QuestOccurrence> {
@@ -541,7 +546,8 @@ impl<'q> RepeatingQuest<'q> {
     }
 
     pub fn is_closed(&self, period_key: &str) -> bool {
-        self.mark(period_key).is_some_and(QuestOccurrence::is_closed)
+        self.mark(period_key)
+            .is_some_and(QuestOccurrence::is_closed)
     }
 
     fn completed_count(&self) -> i64 {
@@ -553,7 +559,9 @@ impl<'q> RepeatingQuest<'q> {
 
     /// How many more occurrences the rule allows (`after_n`), or no limit.
     pub fn remaining(&self) -> Option<i64> {
-        self.rule.end_after().map(|max| (max - self.completed_count()).max(0))
+        self.rule
+            .end_after()
+            .map(|max| (max - self.completed_count()).max(0))
     }
 
     /// The open occurrences, oldest first.
@@ -629,7 +637,9 @@ impl<'q> RepeatingQuest<'q> {
             }
             if let Some(status) = &mark.status {
                 quest.status = status.clone();
-                quest.completed_at = (status == OCCURRENCE_COMPLETED).then(|| mark.closed_at.clone()).flatten();
+                quest.completed_at = (status == OCCURRENCE_COMPLETED)
+                    .then(|| mark.closed_at.clone())
+                    .flatten();
                 quest.updated_at = mark.updated_at.clone();
             }
         }
@@ -677,7 +687,6 @@ pub fn is_overdue(quest: &Quest, now: &DateTime<Utc>) -> bool {
         .unwrap_or(false)
 }
 
-
 pub(crate) fn validate_metadata(energy: i64, priority: i64) -> Result<(), String> {
     if !matches!(energy, 1..=3) {
         return Err(format!(
@@ -692,13 +701,15 @@ pub(crate) fn validate_metadata(energy: i64, priority: i64) -> Result<(), String
     Ok(())
 }
 
-pub(crate) fn validate_optional_metadata(energy: Option<i64>, priority: Option<i64>) -> Result<(), String> {
+pub(crate) fn validate_optional_metadata(
+    energy: Option<i64>,
+    priority: Option<i64>,
+) -> Result<(), String> {
     validate_metadata(
         energy.unwrap_or(crate::models::ENERGY_MEDIUM),
         priority.unwrap_or(crate::models::PRIORITY_MEDIUM),
     )
 }
-
 
 /// The edit scope of a repeating quest (ADR-0012 D8).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -714,7 +725,9 @@ impl EditScope {
         match value {
             None | Some("all") => Ok(Self::All),
             Some("day") => Ok(Self::Day),
-            Some(other) => Err(format!("invalid edit scope {other:?}; expected \"day\" or \"all\"")),
+            Some(other) => Err(format!(
+                "invalid edit scope {other:?}; expected \"day\" or \"all\""
+            )),
         }
     }
 }
@@ -753,7 +766,6 @@ impl UpdateQuestInputBuilder {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {

@@ -1,6 +1,6 @@
 ---
 name: fini-dev-agent
-description: "Use this when an autonomous coding agent, remote agent, or other delegated agent is asked to implement, debug, verify, or report progress on Fini repository work. This is a behavior overlay for agents: load `fini-dev` for Fini development mechanics, then use this skill to organize scope, autonomy, Telegram topic coordination, progress updates, blockers, verification evidence, and handoff discipline. If work arrives from the Telegram `Create` topic, always route it through `fini-create-ticket` as ticket intake before treating it as implementation work."
+description: "Use this when an autonomous coding agent, remote agent, or other delegated agent is asked to implement, debug, verify, or report progress on Fini repository work. This is a behavior overlay for agents: load `dev` for Fini development mechanics, then use this skill to organize scope, autonomy, Telegram topic coordination, progress updates, blockers, verification evidence, and handoff discipline. If work arrives from the Telegram `Create` topic, always route it through `fini-create-ticket` as ticket intake before treating it as implementation work."
 metadata:
   openclaw:
     envVars:
@@ -26,13 +26,13 @@ metadata:
 
 # Fini Autonomous Dev Agent
 
-Use this skill as a behavior overlay for autonomous coding agents working on Fini. It does not replace `fini-dev`; it adds delegation, progress, and handoff discipline around it.
+Use this skill as a behavior overlay for autonomous coding agents working on Fini. It does not replace `dev`; it adds delegation, progress, and handoff discipline around it.
 
 When the work is happening in the Fini Dev Telegram group, also load `fini-dev-telegram` for group-topic routing, Fini Self Improvement handling, and issue-topic coordination.
 
 ## First Step
 
-Load `fini-dev` before changing Fini code, tests, docs, automation, release files, or designs.
+Load `dev` before changing Fini code, tests, docs, automation, release files, or designs.
 
 Then apply this skill for autonomous-agent behavior:
 
@@ -52,15 +52,11 @@ Start each delegated task by establishing:
 - success checks and smallest useful verification command
 - expected progress channel, if Telegram is available
 
-If the task comes from a GitHub issue, follow `fini-dev` branch guidance before editing. If the issue is ambiguous, inspect the issue body, labels, linked design/spec/wiki context, and source code before asking the user.
+If the task comes from a GitHub issue, follow `dev` branch guidance before editing. If the issue is ambiguous, inspect the issue body, labels, linked design/spec/wiki context, and source code before asking the user.
 
 ## Issue Readiness And Review Contract
 
-Treat the configured tracker ticket as the authoritative work source for delegated Fini implementation. The current Fini instance uses GitHub issues and pull requests, but tracker providers and communication channels belong to the agent environment. Before implementation, classify the delegated ticket in Fini-facing terms:
-
-- `ready-to-start`: the ticket has a clear goal, bounded scope, expected behavior, and a practical verification path.
-- `needs-clarification`: the ticket is actionable only after a missing scope, product, behavior, or verification decision is answered.
-- `needs-human-review`: the ticket touches security, privacy, data migration, release behavior, broad architecture, user-visible product direction, or another high-risk area that should not proceed without explicit maintainer direction.
+Treat the configured tracker ticket as the authoritative work source for delegated Fini implementation. The current Fini instance uses GitHub issues and pull requests, but tracker providers and communication channels belong to the agent environment. Before implementation, classify the delegated ticket with a readiness state: `ready-to-start`, `needs-clarification`, or `needs-human-review`. The states are defined in `docs/development.md`, "Ticket readiness".
 
 Treat the Fini `no-auto` label as a hard exclusion from autonomous pickup. Include `no-auto` tickets in reports and handoffs for visibility, but do not classify them as `ready-to-start` or begin branch, commit, push, or review-artifact work unless the maintainer explicitly overrides that ticket's exclusion for the current task.
 
@@ -106,34 +102,15 @@ When invoked from Fini Dev:
 4. Stay quiet when the message is ordinary human discussion and no useful action or correction is needed.
 5. Never expose private workspace, credential, or unrelated personal context into the group while using prior messages.
 
-### Dynamic Issue Topics
+### Issue Topics
 
-Every GitHub issue that an autonomous Fini agent is actively working on should have its own Fini Dev Telegram forum topic.
-
-Before sending progress for issue work:
-
-1. Check the issue/topic sync file at `FINI_ISSUE_TOPIC_SYNC_FILE`, then legacy `FINI_ISSUE_TG_TOPIC_MAP`, or, if both are unset, `issue-topic-sync.json` at the local Fini checkout root.
-2. If the issue already has an `issueTarget`, use that for all issue-specific progress, blockers, verification evidence, and PR-ready handoff.
-3. If no mapping exists and Telegram topic creation is available, create a topic named `#<issue> <short title>` in the Fini Dev group.
-4. Record the mapping immediately with the issue number, title, GitHub URL, topic id, `<group-id>:topic:<thread-id>` target, and `createdAt` timestamp.
-5. Send a short starting message inside the new issue topic so future readers know the branch, PR, and current phase.
-
-Use the shared `In Progress` topic only for generic status, scheduler work, or work that is not tied to one GitHub issue. Do not put detailed implementation updates for a specific issue in `Daily` or the root Fini Dev topic once its dynamic issue topic exists.
-
-### Closing Issue Topics
-
-When a pull request for a mapped issue is merged, the issue-specific Telegram topic should be marked closed:
-
-1. Close the related GitHub issue if GitHub did not close it automatically.
-2. Rename the Telegram forum topic so the title begins `closed #<issue>`.
-3. Send one short final note inside the issue topic with the merged PR URL and issue close status.
-4. Update the topic map entry with `status: "closed"`, `closedAt`, `closedByPullRequest`, `topicTitle`, `finalTopicNoteStatus: "sent"`, and `finalTopicNoteSentAt`.
-
-If the optional `fini-merged-pr-topic-reconcile` local automation is installed, it may perform this idempotently on its own schedule. When that automation is unavailable or unknown, agents should perform the closure steps during merge handoff and preserve the same map fields and title convention.
+For each GitHub issue that you actively work on, create or reuse its dynamic
+issue topic, and close it when its pull request is merged. Follow
+`fini-dev-telegram`, "Dynamic Issue Topics" and "Closing Issue Topics".
 
 ### Create Topic Intake
 
-When the task source, channel, or thread is the Telegram `Create` topic, load `fini-create-ticket` after `fini-dev` and treat the work as ticket intake, issue drafting, scope capture, or follow-up creation. Do not treat `Create` topic messages as implementation delegation until a ticket or explicit implementation scope exists. Send ticket-creation status updates to `FINI_CREATE_TG_TARGET` when configured.
+When the task source, channel, or thread is the Telegram `Create` topic, load `fini-create-ticket` after `dev` and treat the work as ticket intake, issue drafting, scope capture, or follow-up creation. Do not treat `Create` topic messages as implementation delegation until a ticket or explicit implementation scope exists. Send ticket-creation status updates to `FINI_CREATE_TG_TARGET` when configured.
 
 ### Per-Task Topic Binding
 
@@ -198,7 +175,7 @@ Do not send progress after every command or minor edit.
 
 ## Autonomous Work Loop
 
-Use this loop after `fini-dev` routing chooses the domain skill:
+Use this loop after `dev` routing chooses the domain skill:
 
 1. Build the evidence chain before editing: trigger path, current behavior, relevant spec/wiki/source, and expected behavior.
 2. Create or update a concise todo list for tasks with three or more meaningful steps.
@@ -266,4 +243,4 @@ For PR-ready work, include:
 
 ## Non-Goals
 
-This skill does not define Fini product semantics, test commands, release rules, design bundle protocol, Android workflow, or CLI behavior. Load the specialized Fini skill for those areas through `fini-dev`.
+This skill does not define Fini product semantics, test commands, release rules, design bundle protocol, Android workflow, or CLI behavior. Load the specialized Fini skill for those areas through `dev`.

@@ -23,7 +23,7 @@ Produce a repeatable Play Store screenshot package:
 
 Load these before doing the actual work:
 
-- `fini-dev` first, for repo workflow and verification rules.
+- `dev` first, for repo workflow and verification rules.
 - `fini-scripting` before changing Makefile, npm scripts, `xtask`, or generated-asset automation.
 - `browse` or `gstack` when driving a web/runtime viewport for screenshots.
 - `fini-android-testing` only when the user specifically wants real Android device/emulator evidence.

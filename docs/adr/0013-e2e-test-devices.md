@@ -127,8 +127,9 @@ are.
 
 **D10 — One Android job in CI.** The old job "Android Emulator E2E" (one
 emulator, `scripts/android-e2e-assert.sh`) goes. Its check, the app start and
-the notification channel `fini.reminders`, is `android-app-start.spec.ts` in
-the project `device-support`.
+the notification channel `fini.reminders`, is the app-start check of Android
+in the project `device-support` (`app-start.spec.ts`, and `appStart` of the
+Android entry in `SUPPORTED_DEVICES`).
 
 **D11 — `multi-device` holds the multi-device behaviour; `device-support`
 holds the checks of each platform and channel.** Fini will run on many
