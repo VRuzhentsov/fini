@@ -4,7 +4,7 @@ use tauri::State;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::models::{CreateSpaceInput, Space, UpdateSpaceInput};
 #[cfg(any(feature = "ui-plane", test))]
-use crate::repositories::SpaceRepository;
+use crate::repositories::{Repository, SpaceRepository};
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::db::DbPool;
 

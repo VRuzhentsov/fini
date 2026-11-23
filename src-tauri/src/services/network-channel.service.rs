@@ -20,7 +20,7 @@ use iroh::endpoint::presets;
 use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, TransportAddr};
 
 use crate::models::{Event, Identity};
-use crate::repositories::{ChannelRepository, DeviceRepository};
+use crate::repositories::{ChannelRepository, DeviceRepository, Repository};
 use crate::services::channel_service::iroh_link::{IrohDataLink, PEER_ALPN, SYNC_ALPN};
 use crate::services::channel_service::{
     send_frame, ChannelKind, ChannelProblem, ChannelService, DataLink, DiscoveredDevice,

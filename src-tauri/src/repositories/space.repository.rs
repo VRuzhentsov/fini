@@ -2,17 +2,20 @@ use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 
 use crate::models::{CreateSpaceInput, Space, UpdateSpaceInput};
+use crate::repositories::Repository;
 use crate::schema::spaces;
 
 pub struct SpaceRepository<'a> {
     conn: &'a mut SqliteConnection,
 }
 
-impl<'a> SpaceRepository<'a> {
-    pub fn new(conn: &'a mut SqliteConnection) -> Self {
+impl<'a> Repository<'a> for SpaceRepository<'a> {
+    fn new(conn: &'a mut SqliteConnection) -> Self {
         Self { conn }
     }
+}
 
+impl SpaceRepository<'_> {
     pub fn list(&mut self) -> Result<Vec<Space>, String> {
         spaces::table
             .select(Space::as_select())

@@ -23,7 +23,7 @@ use ble_gatt::{
 use uuid::Uuid;
 
 use crate::models::{Event, Identity};
-use crate::repositories::{ChannelRepository, DeviceRepository};
+use crate::repositories::{ChannelRepository, DeviceRepository, Repository};
 use crate::services::channel_service::iroh_link::{IrohDataLink, PEER_ALPN, SYNC_ALPN};
 use crate::services::channel_service::{
     ChannelKind, ChannelProblem, ChannelService, DataLink, LinkHandlerSlot, LinkHandlers,

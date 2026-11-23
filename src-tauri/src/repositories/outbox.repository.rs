@@ -17,6 +17,7 @@ use crate::models::{CreateSyncAck, CreateSyncOutboxEntry, CreateSyncSeen, SyncOu
 use crate::models::{Quest, QuestOccurrence};
 #[cfg(any(feature = "ui-plane", feature = "cli-plane", test))]
 use crate::repositories::{quest_repository::QuestChange, QuestRepository};
+use crate::repositories::Repository;
 #[cfg(any(feature = "ui-plane", feature = "cli-plane", test))]
 use crate::schema::checklist_activity;
 use crate::schema::{peer_control_outbox, sync_acks, sync_outbox, sync_seen};
@@ -53,11 +54,13 @@ fn kept_as(frame: &PeerFrame) -> Option<(&'static str, String)> {
     }
 }
 
-impl<'a> OutboxRepository<'a> {
-    pub fn new(conn: &'a mut SqliteConnection) -> Self {
+impl<'a> Repository<'a> for OutboxRepository<'a> {
+    fn new(conn: &'a mut SqliteConnection) -> Self {
         Self { conn }
     }
+}
 
+impl OutboxRepository<'_> {
     /// Records a change for the paired devices, made at `updated_at`.
     #[allow(clippy::too_many_arguments)]
     pub fn emit_sync_event_at(

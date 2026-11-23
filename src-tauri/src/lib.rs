@@ -442,6 +442,7 @@ pub fn run() {
             // The composition root (ADR-0010 D5, D15): the identity first,
             // then the channels, then the services that use them, and the
             // channels' link handlers last.
+            use repositories::Repository;
             use services::channel_service::{ChannelService, LinkHandlers};
             let data_dir = app_data_dir(app_handle);
             let identity = repositories::DeviceRepository::new(&mut *pool.get()?)

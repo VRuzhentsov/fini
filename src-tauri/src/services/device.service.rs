@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::models::{Device, Event, Identity};
-use crate::repositories::{ChannelRepository, DeviceRepository};
+use crate::repositories::{ChannelRepository, DeviceRepository, Repository};
 use crate::services::bluetooth_channel_service::BluetoothChannelService;
 use crate::services::channel_service::{
     recv_frame, send_frame, ChannelKind, ChannelProblem, ChannelService, DataLink,

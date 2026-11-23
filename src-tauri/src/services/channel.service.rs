@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 pub use crate::models::channel::ChannelKind;
-use crate::repositories::ChannelRepository;
+use crate::repositories::{ChannelRepository, Repository};
 
 /// A live, point-to-point connection to one peer. Moves whole byte
 /// messages; framing is the link's concern, not the caller's.

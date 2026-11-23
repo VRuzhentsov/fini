@@ -11,6 +11,7 @@ use crate::models::{
 };
 #[cfg(any(feature = "ui-plane", test))]
 use crate::repositories::OutboxRepository;
+use crate::repositories::Repository;
 use crate::schema::{checklist_activity, focus_history, quest_occurrences, quests, spaces};
 use crate::services::checklist;
 use crate::services::db::utc_now;
@@ -21,11 +22,13 @@ pub struct QuestRepository<'a> {
     pub(crate) conn: &'a mut SqliteConnection,
 }
 
-impl<'a> QuestRepository<'a> {
-    pub fn new(conn: &'a mut SqliteConnection) -> Self {
+impl<'a> Repository<'a> for QuestRepository<'a> {
+    fn new(conn: &'a mut SqliteConnection) -> Self {
         Self { conn }
     }
+}
 
+impl QuestRepository<'_> {
     pub fn load_all(&mut self) -> Result<Vec<Quest>, String> {
         quests::table
             .select(Quest::as_select())

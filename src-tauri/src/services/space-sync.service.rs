@@ -24,7 +24,7 @@ use tokio::sync::mpsc;
 
 use crate::models::{Event, Identity};
 use crate::repositories::{
-    ChannelRepository, DeviceRepository, OutboxRepository, SpaceMappingRepository,
+    ChannelRepository, DeviceRepository, OutboxRepository, Repository, SpaceMappingRepository,
 };
 use crate::schema::{spaces, sync_acks, sync_outbox, sync_seen, tombstones};
 use crate::services::bluetooth_channel_service::BluetoothChannelService;

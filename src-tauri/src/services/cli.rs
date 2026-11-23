@@ -14,6 +14,7 @@ use crate::repositories::quest_repository::append_focus_history;
 use crate::repositories::quest_repository::QuestChange;
 use crate::repositories::OutboxRepository;
 use crate::repositories::QuestRepository;
+use crate::repositories::Repository;
 use crate::repositories::SpaceRepository;
 use crate::services::backup;
 use crate::services::bluetooth_channel_service::BluetoothChannelService;

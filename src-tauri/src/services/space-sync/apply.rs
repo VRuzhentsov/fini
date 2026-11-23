@@ -6,7 +6,7 @@ use diesel::sqlite::SqliteConnection;
 use super::UnresolvedCustomSpace;
 use crate::models::{ChecklistActivity, FocusHistoryEntry, Quest, QuestOccurrence, Space};
 use crate::repositories::QuestRepository;
-use crate::repositories::{OutboxRepository, SpaceMappingRepository};
+use crate::repositories::{OutboxRepository, Repository, SpaceMappingRepository};
 use crate::schema::{checklist_activity, focus_history, spaces, sync_outbox, tombstones};
 use crate::services::channel_service::{CustomSpaceDescriptor, SyncEventEnvelope};
 use crate::services::db::utc_now;

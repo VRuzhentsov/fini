@@ -14,7 +14,7 @@ use crate::models::{
     UpdateQuestCommandInput, UpdateQuestInputBuilder, OCCURRENCE_COMPLETED,
 };
 use crate::repositories::quest_repository::{append_focus_history, QuestChange};
-use crate::repositories::{OutboxRepository, QuestRepository, ReminderRepository};
+use crate::repositories::{OutboxRepository, QuestRepository, ReminderRepository, Repository};
 use crate::services::db::{DbPool, WriteTransaction};
 use crate::services::event_bus_service::EventBus;
 use crate::services::space_sync_service::SpaceSyncService;
