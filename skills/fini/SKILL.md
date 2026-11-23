@@ -115,6 +115,19 @@ Apply this workflow before every quest mutation: create, update, complete, aband
 
 For `fini quest update`, omit a field to preserve it, pass ordinary text (including an empty string) to store it, and pass literal `null` to clear nullable values such as `description`, `due`, `due_time`, and `repeat_rule`.
 
+### Quest Order
+
+`fini quest list` shows the active quests in the order of the app lists: overdue first, then the manual order (the rank), then Priority. To move a quest, give one of these to `fini quest update` (they are exclusive):
+
+```bash
+fini quest update --id <ID> --before <OTHER_ID>   # directly before another quest
+fini quest update --id <ID> --after <OTHER_ID>    # directly after another quest
+fini quest update --id <ID> --top                 # before all quests
+fini quest update --id <ID> --bottom              # after all quests
+```
+
+A move changes only the moved quest, except a rare rebalance that gives all quests new rank keys. An overdue quest stays in the overdue part at the top. A new quest goes to the bottom.
+
 ### Archive Export and Recovery Planning
 
 Use structured JSON for archive workflows:
