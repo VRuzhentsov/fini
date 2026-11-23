@@ -1453,7 +1453,7 @@ mod tests {
     // text when `is_checklist` is set — there is no dedicated checklist content column.
 
     fn create_active_quest_with_checklist(conn: &mut SqliteConnection, checklist: &str) -> Quest {
-        let result = QuestRepository::new(conn)
+        QuestRepository::new(conn)
             .create(CreateQuestInput {
                 space_id: "1".to_string(),
                 title: "Go to office".to_string(),
@@ -1466,12 +1466,11 @@ mod tests {
                 order_rank: None,
                 is_checklist: true,
             })
-            .expect("create quest with checklist");
-        result
+            .expect("create quest with checklist")
     }
 
     fn create_active_quest_with_prose(conn: &mut SqliteConnection, description: &str) -> Quest {
-        let result = QuestRepository::new(conn)
+        QuestRepository::new(conn)
             .create(CreateQuestInput {
                 space_id: "1".to_string(),
                 title: "Meeting notes".to_string(),
@@ -1484,8 +1483,7 @@ mod tests {
                 order_rank: None,
                 is_checklist: false,
             })
-            .expect("create quest with prose");
-        result
+            .expect("create quest with prose")
     }
 
     #[test]
