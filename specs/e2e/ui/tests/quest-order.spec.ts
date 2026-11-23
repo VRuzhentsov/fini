@@ -72,7 +72,7 @@ async function dragRow(tauriPage: Page, title: string, targetTitle: string): Pro
   })()`);
 }
 
-test('a quest dragged with the mouse keeps its new place after a reload', async ({ tauriPage }) => {
+test('a quest dragged with the mouse gets its new place in the stored order',async ({ tauriPage }) => {
   const stamp = Date.now();
   const titles = [`e2e order one ${stamp}`, `e2e order two ${stamp}`, `e2e order three ${stamp}`];
   await openQuestsView(tauriPage);
