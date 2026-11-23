@@ -12,9 +12,11 @@ const props = withDefaults(defineProps<{
   disabled?: boolean;
   menuPlacement?: "bottom" | "top";
 }>(), {
+  modelValue: undefined,
   allowAll: true,
   allLabel: "All spaces",
   clearLabel: "Clear space filter",
+  testId: undefined,
   ariaLabel: "Switch space",
   disabled: false,
   menuPlacement: "bottom",

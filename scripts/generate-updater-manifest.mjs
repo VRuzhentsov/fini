@@ -63,7 +63,7 @@ export async function generateUpdaterManifest({
         signature = (await readFile(sigPath, 'utf8')).trim();
       } catch (error) {
         if (error?.code === 'ENOENT') {
-          throw new Error(`missing Tauri updater signature for ${entry.name}: expected ${basename(sigPath)}`);
+          throw new Error(`missing Tauri updater signature for ${entry.name}: expected ${basename(sigPath)}`, { cause: error });
         }
         throw error;
       }

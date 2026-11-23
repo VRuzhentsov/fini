@@ -256,7 +256,7 @@ async function confirmDialog() {
         class="absolute inset-0 bg-black/45"
         aria-label="Close dialog"
         @click="dismissDialog"
-      ></button>
+      />
 
       <div class="relative w-full max-w-md rounded-xl bg-base-100 p-4 shadow-2xl">
         <h3 class="text-base font-semibold">{{ activeDialog.title }}</h3>

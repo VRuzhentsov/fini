@@ -98,7 +98,7 @@ onMounted(() => {
 <template>
   <Teleport to="body">
     <div class="fixed inset-0 z-[1200] flex items-end justify-center p-3 sm:items-center sm:p-4" data-testid="export-spaces-dialog">
-      <button type="button" class="absolute inset-0 bg-black/45" aria-label="Close export dialog" @click="emit('close')"></button>
+      <button type="button" class="absolute inset-0 bg-black/45" aria-label="Close export dialog" @click="emit('close')" />
       <div class="relative w-full max-w-md rounded-xl bg-base-100 shadow-2xl">
         <div class="p-4 pb-3">
           <h3 class="text-base font-semibold">Export backup</h3>
@@ -132,7 +132,7 @@ onMounted(() => {
               <span
                 class="inline-block h-2.5 w-2.5 flex-shrink-0 rounded-full"
                 :style="{ backgroundColor: spaceColor(space.id) }"
-              ></span>
+              />
               <span class="flex-1 text-sm font-medium">{{ space.name }}</span>
               <span class="text-xs opacity-40">{{ questsInSpace(space.id) }} quest{{ questsInSpace(space.id) === 1 ? "" : "s" }}</span>
             </li>
@@ -141,7 +141,7 @@ onMounted(() => {
 
         <div class="mx-4 mb-3 flex items-start gap-2 rounded-lg bg-warning/10 px-3 py-2 text-xs text-base-content/80">
           <svg class="mt-0.5 h-3.5 w-3.5 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><circle cx="12" cy="16" r="0.6" fill="currentColor"/>
+            <circle cx="12" cy="12" r="9" /><path d="M12 8v5" /><circle cx="12" cy="16" r="0.6" fill="currentColor" />
           </svg>
           <span class="opacity-80">The backup file contains your quest data in plain SQLite. It is not password-protected — keep it somewhere safe.</span>
         </div>
@@ -150,7 +150,7 @@ onMounted(() => {
 
         <div class="flex items-center gap-2 border-t border-base-200 px-4 py-3">
           <span class="text-xs opacity-40">Saves as <code class="font-mono">{{ filename }}</code></span>
-          <span class="flex-1"></span>
+          <span class="flex-1" />
           <button class="btn btn-ghost btn-sm" @click="emit('close')">Cancel</button>
           <button class="btn btn-primary btn-sm" :disabled="!canExport" @click="void exportSelected()">
             <template v-if="saving">Exporting…</template>

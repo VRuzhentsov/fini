@@ -442,9 +442,9 @@ function onDone() {
         <!-- Calendar -->
         <div class="px-3 py-3 border-b border-base-content/10">
           <div class="mb-2 flex items-center justify-between">
-            <button class="reminder-month-button" @click="prevMonth" aria-label="Previous month"><ChevronLeftIcon class="size-4" /></button>
+            <button class="reminder-month-button" aria-label="Previous month" @click="prevMonth"><ChevronLeftIcon class="size-4" /></button>
             <span class="text-sm font-medium">{{ MONTH_NAMES[calMonth] }} {{ calYear }}</span>
-            <button class="reminder-month-button" @click="nextMonth" aria-label="Next month"><ChevronRightIcon class="size-4" /></button>
+            <button class="reminder-month-button" aria-label="Next month" @click="nextMonth"><ChevronRightIcon class="size-4" /></button>
           </div>
           <div class="grid grid-cols-7 pb-2">
             <span

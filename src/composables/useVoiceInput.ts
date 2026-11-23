@@ -78,7 +78,7 @@ export function useVoiceInput() {
 
   async function forceStop(): Promise<void> {
     startCancelled = true;
-    try { await invoke("stop_recognition"); } catch {}
+    try { await invoke("stop_recognition"); } catch { /* Recognition can be stopped already. */ }
     await new Promise(resolve => setTimeout(resolve, 80));
     listening.value = false;
     transcript.value = "";

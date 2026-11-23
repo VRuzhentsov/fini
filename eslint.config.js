@@ -1,9 +1,13 @@
-// ESLint checks the size limits of docs/code-style.md in the JavaScript,
-// TypeScript and Vue files: 300 lines of code in a function, 2500 lines in a
-// file. Clippy (src-tauri/clippy.toml) checks the functions of the Rust code,
-// and `npm run lint:file-size` checks the size of the Rust and Kotlin files.
+// ESLint checks the JavaScript, TypeScript and Vue files with the recommended
+// rule sets of ESLint, typescript-eslint and eslint-plugin-vue, and with the
+// size limits of docs/code-style.md: 300 lines of code in a function, 2500
+// lines in a file. Clippy (src-tauri/clippy.toml) checks the functions of the
+// Rust code, and `npm run lint:file-size` checks the size of the Rust and
+// Kotlin files.
+import js from '@eslint/js';
+import pluginVue from 'eslint-plugin-vue';
+import globals from 'globals';
 import tseslint from 'typescript-eslint';
-import vueParser from 'vue-eslint-parser';
 
 // As clippy `too_many_lines`, a function counts its lines of code only. A file
 // counts all of its lines, as `npm run lint:file-size` does.
@@ -15,21 +19,27 @@ const sizeRules = {
 export default [
   // Build output, and generated or vendored code.
   { ignores: ['dist/', 'tmp/', '**/target/', 'src-tauri/gen/', 'src-tauri/patches/', '**/test-results/', '**/playwright-report/'] },
-  { files: ['**/*.{js,mjs,cjs}'], rules: sizeRules },
-  // The plugin is loaded with no rules on, so that the `eslint-disable`
-  // comments for its rules in the specs refer to rules that exist. These
-  // comments disable a rule that is off, so ESLint does not report them.
-  { linterOptions: { reportUnusedDisableDirectives: 'off' } },
-  {
-    files: ['**/*.{ts,mts,cts}'],
-    plugins: { '@typescript-eslint': tseslint.plugin },
-    languageOptions: { parser: tseslint.parser },
-    rules: sizeRules,
-  },
+  js.configs.recommended,
+  ...tseslint.configs.recommended,
+  ...pluginVue.configs['flat/recommended'],
+  // The JavaScript files are Node scripts and config files.
+  { files: ['**/*.{js,mjs,cjs}'], languageOptions: { globals: globals.node } },
   {
     files: ['**/*.vue'],
-    plugins: { '@typescript-eslint': tseslint.plugin },
-    languageOptions: { parser: vueParser, parserOptions: { parser: tseslint.parser } },
-    rules: sizeRules,
+    languageOptions: { parserOptions: { parser: tseslint.parser } },
+    rules: {
+      // vue-tsc checks the names in the TypeScript of the components.
+      'no-undef': 'off',
+      // The templates keep the attributes of an element on one line.
+      'vue/max-attributes-per-line': 'off',
+      // The templates keep short element content on the line of its tags.
+      'vue/singleline-html-element-content-newline': 'off',
+      // The templates keep the content of a multiline element against its
+      // tags; a new line there adds a space to the text of the element.
+      'vue/multiline-html-element-content-newline': 'off',
+      // The templates close void elements as `<input />`.
+      'vue/html-self-closing': ['warn', { html: { void: 'always' } }],
+    },
   },
+  { files: ['**/*.{js,mjs,cjs,ts,mts,cts,vue}'], rules: sizeRules },
 ];

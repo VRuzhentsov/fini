@@ -37,7 +37,7 @@ function onMap(spaceId: string) {
 <template>
   <Teleport to="body">
     <div class="fixed inset-0 z-[1200] flex items-end justify-center p-3 sm:items-center sm:p-4" data-testid="import-space-mapping-dialog">
-      <button type="button" class="absolute inset-0 bg-black/45" aria-label="Close" @click="emit('cancel')"></button>
+      <button type="button" class="absolute inset-0 bg-black/45" aria-label="Close" @click="emit('cancel')" />
       <div class="relative w-full max-w-md rounded-xl bg-base-100 shadow-2xl">
         <div class="p-4 pb-3">
           <div class="flex items-start gap-3">
@@ -60,7 +60,7 @@ function onMap(spaceId: string) {
             <span
               class="inline-block h-2.5 w-2.5 flex-shrink-0 rounded-full"
               :style="{ backgroundColor: spaceColor(incoming.backup_space_id) }"
-            ></span>
+            />
             <span class="font-medium">{{ incoming.backup_space_name }}</span>
             <span class="font-mono text-xs opacity-40" :title="incoming.backup_space_id">{{ shortUuid(incoming.backup_space_id, 8) }}</span>
           </div>
@@ -68,7 +68,7 @@ function onMap(spaceId: string) {
           <div class="flex flex-col gap-2">
             <div class="flex items-start gap-3 rounded-lg border border-base-300 p-3">
               <span class="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
-                <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+                <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14" /></svg>
               </span>
               <div>
                 <div class="text-sm font-medium">Create</div>
@@ -77,7 +77,7 @@ function onMap(spaceId: string) {
             </div>
             <div class="flex items-start gap-3 rounded-lg border border-base-300 p-3">
               <span class="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-base-200">
-                <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h18M14 5l7 7-7 7"/></svg>
+                <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h18M14 5l7 7-7 7" /></svg>
               </span>
               <div>
                 <div class="text-sm font-medium">Map to existing</div>
@@ -89,7 +89,7 @@ function onMap(spaceId: string) {
 
         <div class="flex items-center gap-2 border-t border-base-200 px-4 py-3">
           <button class="btn btn-ghost btn-sm" @click="emit('cancel')">Cancel</button>
-          <span class="flex-1"></span>
+          <span class="flex-1" />
           <button class="btn btn-sm" @click="pickerOpen = true">Map to existing</button>
           <button class="btn btn-primary btn-sm" @click="onCreate">Create</button>
         </div>

@@ -101,7 +101,7 @@ function openSearchResult(result: SettingsSearchResult) {
       </section>
     </div>
 
-    <component v-for="section in renderLists.settingsSections" v-else-if="renderFlags.settingsOverview" :is="section.component" :key="section.id" v-bind="section.props" />
+    <component :is="section.component" v-for="section in renderLists.settingsSections" v-else-if="renderFlags.settingsOverview" :key="section.id" v-bind="section.props" />
 
     <section v-if="renderFlags.settingsSearchEmptyState" class="rounded-xl bg-base-200 p-6 text-center" data-testid="settings-search-empty"><h2 class="text-sm font-semibold">No settings found</h2><p class="mt-1 text-xs opacity-60">Try a different search term.</p></section>
   </div>

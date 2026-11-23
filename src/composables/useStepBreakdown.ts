@@ -9,10 +9,10 @@ export function useStepBreakdown() {
     if (!text) return [];
 
     // Try numbered list: "1. foo 2. bar" or "1) foo 2) bar"
-    const numbered = text.match(/\d+[\.\)]\s+[^0-9]+?(?=\d+[\.\)]|$)/g);
+    const numbered = text.match(/\d+[.)]\s+[^0-9]+?(?=\d+[.)]|$)/g);
     if (numbered && numbered.length > 1) {
       return numbered
-        .map((s) => s.replace(/^\d+[\.\)]\s+/, "").trim())
+        .map((s) => s.replace(/^\d+[.)]\s+/, "").trim())
         .filter(Boolean);
     }
 

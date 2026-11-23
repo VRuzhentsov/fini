@@ -94,6 +94,11 @@ a `// SAFETY:` comment on each `unsafe` block; and no `print!`/`println!`
 outside the CLI. Do not disable a lint for a crate or a module. Put each
 `#[allow]` on the smallest item, with a `reason = "..."` of one line.
 
+**Obey the ESLint rule sets.** `eslint.config.js` uses the recommended rule
+sets of ESLint, typescript-eslint and eslint-plugin-vue. It turns off only the
+rules that do not agree with the template style of Fini, each with a reason.
+Put each `eslint-disable` comment on one line, for one rule.
+
 **Fix compiler warnings in the code.** Resolve compiler warnings by improving
 code structure, feature boundaries, visibility, or imports. Treat broad
 suppression such as crate-level `allow(dead_code, unused_imports)` as a
