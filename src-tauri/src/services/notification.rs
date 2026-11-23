@@ -185,7 +185,7 @@ pub fn schedule_reminder(
                         delivery_path: "mobile_plugin".to_string(),
                         reminder_id: reminder.id.clone(),
                         quest_id: quest.id.clone(),
-                        body: body.clone(),
+                        body,
                         due_at_utc: Some(due_utc.format("%Y-%m-%dT%H:%M:%SZ").to_string()),
                         scheduled_notification_id: Some(notif_id.to_string()),
                     },
@@ -212,6 +212,13 @@ pub fn schedule_reminder(
         let reminder_id = reminder.id.clone();
         let reminder_id_key = reminder_id.clone();
         let quest_id = quest.id.clone();
+        #[cfg_attr(
+            not(feature = "devtools"),
+            allow(
+                clippy::redundant_clone,
+                reason = "the devtools build records `body` below"
+            )
+        )]
         let body_for_timer = body.clone();
 
         let handle = tauri::async_runtime::spawn(async move {
@@ -365,7 +372,7 @@ fn show_linux(app: &AppHandle, reminder_id: &str, quest_id: &str, body: &str) {
                 });
             }
             Err(e) => {
-                eprintln!("[notification] Linux notify-rust failed for {reminder_id_owned}: {e}")
+                eprintln!("[notification] Linux notify-rust failed for {reminder_id_owned}: {e}");
             }
         }
     });
@@ -466,7 +473,7 @@ pub fn snooze(app: &AppHandle, reminder_id: &str, minutes: i64) {
         let mut conn = db.connection();
         let row = InsertNotificationSnooze {
             reminder_id: reminder_id.to_string(),
-            fire_at_utc: fire_at_str.clone(),
+            fire_at_utc: fire_at_str,
             created_at: now_str,
         };
         if let Err(e) = diesel::insert_into(notification_snoozes::table)

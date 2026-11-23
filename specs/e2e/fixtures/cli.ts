@@ -35,7 +35,9 @@ export function createCliClient(): CliClient {
     close() {
       try {
         rmSync(dbDir, { recursive: true, force: true });
-      } catch {}
+      } catch {
+        // The cleanup of the temporary directory is best effort.
+      }
     },
   };
 }

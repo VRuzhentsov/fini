@@ -314,10 +314,10 @@ onUnmounted(() => {
                 <span class="si-lab">{{ item.label }}</span>
                 <span v-if="item.children" class="si-tr">
                   <span v-if="item.value" class="si-val">{{ item.value }}</span>
-                  <svg class="si-chev" :class="{ rotated: expandedParent === item.label }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m8.25 4.5 7.5 7.5-7.5 7.5"/></svg>
+                  <svg class="si-chev" :class="{ rotated: expandedParent === item.label }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
                 </span>
                 <span v-else-if="item.loading" class="si-tr">
-                  <svg class="si-spn" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke-width="2.5" stroke="currentColor" stroke-opacity="0.25"/><path d="M21 12a9 9 0 0 0-9-9" stroke-width="2.5" stroke="currentColor" stroke-linecap="round"/></svg>
+                  <svg class="si-spn" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke-width="2.5" stroke="currentColor" stroke-opacity="0.25" /><path d="M21 12a9 9 0 0 0-9-9" stroke-width="2.5" stroke="currentColor" stroke-linecap="round" /></svg>
                 </span>
                 <span v-else-if="item.badge != null" class="si-tr">
                   <span class="si-badge">{{ item.badge }}</span>
@@ -340,7 +340,7 @@ onUnmounted(() => {
                       </span>
                       <span class="si-lab">{{ child.label }}</span>
                       <span v-if="child.selected" class="si-tr">
-                        <svg class="si-chk" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 12.75l6 6 9-13.5"/></svg>
+                        <svg class="si-chk" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 12.75l6 6 9-13.5" /></svg>
                       </span>
                     </button>
                   </template>
@@ -377,10 +377,10 @@ onUnmounted(() => {
                 <span class="si-lab">{{ item.label }}</span>
                 <span v-if="item.children" class="si-tr">
                   <span v-if="item.value" class="si-val">{{ item.value }}</span>
-                  <svg class="si-chev" :class="{ rotated: expandedParent === item.label }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m8.25 4.5 7.5 7.5-7.5 7.5"/></svg>
+                  <svg class="si-chev" :class="{ rotated: expandedParent === item.label }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
                 </span>
                 <span v-else-if="item.loading" class="si-tr">
-                  <svg class="si-spn" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke-width="2.5" stroke="currentColor" stroke-opacity="0.25"/><path d="M21 12a9 9 0 0 0-9-9" stroke-width="2.5" stroke="currentColor" stroke-linecap="round"/></svg>
+                  <svg class="si-spn" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke-width="2.5" stroke="currentColor" stroke-opacity="0.25" /><path d="M21 12a9 9 0 0 0-9-9" stroke-width="2.5" stroke="currentColor" stroke-linecap="round" /></svg>
                 </span>
                 <span v-else-if="item.badge != null" class="si-tr">
                   <span class="si-badge">{{ item.badge }}</span>
@@ -403,7 +403,7 @@ onUnmounted(() => {
                       </span>
                       <span class="si-lab">{{ child.label }}</span>
                       <span v-if="child.selected" class="si-tr">
-                        <svg class="si-chk" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 12.75l6 6 9-13.5"/></svg>
+                        <svg class="si-chk" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 12.75l6 6 9-13.5" /></svg>
                       </span>
                     </button>
                   </template>

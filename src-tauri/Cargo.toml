@@ -29,7 +29,18 @@ required-features = ["ui-plane"]
 
 [lints.clippy]
 # The default clippy set; CI runs clippy with `-D warnings`.
-all = "warn"
+all = { level = "warn", priority = -1 }
+# A function has 300 lines or fewer (`clippy.toml`; docs/code-style.md).
+too_many_lines = "warn"
+# More lints that give few false warnings (docs/code-style.md).
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+redundant_clone = "warn"
+semicolon_if_nothing_returned = "warn"
+undocumented_unsafe_blocks = "warn"
+# Only the CLI writes to stdout; its modules allow it.
+print_stdout = "warn"
 
 [patch.crates-io]
 sherpa-onnx-sys = { path = "patches/sherpa-onnx-sys" }
@@ -90,8 +101,8 @@ data-encoding = "2"
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = { version = "0.18.2", optional = true }
 notify-rust = { version = "4", optional = true }
-ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", tag = "v0.2.1", optional = true }
-ble-gatt-iroh = { git = "https://github.com/VRuzhentsov/ble-gatt", tag = "v0.2.1", optional = true }
+ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", tag = "v0.2.2", optional = true }
+ble-gatt-iroh = { git = "https://github.com/VRuzhentsov/ble-gatt", tag = "v0.2.2", optional = true }
 # Only used behind #[cfg(target_os = "linux")] (resume_watcher's sleep/wake
 # watcher, settings.rs's portal theme-change watcher, both over the
 # session/system D-Bus) -- kept target-gated rather than unconditional so
@@ -103,15 +114,15 @@ zvariant = "5.10.0"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # The WinRT driver of ble-gatt (its ADR-0011): the Bluetooth channel on Windows.
-ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", tag = "v0.2.1", optional = true }
-ble-gatt-iroh = { git = "https://github.com/VRuzhentsov/ble-gatt", tag = "v0.2.1", optional = true }
+ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", tag = "v0.2.2", optional = true }
+ble-gatt-iroh = { git = "https://github.com/VRuzhentsov/ble-gatt", tag = "v0.2.2", optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
-ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", tag = "v0.2.1", optional = true }
-ble-gatt-iroh = { git = "https://github.com/VRuzhentsov/ble-gatt", tag = "v0.2.1", optional = true }
+ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", tag = "v0.2.2", optional = true }
+ble-gatt-iroh = { git = "https://github.com/VRuzhentsov/ble-gatt", tag = "v0.2.2", optional = true }
 # Ships ble-gatt's Kotlin bridge, builds the Android backend after the
 # Activity is up, and asks for the Bluetooth runtime permissions.
-tauri-plugin-ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", tag = "v0.2.1", optional = true }
+tauri-plugin-ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", tag = "v0.2.2", optional = true }
 ndk-context = "0.1"
 tokio-stream = "0.1"
 jni = "0.21"

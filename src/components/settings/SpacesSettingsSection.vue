@@ -50,33 +50,33 @@ function cancelEdit() {
     <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide opacity-70">Spaces</h2>
     <div class="flex flex-col gap-3">
       <div v-if="spaceStore.error" class="text-error text-sm">{{ spaceStore.error }}</div>
-    <SettingsListGroup v-if="spaceStore.spaces.length > 0">
-      <template v-for="space in spaceStore.spaces" :key="space.id">
-        <SettingsListItem v-if="editingId === space.id">
-          <template #start>
-            <input v-model="editingName" class="input input-bordered input-sm w-full" @keyup.enter="confirmEdit(space.id)" @keyup.escape="cancelEdit" autofocus />
-          </template>
-          <template #end>
-            <div class="flex items-center justify-end gap-2">
-              <button class="btn btn-sm btn-primary" @click="confirmEdit(space.id)">Save</button>
-              <button class="btn btn-sm btn-ghost" @click="cancelEdit">Cancel</button>
-            </div>
-          </template>
-        </SettingsListItem>
-        <SettingsListItem v-else>
-          <template #start><span class="block truncate font-medium">{{ space.name }}</span></template>
-          <template #end><ActionsBtn :aria-label="`Actions for ${space.name}`" @click="openSpaceMenu($event, space.id, space.name)" /></template>
-        </SettingsListItem>
-      </template>
-    </SettingsListGroup>
-    <form @submit.prevent="addSpace">
-      <SettingsListGroup>
-        <SettingsListItem>
-          <template #start><input v-model="newSpaceName" class="input input-bordered input-sm w-full" placeholder="New space name" /></template>
-          <template #end><button type="submit" class="btn btn-sm btn-primary">Add</button></template>
-        </SettingsListItem>
+      <SettingsListGroup v-if="spaceStore.spaces.length > 0">
+        <template v-for="space in spaceStore.spaces" :key="space.id">
+          <SettingsListItem v-if="editingId === space.id">
+            <template #start>
+              <input v-model="editingName" class="input input-bordered input-sm w-full" autofocus @keyup.enter="confirmEdit(space.id)" @keyup.escape="cancelEdit" />
+            </template>
+            <template #end>
+              <div class="flex items-center justify-end gap-2">
+                <button class="btn btn-sm btn-primary" @click="confirmEdit(space.id)">Save</button>
+                <button class="btn btn-sm btn-ghost" @click="cancelEdit">Cancel</button>
+              </div>
+            </template>
+          </SettingsListItem>
+          <SettingsListItem v-else>
+            <template #start><span class="block truncate font-medium">{{ space.name }}</span></template>
+            <template #end><ActionsBtn :aria-label="`Actions for ${space.name}`" @click="openSpaceMenu($event, space.id, space.name)" /></template>
+          </SettingsListItem>
+        </template>
       </SettingsListGroup>
-    </form>
+      <form @submit.prevent="addSpace">
+        <SettingsListGroup>
+          <SettingsListItem>
+            <template #start><input v-model="newSpaceName" class="input input-bordered input-sm w-full" placeholder="New space name" /></template>
+            <template #end><button type="submit" class="btn btn-sm btn-primary">Add</button></template>
+          </SettingsListItem>
+        </SettingsListGroup>
+      </form>
     </div>
   </section>
 </template>

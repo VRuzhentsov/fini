@@ -2030,7 +2030,7 @@ mod tests {
                 .focus(comes_at)
                 .expect("resolve")
                 .map(|q| q.id),
-            Some(quest.id.clone()),
+            Some(quest.id),
             "tomorrow at 20:00 the day comes to Focus"
         );
 

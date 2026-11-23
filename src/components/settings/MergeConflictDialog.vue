@@ -107,7 +107,7 @@ function applyResolutions() {
 <template>
   <Teleport to="body">
     <div class="fixed inset-0 z-[1250] flex items-end justify-center p-3 sm:items-center sm:p-4" data-testid="merge-conflict-dialog">
-      <button type="button" class="absolute inset-0 bg-black/45" aria-label="Close conflict dialog" @click="emit('cancel')"></button>
+      <button type="button" class="absolute inset-0 bg-black/45" aria-label="Close conflict dialog" @click="emit('cancel')" />
       <div class="relative w-full max-w-3xl rounded-xl bg-base-100 shadow-2xl">
 
         <!-- Header -->
@@ -218,7 +218,7 @@ function applyResolutions() {
               @click="index = Math.min(total - 1, index + 1)"
             >›</button>
           </div>
-          <span class="flex-1"></span>
+          <span class="flex-1" />
           <span v-if="!canApply" class="text-xs opacity-40">{{ remaining }} remaining</span>
           <button class="btn btn-ghost btn-sm" @click="emit('cancel')">Cancel</button>
           <button

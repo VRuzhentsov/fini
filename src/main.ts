@@ -61,7 +61,7 @@ async function applyTheme(theme: ThemeMode, source: ThemeSource) {
 }
 
 async function bootstrap() {
-  let startupRecovery: StartupRecovery | null = null;
+  let startupRecovery: StartupRecovery | null;
   let theme: ThemeMode = window.matchMedia("(prefers-color-scheme: dark)").matches
     ? "dark"
     : "light";

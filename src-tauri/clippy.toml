@@ -1,0 +1,2 @@
+# The function limit of docs/code-style.md: `too_many_lines` in Cargo.toml.
+too-many-lines-threshold = 300

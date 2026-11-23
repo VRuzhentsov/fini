@@ -69,6 +69,8 @@ code tree, and update the links to it. Do not start new docs next to code.
 - Do not add a condition that the rule does not need.
 - Keep facts that code or config already holds in that code or config. The
   document links to it.
+- Refer to the manifest (`Cargo.toml`, `package.json`) for versions. Keep
+  versions, tags and commit hashes out of docs.
 - Base each rule on a source or on a decision that was made. Do not invent
   rules.
 - Put a rule in the document that owns its topic: development rules go in

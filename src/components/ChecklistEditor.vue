@@ -25,7 +25,7 @@ const props = withDefaults(
      * (via attrs fallthrough) can't also reach a child element. */
     addItemTestId?: string;
   }>(),
-  { disabled: false },
+  { disabled: false, addItemTestId: undefined },
 );
 
 const emit = defineEmits<{

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { defineStore } from "pinia";
-import { computed, ref } from "vue";
+import { computed, ref, type ComputedRef, type Ref } from "vue";
 import { shortUuid } from "../utils/shortUuid";
 import { listen } from "@tauri-apps/api/event";
 import { ChannelColor, ChannelKind, ChannelProblem, ChannelState } from "../utils/channel";
@@ -185,26 +185,14 @@ export const useDeviceStore = defineStore("device", () => {
   const pairedDevices = ref<PairedDevice[]>([]);
   // The Add Device list, from both channels.
   const availableDevices = ref<DiscoveredDevice[]>([]);
-  const incomingRequests = ref<IncomingPairRequest[]>([]);
-  const outgoingRequest = ref<OutgoingPairRequest | null>(null);
   const addModeEnabled = ref(false);
   const debugStatus = ref<DeviceConnectionDebugStatus | null>(null);
   const pairCompletedAt = ref<string | null>(null);
   const channelStatusesByPeer = ref<Record<string, DeviceChannelStatus[]>>({});
-  const incomingExpectedCode = ref<Record<string, string>>({});
-  const incomingAttemptCount = ref<Record<string, number>>({});
-  const incomingCooldownUntil = ref<Record<string, string | null>>({});
 
   // Lets an `enterAddMode` still waiting tell whether `leaveAddMode` ran
   // meanwhile, so that it does not open Add Device for a dialog that closed.
   let addModeGeneration = 0;
-  let requestExpiryTimer: ReturnType<typeof setTimeout> | null = null;
-
-  const outgoingRequestSecondsLeft = computed(() => {
-    if (!outgoingRequest.value) return 0;
-    const diff = Date.parse(outgoingRequest.value.expires_at) - Date.now();
-    return diff > 0 ? Math.ceil(diff / 1000) : 0;
-  });
 
   const pairedDeviceIds = computed(() => new Set(pairedDevices.value.map((d) => d.peer_device_id)));
 
@@ -300,46 +288,8 @@ export const useDeviceStore = defineStore("device", () => {
     return statuses;
   }
 
-  // Removes the pair requests that expired, and marks this device's own
-  // request expired.
-  function pruneRequests() {
-    const now = Date.now();
-    const retained = incomingRequests.value.filter((req) => {
-      const expiresAt = Date.parse(req.expires_at);
-      return Number.isNaN(expiresAt) || expiresAt > now;
-    });
-    const retainedIds = new Set(retained.map((item) => item.request_id));
-    incomingRequests.value = retained;
-    for (const requestId of Object.keys(incomingExpectedCode.value)) {
-      if (!retainedIds.has(requestId)) {
-        delete incomingExpectedCode.value[requestId];
-        delete incomingAttemptCount.value[requestId];
-        delete incomingCooldownUntil.value[requestId];
-      }
-    }
-    if (outgoingRequest.value) {
-      const expiresAt = Date.parse(outgoingRequest.value.expires_at);
-      if (!Number.isNaN(expiresAt) && expiresAt <= now && outgoingRequest.value.status === "pending") {
-        outgoingRequest.value = { ...outgoingRequest.value, status: "expired" };
-      }
-    }
-  }
-
-  // Prunes again when the next request expires: a time, not a change the
-  // backend tells.
-  function schedulePruneAtNextExpiry() {
-    if (requestExpiryTimer) clearTimeout(requestExpiryTimer);
-    requestExpiryTimer = null;
-    const times = [
-      ...incomingRequests.value.map((req) => Date.parse(req.expires_at)),
-      outgoingRequest.value ? Date.parse(outgoingRequest.value.expires_at) : Number.NaN,
-    ].filter((time) => !Number.isNaN(time) && time > Date.now());
-    if (times.length === 0) return;
-    requestExpiryTimer = setTimeout(() => {
-      pruneRequests();
-      schedulePruneAtNextExpiry();
-    }, Math.min(...times) - Date.now() + 50);
-  }
+  const pairRequests = usePairRequests({ pairedDeviceIds, pairCompletedAt, savePairedDevice });
+  const { refreshPairing } = pairRequests;
 
   async function refreshIdentity() {
     try {
@@ -370,53 +320,6 @@ export const useDeviceStore = defineStore("device", () => {
     } catch (error) {
       console.warn("[device] reading the Add Device list failed", error);
     }
-  }
-
-  // The pair requests, and the answers to this device's own request.
-  async function refreshPairing() {
-    try {
-      const incoming = await invoke<IncomingPairRequest[]>("device_pair_incoming_requests");
-      incomingRequests.value = incoming.map((request) => ({
-        ...request,
-        attempts: incomingAttemptCount.value[request.request_id] ?? request.attempts,
-        cooldown_until: incomingCooldownUntil.value[request.request_id] ?? request.cooldown_until,
-      }));
-    } catch (error) {
-      console.warn("[device] reading the incoming requests failed", error);
-    }
-
-    if (outgoingRequest.value) {
-      try {
-        const updates = await invoke<PairCodeUpdate[]>("device_pair_outgoing_updates");
-        const update = updates.find((item) => item.request_id === outgoingRequest.value?.request_id);
-        if (update && outgoingRequest.value) {
-          outgoingRequest.value = { ...outgoingRequest.value, status: "awaiting_code", sender_code: update.code };
-        }
-      } catch (error) {
-        console.warn("[device] reading the outgoing updates failed", error);
-      }
-
-      try {
-        const completions = await invoke<PairCompletionUpdate[]>("device_pair_outgoing_completions");
-        const completion = completions.find((item) => item.request_id === outgoingRequest.value?.request_id);
-        if (completion && outgoingRequest.value) {
-          await savePairedDevice(
-            outgoingRequest.value.to_device_id,
-            outgoingRequest.value.to_hostname,
-            completion.request_id,
-            completion.bluetooth_address,
-            completion.via_bluetooth,
-          );
-          outgoingRequest.value = null;
-          pairCompletedAt.value = nowIso();
-        }
-      } catch (error) {
-        console.warn("[device] reading the outgoing completions failed", error);
-      }
-    }
-
-    pruneRequests();
-    schedulePruneAtNextExpiry();
   }
 
   async function refreshAllChannelStatuses() {
@@ -497,13 +400,194 @@ export const useDeviceStore = defineStore("device", () => {
     // A newer `enterAddMode` took over while the leave was in flight: its
     // state is the one that holds.
     if (generation !== addModeGeneration) return;
+    pairRequests.clearRequests();
+    availableDevices.value = [];
+    void refreshDebugStatus();
+  }
+
+  async function unpairDevice(deviceId: string) {
+    try {
+      await invoke("device_unpair", { peerDeviceId: deviceId });
+    } catch (error) {
+      console.warn("[device] unpair failed", error);
+    }
+    delete channelStatusesByPeer.value[deviceId];
+    await loadPairedDevices();
+  }
+
+  // Online: a channel holds a live connection to the device (green).
+  function isDeviceOnline(device: PairedDevice): boolean {
+    return (channelStatusesByPeer.value[device.peer_device_id] ?? []).some(
+      (channel) => channel.color === ChannelColor.Green,
+    );
+  }
+
+  function shortDeviceId(deviceId: string): string {
+    return shortUuid(deviceId, 6, "end");
+  }
+
+  function findPairedDevice(deviceId: string): PairedDevice | null {
+    return pairedDevices.value.find((device) => device.peer_device_id === deviceId) ?? null;
+  }
+
+  return {
+    identity,
+    pairedDevices,
+    availableDevices,
+    discoveredDevices,
+    discoveredByChannel,
+    discoveredWithPairedByChannel,
+    incomingRequests: pairRequests.incomingRequests,
+    outgoingRequest: pairRequests.outgoingRequest,
+    outgoingRequestSecondsLeft: pairRequests.outgoingRequestSecondsLeft,
+    addModeEnabled,
+    debugStatus,
+    pairCompletedAt,
+    channelStatusesByPeer,
+    hydrate,
+    refreshDebugStatus,
+    getChannelStatuses,
+    refreshChannelStatuses,
+    refreshAllChannelStatuses,
+    setChannelEnabled,
+    setPrimaryChannel,
+    enterAddMode,
+    leaveAddMode,
+    requestPair: pairRequests.requestPair,
+    cancelOutgoingRequest: pairRequests.cancelOutgoingRequest,
+    acceptIncomingRequest: pairRequests.acceptIncomingRequest,
+    rejectIncomingRequest: pairRequests.rejectIncomingRequest,
+    submitPairCode: pairRequests.submitPairCode,
+    unpairDevice,
+    isDeviceOnline,
+    shortDeviceId,
+    findPairedDevice,
+  };
+});
+
+// The pair requests of the device store: the requests that came to this
+// device with their codes, and the request of this device. `paired` gives
+// the parts of the store that a completed pairing writes.
+function usePairRequests(paired: {
+  pairedDeviceIds: ComputedRef<Set<string>>;
+  pairCompletedAt: Ref<string | null>;
+  savePairedDevice: (
+    deviceId: string,
+    displayName: string,
+    requestId: string,
+    bluetoothAddress?: string | null,
+    viaBluetooth?: boolean,
+  ) => Promise<void>;
+}) {
+  const { pairedDeviceIds, pairCompletedAt, savePairedDevice } = paired;
+  const incomingRequests = ref<IncomingPairRequest[]>([]);
+  const outgoingRequest = ref<OutgoingPairRequest | null>(null);
+  const incomingExpectedCode = ref<Record<string, string>>({});
+  const incomingAttemptCount = ref<Record<string, number>>({});
+  const incomingCooldownUntil = ref<Record<string, string | null>>({});
+  let requestExpiryTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const outgoingRequestSecondsLeft = computed(() => {
+    if (!outgoingRequest.value) return 0;
+    const diff = Date.parse(outgoingRequest.value.expires_at) - Date.now();
+    return diff > 0 ? Math.ceil(diff / 1000) : 0;
+  });
+
+  // Removes the pair requests that expired, and marks this device's own
+  // request expired.
+  function pruneRequests() {
+    const now = Date.now();
+    const retained = incomingRequests.value.filter((req) => {
+      const expiresAt = Date.parse(req.expires_at);
+      return Number.isNaN(expiresAt) || expiresAt > now;
+    });
+    const retainedIds = new Set(retained.map((item) => item.request_id));
+    incomingRequests.value = retained;
+    for (const requestId of Object.keys(incomingExpectedCode.value)) {
+      if (!retainedIds.has(requestId)) {
+        delete incomingExpectedCode.value[requestId];
+        delete incomingAttemptCount.value[requestId];
+        delete incomingCooldownUntil.value[requestId];
+      }
+    }
+    if (outgoingRequest.value) {
+      const expiresAt = Date.parse(outgoingRequest.value.expires_at);
+      if (!Number.isNaN(expiresAt) && expiresAt <= now && outgoingRequest.value.status === "pending") {
+        outgoingRequest.value = { ...outgoingRequest.value, status: "expired" };
+      }
+    }
+  }
+
+  // Prunes again when the next request expires: a time, not a change the
+  // backend tells.
+  function schedulePruneAtNextExpiry() {
+    if (requestExpiryTimer) clearTimeout(requestExpiryTimer);
+    requestExpiryTimer = null;
+    const times = [
+      ...incomingRequests.value.map((req) => Date.parse(req.expires_at)),
+      outgoingRequest.value ? Date.parse(outgoingRequest.value.expires_at) : Number.NaN,
+    ].filter((time) => !Number.isNaN(time) && time > Date.now());
+    if (times.length === 0) return;
+    requestExpiryTimer = setTimeout(() => {
+      pruneRequests();
+      schedulePruneAtNextExpiry();
+    }, Math.min(...times) - Date.now() + 50);
+  }
+
+  // The pair requests, and the answers to this device's own request.
+  async function refreshPairing() {
+    try {
+      const incoming = await invoke<IncomingPairRequest[]>("device_pair_incoming_requests");
+      incomingRequests.value = incoming.map((request) => ({
+        ...request,
+        attempts: incomingAttemptCount.value[request.request_id] ?? request.attempts,
+        cooldown_until: incomingCooldownUntil.value[request.request_id] ?? request.cooldown_until,
+      }));
+    } catch (error) {
+      console.warn("[device] reading the incoming requests failed", error);
+    }
+
+    if (outgoingRequest.value) {
+      try {
+        const updates = await invoke<PairCodeUpdate[]>("device_pair_outgoing_updates");
+        const update = updates.find((item) => item.request_id === outgoingRequest.value?.request_id);
+        if (update && outgoingRequest.value) {
+          outgoingRequest.value = { ...outgoingRequest.value, status: "awaiting_code", sender_code: update.code };
+        }
+      } catch (error) {
+        console.warn("[device] reading the outgoing updates failed", error);
+      }
+
+      try {
+        const completions = await invoke<PairCompletionUpdate[]>("device_pair_outgoing_completions");
+        const completion = completions.find((item) => item.request_id === outgoingRequest.value?.request_id);
+        if (completion && outgoingRequest.value) {
+          await savePairedDevice(
+            outgoingRequest.value.to_device_id,
+            outgoingRequest.value.to_hostname,
+            completion.request_id,
+            completion.bluetooth_address,
+            completion.via_bluetooth,
+          );
+          outgoingRequest.value = null;
+          pairCompletedAt.value = nowIso();
+        }
+      } catch (error) {
+        console.warn("[device] reading the outgoing completions failed", error);
+      }
+    }
+
+    pruneRequests();
+    schedulePruneAtNextExpiry();
+  }
+
+  // Removes all requests, when Add Device closes.
+  function clearRequests() {
     incomingRequests.value = [];
     incomingExpectedCode.value = {};
     incomingAttemptCount.value = {};
     incomingCooldownUntil.value = {};
     outgoingRequest.value = null;
-    availableDevices.value = [];
-    void refreshDebugStatus();
   }
 
   async function requestPair(listed: DiscoveredDevice) {
@@ -670,62 +754,16 @@ export const useDeviceStore = defineStore("device", () => {
     return true;
   }
 
-  async function unpairDevice(deviceId: string) {
-    try {
-      await invoke("device_unpair", { peerDeviceId: deviceId });
-    } catch (error) {
-      console.warn("[device] unpair failed", error);
-    }
-    delete channelStatusesByPeer.value[deviceId];
-    await loadPairedDevices();
-  }
-
-  // Online: a channel holds a live connection to the device (green).
-  function isDeviceOnline(device: PairedDevice): boolean {
-    return (channelStatusesByPeer.value[device.peer_device_id] ?? []).some(
-      (channel) => channel.color === ChannelColor.Green,
-    );
-  }
-
-  function shortDeviceId(deviceId: string): string {
-    return shortUuid(deviceId, 6, "end");
-  }
-
-  function findPairedDevice(deviceId: string): PairedDevice | null {
-    return pairedDevices.value.find((device) => device.peer_device_id === deviceId) ?? null;
-  }
-
   return {
-    identity,
-    pairedDevices,
-    availableDevices,
-    discoveredDevices,
-    discoveredByChannel,
-    discoveredWithPairedByChannel,
     incomingRequests,
     outgoingRequest,
     outgoingRequestSecondsLeft,
-    addModeEnabled,
-    debugStatus,
-    pairCompletedAt,
-    channelStatusesByPeer,
-    hydrate,
-    refreshDebugStatus,
-    getChannelStatuses,
-    refreshChannelStatuses,
-    refreshAllChannelStatuses,
-    setChannelEnabled,
-    setPrimaryChannel,
-    enterAddMode,
-    leaveAddMode,
+    refreshPairing,
+    clearRequests,
     requestPair,
     cancelOutgoingRequest,
     acceptIncomingRequest,
     rejectIncomingRequest,
     submitPairCode,
-    unpairDevice,
-    isDeviceOnline,
-    shortDeviceId,
-    findPairedDevice,
   };
-});
+}

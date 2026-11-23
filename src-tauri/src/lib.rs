@@ -165,7 +165,7 @@ fn set_theme_mode(
     let mode = settings::set_theme_mode(&mut conn, mode)?;
     let effective = settings::theme_hint(&mut conn);
     settings::apply_native_theme(&app, &effective);
-    let _ = app.emit(THEME_EVENT, effective.clone());
+    let _ = app.emit(THEME_EVENT, effective);
     Ok(mode.as_str().to_string())
 }
 

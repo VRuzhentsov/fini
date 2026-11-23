@@ -1,7 +1,8 @@
 import { defineConfig } from '@playwright/test';
+import type { TauriFixtures } from '@srsholmes/tauri-playwright';
 import { E2eProject } from './e2e-project.ts';
 
-export default defineConfig({
+export default defineConfig<Pick<TauriFixtures, 'mode'>>({
   testDir: '.',
   timeout: 180_000,
   reporter: 'list',
@@ -17,7 +18,7 @@ export default defineConfig({
     {
       name: E2eProject.Ui,
       testMatch: ['ui/tests/**/*.spec.ts'],
-      use: { mode: 'tauri' } as any,
+      use: { mode: 'tauri' },
     },
     {
       // What Fini does with two or more devices (ADR-0013 D11). By default two

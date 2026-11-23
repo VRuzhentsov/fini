@@ -15,6 +15,7 @@ at their own computer.
 
 | Target | CI | Local development | Supported | Today |
 |---|---|---|---|---|
+| Size limits (`docs/code-style.md`) | `linux` image, stage `build`: `npm run lint` (job Quality Gates); clippy `too_many_lines` in `desktop-bundle-linux` | `npm run lint` on the host | ✅ | As in the CI column |
 | Frontend unit tests | `linux` image, stage `build`: `npm run test:unit` | `npm run test:unit` on the host; `make pr-gate-fe-unit` in the `linux` `build` image | ✅ | As in the CI column |
 | BE unit tests | `linux` image, stage `build`: `cargo test` with the features `cli-plane,ui-plane,desktop-updater` | `make backend-test` on the host; `make pr-gate-be-unit` in the `linux` `build` image | ✅ | As in the CI column |
 | Linux desktop app (glibc) | `linux` image, stage `build`: `npm run tauri build` with the bundles `appimage,deb,rpm` | `make desktop-debug-dev` or `make dev` on the host | ✅ | As in the CI column; the release also builds arm64 in the arm64 `linux` image on `ubuntu-26.04-arm` |
@@ -59,7 +60,7 @@ read needs no GHCR login.
 | `ci.yml` | `desktop-bundle-linux` | `npm run tauri build` in the `linux` `build` image |
 | `ci.yml` | `desktop-bundle-windows` | `windows-latest`, `npm run tauri build`, the Windows CLI, `npm run test:e2e:device-support`; no container |
 | `ci.yml` | `android-e2e` | Calls `android-e2e.yml` |
-| `quality-gates.yml` | Quality Gates | The backend tests in the `linux` `build` image; the CLI image (`linux`, `runtime`) and its smoke check; the desktop e2e (`npm run gate:e2e:run`) in the `linux` `e2e` image |
+| `quality-gates.yml` | Quality Gates | The size limits of [`code-style.md`](code-style.md) (`npm run lint`) and the backend tests in the `linux` `build` image; the CLI image (`linux`, `runtime`) and its smoke check; the desktop e2e (`npm run gate:e2e:run`) in the `linux` `e2e` image |
 | `android-e2e.yml` | Android E2E | `npm run build:android:e2e` in the `android` `build` image; `npm run test:e2e:android` in the `android` `e2e` image; no setup-java, setup-android or Rust steps |
 | `release-tag.yml` | `build-linux` | The `linux` `build` image; a static musl CLI for x86_64 only, with the asset name `fini-<tag>-linux-x86_64-unknown-linux-musl-cli.tar.gz`, and a signed copy of it under the old name `fini-<tag>-linux-x86_64-unknown-linux-gnu-cli.tar.gz` for CLIs at v0.3.19 or older. The arm64 matrix entry builds the arm64 desktop app only, and the release has no arm64 Linux CLI |
 | `release-tag.yml` | `build-android` | `npm run tauri android build` and the signing in the `android` `build` image |
