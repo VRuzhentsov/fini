@@ -6,8 +6,9 @@
 // .github/actions/container-stage, and runs the same commands.
 //
 //   node scripts/ci-gate.mts <fe-unit|be-compile|be-unit|e2e-build-image|
-//                             e2e-run|e2e|e2e-artifacts|e2e-cleanup>
+//                             e2e-run|e2e|e2e-artifacts|e2e-cleanup|file-size>
 //
+// `file-size` uses no container: it reads the tracked files of the repo.
 // `e2e-run` in the `linux` `e2e` container (FINI_E2E_CONTAINER_RUNNER=1)
 // builds the e2e binaries and runs scripts/e2e-runner.sh; CI calls it there.
 
@@ -172,6 +173,37 @@ function e2eInContainer(): void {
   });
 }
 
+/** The file limit of docs/code-style.md for the Rust and Kotlin files in git. */
+const FileSizeLimit = {
+  maxLines: 2500,
+  extensions: ['.rs', '.kt'],
+  // Vendored code, and code that a tool generates.
+  ignoredPrefixes: ['src-tauri/patches/', 'src-tauri/gen/android/tauri-android-patched/', 'src-tauri/src/schema.rs'],
+
+  /** The files of the limit, from `git ls-files`. */
+  gitFiles(): string[] {
+    const patterns = this.extensions.map((extension) => `*${extension}`);
+    // In a container the repo can belong to a different user than git.
+    const result = spawnSync('git', ['-c', 'safe.directory=*', 'ls-files', '-z', '--', ...patterns], {
+      cwd: REPO_ROOT, encoding: 'utf8',
+    });
+    if (result.error) throw result.error;
+    if (result.status !== 0) {
+      console.error(result.stderr);
+      process.exit(result.status ?? 1);
+    }
+    return result.stdout.split('\0').filter((path) => path !== '')
+      .filter((path) => !this.ignoredPrefixes.some((prefix) => path.startsWith(prefix)));
+  },
+
+  /** The files that have more lines than the limit, with their line count. */
+  filesOverLimit(): { path: string; lines: number }[] {
+    return this.gitFiles()
+      .map((path) => ({ path, lines: readFileSync(join(REPO_ROOT, path), 'utf8').split('\n').length - 1 }))
+      .filter(({ lines }) => lines > this.maxLines);
+  },
+};
+
 const steps: Record<string, () => unknown> = {
   'fe-unit': () => {
     buildStage('build');
@@ -241,6 +273,18 @@ const steps: Record<string, () => unknown> = {
   },
 
   'e2e-cleanup': () => run(engine(), ['rm', '-f', runnerName], { allowFailure: true }),
+
+  // `npm run lint:file-size`, on the host or in a container: the file limit of
+  // docs/code-style.md for the Rust and Kotlin files in git. ESLint checks the
+  // JavaScript, TypeScript and Vue files.
+  'file-size': () => {
+    const overLimit = FileSizeLimit.filesOverLimit();
+    for (const { path, lines } of overLimit) {
+      console.error(`${path}: ${lines} lines; the limit is ${FileSizeLimit.maxLines} (docs/code-style.md)`);
+    }
+    if (overLimit.length > 0) process.exit(1);
+    console.log(`All Rust and Kotlin files have ${FileSizeLimit.maxLines} lines or fewer.`);
+  },
 };
 
 const step = steps[process.argv[2]];

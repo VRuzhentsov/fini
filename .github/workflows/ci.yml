@@ -49,6 +49,7 @@ jobs:
               - 'Makefile'
               - 'com.fini.app.yml'
               - 'index.html'
+              - 'eslint.config.js'
               - 'package.json'
               - 'package-lock.json'
               - 'tsconfig*.json'
