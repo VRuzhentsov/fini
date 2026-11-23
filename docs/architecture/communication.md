@@ -301,8 +301,8 @@ A pair syncs only the spaces that the two devices map.
 
 ## Not done yet
 
-- The app and broker use the ble-gatt release tag `v0.2.1`
-  (`2202f7d8fa3d341d7ea02d6efe3daa309427a0e8`). Consumer compilation is not
+- The app and broker use the ble-gatt release tag `v0.2.2`
+  (`77676daffcab157197be6c40e25e908952dec341`). Consumer compilation is not
   runtime proof. Advertisement changes, initialization during shutdown,
   pairing failure with another user, re-identify during a sync session and
   real app BLE delivery still need manual proof.
