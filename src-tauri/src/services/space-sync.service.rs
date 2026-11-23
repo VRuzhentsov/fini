@@ -4,7 +4,7 @@
 //! It owns the sync sessions (one for each device and channel kind), when
 //! sync runs (the wake signal, the keeper), and which green channel a frame
 //! goes over (the primary first). It accepts the sync connections that
-//! peers open (`SessionHandler`, ALPN `fini/sync/5`) and holds the ones the
+//! peers open (`SessionHandler`, ALPN `fini/sync/6`) and holds the ones the
 //! channels open.
 //!
 //! Work for a device with no green channel waits in the outbox: the
@@ -1906,7 +1906,7 @@ mod tests {
             due_time: None,
             repeat_rule: None,
             completed_at: None,
-            order_rank: 1000.0,
+            order_rank: "a0".to_string(),
             focus_enter_count: 0,
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-04-11T20:00:00Z".to_string(),

@@ -44,7 +44,7 @@ diesel::table! {
         due_time    -> Nullable<Text>,
         repeat_rule -> Nullable<Text>,
         completed_at -> Nullable<Text>,
-        order_rank -> Double,
+        order_rank -> Text,
         focus_enter_count -> BigInt,
         created_at  -> Text,
         updated_at  -> Text,

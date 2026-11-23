@@ -10,7 +10,7 @@ use diesel::sqlite::SqliteConnection;
 use tauri::{Manager, State};
 
 use crate::models::{
-    CreateQuestInput, EditScope, Event, Quest, QuestFieldPatch, QuestUpdatePatch,
+    CreateQuestInput, EditScope, Event, Quest, QuestFieldPatch, QuestPlacement, QuestUpdatePatch,
     UpdateQuestCommandInput, UpdateQuestInputBuilder, OCCURRENCE_COMPLETED,
 };
 use crate::repositories::quest_repository::{append_focus_history, QuestChange};
@@ -143,6 +143,35 @@ pub fn update_quest(
         }
         Ok(change)
     })
+}
+
+/// Moves a quest in the manual order (`QuestRepository::move_quest`).
+/// Returns each quest that it wrote, as the UI shows it: usually only the
+/// moved quest, all quests after a rebalance.
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub fn move_quest(
+    pool: State<DbPool>,
+    space_sync: SpaceSync,
+    bus: Bus,
+    id: String,
+    placement: QuestPlacement,
+) -> Result<Vec<Quest>, String> {
+    let device_id = &space_sync.identity().device_id;
+    let quests = pool.get()?.write_transaction(|conn| {
+        let written = QuestRepository::new(conn).move_quest(&id, &placement)?;
+        OutboxRepository::new(conn).record_quests(device_id, &written)?;
+        written
+            .iter()
+            .map(|quest_id| QuestRepository::new(conn).resolved(quest_id))
+            .collect::<Result<Vec<_>, _>>()
+    })?;
+    for quest in &quests {
+        bus.publish(Event::QuestChanged {
+            quest: quest.clone(),
+        });
+    }
+    Ok(quests)
 }
 
 /// "Complete through today" (ADR-0012 D7).
@@ -376,7 +405,7 @@ mod tests {
             "invalid stored priority 4; expected 1, 2, or 3"
         );
     }
-    use crate::models::{clamp_order_rank, QuestFieldPatch};
+    use crate::models::QuestFieldPatch;
     use crate::schema::sync_outbox;
     use crate::services::db::open_db_at_path;
     use std::path::PathBuf;
@@ -439,7 +468,6 @@ mod tests {
             due: None,
             due_time: None,
             repeat_rule: None,
-            order_rank: None,
             is_checklist: None,
         }
     }
@@ -455,7 +483,6 @@ mod tests {
             due: None,
             due_time: None,
             repeat_rule: None,
-            order_rank: None,
             is_checklist: None,
         }
     }
@@ -567,13 +594,6 @@ mod tests {
         assert_eq!(triggers, vec!["manual"]);
 
         let _ = std::fs::remove_file(db_path);
-    }
-
-    #[test]
-    fn order_rank_is_clamped_to_signed_100() {
-        assert_eq!(clamp_order_rank(150.0), 100.0);
-        assert_eq!(clamp_order_rank(-150.0), -100.0);
-        assert_eq!(clamp_order_rank(42.5), 42.5);
     }
 
     #[test]
@@ -944,11 +964,11 @@ mod tests {
         );
 
         diesel::update(quests::table.find(&lower_rank_lower_priority))
-            .set(quests::order_rank.eq(-50.0))
+            .set(quests::order_rank.eq("a0"))
             .execute(&mut conn)
             .expect("set lower rank");
         diesel::update(quests::table.find(&higher_rank_higher_priority))
-            .set(quests::order_rank.eq(50.0))
+            .set(quests::order_rank.eq("a1"))
             .execute(&mut conn)
             .expect("set higher rank");
 
@@ -2274,7 +2294,7 @@ mod tests {
             due_time: None,
             repeat_rule: None,
             completed_at: None,
-            order_rank: 0.0,
+            order_rank: "a0".to_string(),
             focus_enter_count: 0,
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-01-01T00:00:00Z".to_string(),

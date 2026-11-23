@@ -224,3 +224,124 @@ fn reminder_moment_migration_keeps_reminders_made_with_their_own_time() {
 
     let _ = std::fs::remove_file(db_path);
 }
+
+/// Migration 30: each decimal `order_rank` becomes the rank key that
+/// `Rank::from_legacy` gives, so the order stays and two devices give the
+/// same key to the same value. The quest events in the outbox get the same
+/// key. The down migration gives decimals in the same order.
+#[test]
+fn rank_key_migration_keeps_the_order_and_converts_the_outbox() {
+    use crate::models::Rank;
+    use crate::schema::{quests, sync_outbox};
+
+    let db_path = temp_db_path("rank-key-keeps-order");
+    let mut conn = open_db_at_path(&db_path);
+    while conn
+        .applied_migrations()
+        .expect("read the applied migrations")
+        .iter()
+        .any(|version| version.to_string() == "00000000000030")
+    {
+        conn.revert_last_migration(MIGRATIONS)
+            .expect("wind back past migration 30");
+    }
+
+    let values = [
+        ("low", -150.0),
+        ("first", -100.0),
+        ("third", -33.333_333),
+        ("tie-a", 0.0),
+        ("tie-b", 0.0),
+        ("half", 12.5),
+        ("high", 150.0),
+    ];
+    for (id, value) in values {
+        diesel::sql_query(format!(
+            "INSERT INTO quests (id, space_id, title, status, energy, priority, order_rank,
+                                 focus_enter_count, created_at, updated_at, is_checklist)
+             VALUES ('{id}', '1', '{id}', 'active', 2, 2, {value:?}, 0, 't', 't', 0)"
+        ))
+        .execute(&mut conn)
+        .expect("seed a quest with a decimal rank");
+    }
+    diesel::sql_query(
+        r#"INSERT INTO sync_outbox (event_id, correlation_id, origin_device_id, entity_type,
+                                    entity_id, space_id, op_type, payload, updated_at, created_at)
+           VALUES ('quest-event', 'c', 'd', 'quest', 'half', '1', 'upsert',
+                   '{"id":"half","order_rank":12.5}', 't', 't'),
+                  ('delete-event', 'c', 'd', 'quest', 'gone', '1', 'delete', NULL, 't', 't'),
+                  ('space-event', 'c', 'd', 'space', '1', '1', 'upsert',
+                   '{"id":"1","order_rank":3}', 't', 't')"#,
+    )
+    .execute(&mut conn)
+    .expect("seed outbox events");
+
+    conn.run_pending_migrations(MIGRATIONS)
+        .expect("upgrade through migration 30");
+
+    for (id, value) in values {
+        let key: String = quests::table
+            .find(id)
+            .select(quests::order_rank)
+            .first(&mut conn)
+            .expect("load the rank key");
+        assert_eq!(key, Rank::from_legacy(value), "the key of {id}");
+    }
+    let mut ordered: Vec<(String, String)> = quests::table
+        .select((quests::order_rank, quests::id))
+        .load(&mut conn)
+        .expect("load the keys");
+    ordered.sort();
+    let ids: Vec<&str> = ordered.iter().map(|(_, id)| id.as_str()).collect();
+    assert_eq!(
+        ids,
+        ["first", "low", "third", "tie-a", "tie-b", "half", "high"]
+    );
+
+    let payload = |conn: &mut SqliteConnection, event_id: &str| -> Option<String> {
+        sync_outbox::table
+            .find(event_id)
+            .select(sync_outbox::payload)
+            .first(conn)
+            .expect("load an outbox payload")
+    };
+    let quest_payload: serde_json::Value =
+        serde_json::from_str(&payload(&mut conn, "quest-event").expect("a payload"))
+            .expect("the payload is JSON");
+    assert_eq!(quest_payload["order_rank"], Rank::from_legacy(12.5));
+    assert_eq!(payload(&mut conn, "delete-event"), None);
+    assert_eq!(
+        payload(&mut conn, "space-event").as_deref(),
+        Some(r#"{"id":"1","order_rank":3}"#),
+        "only quest events change"
+    );
+
+    conn.revert_last_migration(MIGRATIONS)
+        .expect("revert migration 30");
+    let mut numbers: Vec<(f64, String)> = diesel::sql_query(
+        "SELECT order_rank AS value, id FROM quests WHERE typeof(order_rank) = 'real'",
+    )
+    .load::<RankNumberRow>(&mut conn)
+    .expect("load the decimal ranks")
+    .into_iter()
+    .map(|row| (row.value, row.id))
+    .collect();
+    numbers.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    let ids: Vec<&str> = numbers.iter().map(|(_, id)| id.as_str()).collect();
+    assert_eq!(
+        ids,
+        ["first", "low", "third", "tie-a", "tie-b", "half", "high"]
+    );
+    assert_eq!(numbers[3].0, numbers[4].0, "equal keys give equal numbers");
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+/// A quest of migration 30's down migration, with its decimal rank.
+#[derive(QueryableByName)]
+struct RankNumberRow {
+    #[diesel(sql_type = diesel::sql_types::Double)]
+    value: f64,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    id: String,
+}

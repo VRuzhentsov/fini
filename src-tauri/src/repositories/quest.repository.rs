@@ -4,10 +4,10 @@ use diesel::sqlite::SqliteConnection;
 use std::collections::HashMap;
 
 use crate::models::{
-    clamp_order_rank, is_overdue, parse_utc_timestamp, period_key_of, validate_metadata,
-    validate_optional_metadata, CreateFocusHistoryInput, CreateQuestInput, EditScope, Quest,
-    QuestFieldPatch, QuestOccurrence, QuestUpdatePatch, RepeatRule, RepeatingQuest, Space,
-    UpdateQuestInput, UpdateQuestInputBuilder, OCCURRENCE_ABANDONED, OCCURRENCE_COMPLETED,
+    parse_utc_timestamp, period_key_of, validate_metadata, validate_optional_metadata,
+    CreateFocusHistoryInput, CreateQuestInput, EditScope, Quest, QuestFieldPatch, QuestOccurrence,
+    QuestPlacement, QuestUpdatePatch, Rank, RepeatRule, RepeatingQuest, Space, UpdateQuestInput,
+    UpdateQuestInputBuilder, OCCURRENCE_ABANDONED, OCCURRENCE_COMPLETED,
 };
 #[cfg(any(feature = "ui-plane", test))]
 use crate::repositories::OutboxRepository;
@@ -55,7 +55,7 @@ impl<'a> QuestRepository<'a> {
                 quests::due_time.eq(&quest.due_time),
                 quests::repeat_rule.eq(&quest.repeat_rule),
                 quests::completed_at.eq(&quest.completed_at),
-                quests::order_rank.eq(quest.order_rank),
+                quests::order_rank.eq(&quest.order_rank),
                 quests::focus_enter_count.eq(quest.focus_enter_count),
                 quests::created_at.eq(&quest.created_at),
                 quests::updated_at.eq(&quest.updated_at),
@@ -287,7 +287,7 @@ impl<'a> QuestRepository<'a> {
                 quests::due_time.eq(&quest.due_time),
                 quests::repeat_rule.eq(&quest.repeat_rule),
                 quests::completed_at.eq(&quest.completed_at),
-                quests::order_rank.eq(quest.order_rank),
+                quests::order_rank.eq(&quest.order_rank),
                 quests::focus_enter_count.eq(quest.focus_enter_count),
                 quests::created_at.eq(&quest.created_at),
                 quests::updated_at.eq(&quest.updated_at),
@@ -307,7 +307,7 @@ impl<'a> QuestRepository<'a> {
                 quests::due_time.eq(&quest.due_time),
                 quests::repeat_rule.eq(&quest.repeat_rule),
                 quests::completed_at.eq(&quest.completed_at),
-                quests::order_rank.eq(quest.order_rank),
+                quests::order_rank.eq(&quest.order_rank),
                 quests::focus_enter_count.eq(quest.focus_enter_count),
                 quests::created_at.eq(&quest.created_at),
                 quests::updated_at.eq(&quest.updated_at),
@@ -319,15 +319,10 @@ impl<'a> QuestRepository<'a> {
             .map_err(|error| error.to_string())
     }
 
-    /// Writes a new quest row as given.
+    /// Writes a new quest row as given, at the bottom of the list.
     pub fn insert(&mut self, input: CreateQuestInput) -> Result<Quest, String> {
-        let max_rank = quests::table
-            .select(diesel::dsl::max(quests::order_rank))
-            .first::<Option<f64>>(self.conn)
-            .map_err(|error| error.to_string())?
-            .unwrap_or(0.0);
         let input = CreateQuestInput {
-            order_rank: Some(clamp_order_rank(input.order_rank.unwrap_or(max_rank + 1.0))),
+            order_rank: Some(self.bottom_rank()?),
             ..input
         };
         let quest: Quest = diesel::insert_into(quests::table)
@@ -353,12 +348,9 @@ impl<'a> QuestRepository<'a> {
     pub fn write_fields(
         &mut self,
         id: &str,
-        mut input: UpdateQuestInput,
+        input: UpdateQuestInput,
     ) -> Result<(Quest, Quest), String> {
         let previous = self.get(id)?;
-        if let Some(rank) = input.order_rank {
-            input.order_rank = Some(clamp_order_rank(rank));
-        }
         let status = input.status.clone();
         diesel::update(quests::table.find(id))
             .set((&input, quests::updated_at.eq(utc_now())))
@@ -450,26 +442,120 @@ impl<'a> QuestRepository<'a> {
 
 // ── Quests as a person sees and changes them (ADR-0012) ─────────────────────
 
-/// The Focus fallback order (src/views/FocusView.md): overdue first, then
-/// `order_rank`, then Priority (high first), then the oldest `created_at`.
+/// The Focus fallback order (src/views/FocusView.md): the list order
+/// (`Quest::list_order`).
 fn fallback_order(mut quests: Vec<Quest>) -> Vec<Quest> {
     let now = Utc::now();
-    // A `created_at` that does not read as a time goes last.
-    let created =
-        |quest: &Quest| parse_utc_timestamp(&quest.created_at).unwrap_or(DateTime::<Utc>::MAX_UTC);
-    quests.sort_by(|a, b| {
-        is_overdue(b, &now)
-            .cmp(&is_overdue(a, &now))
-            .then_with(|| {
-                a.order_rank
-                    .partial_cmp(&b.order_rank)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .then_with(|| b.priority.cmp(&a.priority))
-            .then_with(|| created(a).cmp(&created(b)))
-            .then_with(|| a.id.cmp(&b.id))
-    });
+    quests.sort_by(|a, b| a.list_order(b, &now));
     quests
+}
+
+// ── Manual order (rank keys, models/rank.rs) ────────────────────────────────
+
+impl QuestRepository<'_> {
+    /// The rank key of a new quest: after the largest valid key of all
+    /// quests, so that it is at the bottom of the list.
+    fn bottom_rank(&mut self) -> Result<String, String> {
+        let keys: Vec<String> = quests::table
+            .select(quests::order_rank)
+            .load(self.conn)
+            .map_err(|error| error.to_string())?;
+        let largest = keys
+            .iter()
+            .filter(|key| Rank::validate(key).is_ok())
+            .max()
+            .map(String::as_str);
+        Rank::between(largest, None)
+    }
+
+    /// Moves quest `id` to `placement` and gives it a rank key between its
+    /// new neighbours. The neighbours are in the order of all quests by
+    /// `Quest::rank_order`; overdue quests stay first in each list. Usually
+    /// this writes only the moved quest. When the two neighbours have the
+    /// same key, or the new key is longer than `Rank::MAX_KEY_LEN`, it gives
+    /// all quests new keys in their order (a rebalance). Returns the ids of
+    /// the quests it wrote, the moved quest first.
+    pub fn move_quest(
+        &mut self,
+        id: &str,
+        placement: &QuestPlacement,
+    ) -> Result<Vec<String>, String> {
+        self.get(id)?;
+        let mut others = self.load_all()?;
+        others.retain(|quest| quest.id != id);
+        others.sort_by(Quest::rank_order);
+        let slot = Self::placement_slot(&others, id, placement)?;
+        let lower = slot
+            .checked_sub(1)
+            .map(|index| others[index].order_rank.as_str());
+        let upper = others.get(slot).map(|quest| quest.order_rank.as_str());
+        if let Ok(key) = Rank::between(lower, upper) {
+            if key.len() <= Rank::MAX_KEY_LEN {
+                self.write_rank(id, &key)?;
+                return Ok(vec![id.to_string()]);
+            }
+        }
+        self.rebalance(id, slot, &others)
+    }
+
+    /// The index in `others` (all quests but the moved one, in rank order)
+    /// that the moved quest goes to.
+    fn placement_slot(
+        others: &[Quest],
+        id: &str,
+        placement: &QuestPlacement,
+    ) -> Result<usize, String> {
+        let position = |target: &str| {
+            if target == id {
+                return Err(format!("quest {id} cannot move next to itself"));
+            }
+            others
+                .iter()
+                .position(|quest| quest.id == target)
+                .ok_or_else(|| format!("quest {target} not found"))
+        };
+        match placement {
+            QuestPlacement::Top => Ok(0),
+            QuestPlacement::Bottom => Ok(others.len()),
+            QuestPlacement::Before(target) => position(target),
+            QuestPlacement::After(target) => position(target).map(|index| index + 1),
+        }
+    }
+
+    /// Gives all quests new keys (`Rank::spread`) in their rank order, with
+    /// quest `id` at `slot` of `others`. Writes only the keys that change.
+    fn rebalance(
+        &mut self,
+        id: &str,
+        slot: usize,
+        others: &[Quest],
+    ) -> Result<Vec<String>, String> {
+        let mut order: Vec<(&str, Option<&str>)> = others
+            .iter()
+            .map(|quest| (quest.id.as_str(), Some(quest.order_rank.as_str())))
+            .collect();
+        order.insert(slot, (id, None));
+        let mut written = vec![id.to_string()];
+        for ((quest_id, old_key), key) in order.into_iter().zip(Rank::spread(others.len() + 1)) {
+            if quest_id == id {
+                self.write_rank(id, &key)?;
+            } else if old_key != Some(key.as_str()) {
+                self.write_rank(quest_id, &key)?;
+                written.push(quest_id.to_string());
+            }
+        }
+        Ok(written)
+    }
+
+    /// Writes the rank key of one quest. It is a change of the quest, so
+    /// `updated_at` changes and the quest syncs.
+    fn write_rank(&mut self, id: &str, key: &str) -> Result<(), String> {
+        diesel::update(quests::table.find(id))
+            .set((quests::order_rank.eq(key), quests::updated_at.eq(utc_now())))
+            .execute(self.conn)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
 }
 
 /// A change of the status only.
@@ -1673,7 +1759,6 @@ mod tests {
                         due: None,
                         due_time: None,
                         repeat_rule: None,
-                        order_rank: None,
                         is_checklist: None,
                     },
                     description: QuestFieldPatch::Clear,
@@ -1862,6 +1947,179 @@ mod tests {
             .unwrap()
             .expect("a missed day");
         assert_eq!(day.due.as_deref(), Some(today.as_str()));
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    // ---- Manual order ----
+
+    fn create_titled(conn: &mut SqliteConnection, title: &str) -> Quest {
+        QuestRepository::new(conn)
+            .create(crate::models::CreateQuestInput {
+                space_id: "1".to_string(),
+                title: title.to_string(),
+                description: None,
+                energy: crate::models::ENERGY_MEDIUM,
+                priority: crate::models::PRIORITY_MEDIUM,
+                due: None,
+                due_time: None,
+                repeat_rule: None,
+                order_rank: None,
+                is_checklist: false,
+            })
+            .expect("create a quest")
+    }
+
+    /// The titles of the active quests in the list order.
+    fn listed_titles(conn: &mut SqliteConnection) -> Vec<String> {
+        let now = Utc::now();
+        let mut quests = QuestRepository::new(conn).active_quests().expect("load");
+        quests.sort_by(|a, b| a.list_order(b, &now));
+        quests.into_iter().map(|quest| quest.title).collect()
+    }
+
+    fn set_rank(conn: &mut SqliteConnection, id: &str, key: &str) {
+        diesel::update(quests::table.find(id))
+            .set(quests::order_rank.eq(key))
+            .execute(conn)
+            .expect("set a rank key");
+    }
+
+    #[test]
+    fn a_new_quest_goes_to_the_bottom_of_the_list() {
+        let db_path = temp_db_path();
+        let mut conn = open_db_at_path(&db_path);
+        for title in ["a", "b", "c"] {
+            create_titled(&mut conn, title);
+        }
+        assert_eq!(listed_titles(&mut conn), ["a", "b", "c"]);
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn a_move_writes_only_the_moved_quest() {
+        let db_path = temp_db_path();
+        let mut conn = open_db_at_path(&db_path);
+        let a = create_titled(&mut conn, "a");
+        let b = create_titled(&mut conn, "b");
+        let c = create_titled(&mut conn, "c");
+
+        let mut repository = QuestRepository::new(&mut conn);
+        let written = repository
+            .move_quest(&c.id, &QuestPlacement::Before(b.id.clone()))
+            .expect("move c before b");
+        assert_eq!(written, [c.id.clone()]);
+        assert_eq!(repository.get(&a.id).unwrap().order_rank, a.order_rank);
+        assert_eq!(repository.get(&b.id).unwrap().order_rank, b.order_rank);
+        assert_eq!(listed_titles(&mut conn), ["a", "c", "b"]);
+
+        let mut repository = QuestRepository::new(&mut conn);
+        repository
+            .move_quest(&a.id, &QuestPlacement::After(b.id.clone()))
+            .expect("move a after b");
+        assert_eq!(listed_titles(&mut conn), ["c", "b", "a"]);
+        QuestRepository::new(&mut conn)
+            .move_quest(&a.id, &QuestPlacement::Top)
+            .expect("move a to the top");
+        assert_eq!(listed_titles(&mut conn), ["a", "c", "b"]);
+        QuestRepository::new(&mut conn)
+            .move_quest(&a.id, &QuestPlacement::Bottom)
+            .expect("move a to the bottom");
+        assert_eq!(listed_titles(&mut conn), ["c", "b", "a"]);
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn a_move_next_to_itself_or_to_a_missing_quest_is_rejected() {
+        let db_path = temp_db_path();
+        let mut conn = open_db_at_path(&db_path);
+        let a = create_titled(&mut conn, "a");
+        let mut repository = QuestRepository::new(&mut conn);
+        assert!(repository
+            .move_quest(&a.id, &QuestPlacement::Before(a.id.clone()))
+            .is_err());
+        assert!(repository
+            .move_quest(&a.id, &QuestPlacement::After("missing".to_string()))
+            .is_err());
+        assert!(repository
+            .move_quest("missing", &QuestPlacement::Top)
+            .is_err());
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    /// Neighbours with the same key (from the migration, or from two devices)
+    /// leave no key between them: the move gives all quests new keys and
+    /// keeps their order.
+    #[test]
+    fn a_move_between_equal_keys_rebalances_in_order() {
+        let db_path = temp_db_path();
+        let mut conn = open_db_at_path(&db_path);
+        let quests: Vec<Quest> = ["a", "b", "c", "d"]
+            .iter()
+            .map(|title| create_titled(&mut conn, title))
+            .collect();
+        for quest in &quests {
+            set_rank(&mut conn, &quest.id, "cQ0u");
+        }
+        // Equal keys: the list order is the oldest first, then the id.
+        let before = listed_titles(&mut conn);
+
+        let moved = &quests[0];
+        let target = before
+            .iter()
+            .rposition(|title| title != &moved.title)
+            .expect("a target");
+        let target_id = quests
+            .iter()
+            .find(|quest| quest.title == before[target])
+            .map(|quest| quest.id.clone())
+            .expect("the target quest");
+        let written = QuestRepository::new(&mut conn)
+            .move_quest(&moved.id, &QuestPlacement::Before(target_id))
+            .expect("move between equal keys");
+        assert_eq!(written[0], moved.id, "the moved quest is first");
+        assert!(written.len() > 1, "a rebalance writes the other quests too");
+
+        let mut expected: Vec<String> = before
+            .iter()
+            .filter(|title| **title != moved.title)
+            .cloned()
+            .collect();
+        let slot = expected
+            .iter()
+            .position(|title| title == &before[target])
+            .expect("the target title");
+        expected.insert(slot, moved.title.clone());
+        assert_eq!(listed_titles(&mut conn), expected);
+
+        let keys: Vec<String> = QuestRepository::new(&mut conn)
+            .load_all()
+            .unwrap()
+            .into_iter()
+            .map(|quest| quest.order_rank)
+            .collect();
+        let mut unique = keys.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            keys.len(),
+            "after a rebalance each key is different"
+        );
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    /// Overdue quests stay first; the rank orders the quests in each part.
+    #[test]
+    fn overdue_quests_stay_first_in_the_list_order() {
+        let db_path = temp_db_path();
+        let mut conn = open_db_at_path(&db_path);
+        create_titled(&mut conn, "a");
+        let late = create_titled(&mut conn, "late");
+        diesel::update(quests::table.find(&late.id))
+            .set(quests::due.eq("2000-01-01"))
+            .execute(&mut conn)
+            .expect("make the quest overdue");
+        assert_eq!(listed_titles(&mut conn), ["late", "a"]);
         let _ = std::fs::remove_file(db_path);
     }
 }
