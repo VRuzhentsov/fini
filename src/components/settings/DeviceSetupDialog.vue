@@ -282,231 +282,231 @@ function close() {
         aria-label="Close pairing dialog"
         data-testid="pair-dialog-backdrop"
         @click="close()"
-      ></button>
+      />
       <div class="relative w-full max-w-[428px] overflow-hidden rounded-xl bg-base-100 shadow-2xl">
         <div class="flex items-center gap-2 p-3">
-        <h3 class="flex-1 text-sm font-semibold">Add device</h3>
-        <div v-if="renderFlags.hintInfo" class="dropdown dropdown-end">
-          <button
-            type="button"
-            tabindex="0"
-            class="btn btn-ghost btn-xs px-1"
-            data-testid="setup-hint-info"
-            aria-label="About this step"
-          >
-            <InformationCircleIcon class="size-4" />
-          </button>
-          <p
-            tabindex="0"
-            class="dropdown-content z-10 w-64 rounded-box bg-base-200 p-2 text-xs shadow"
-            data-testid="setup-hint-popup"
-          >
-            {{ hint }}
-          </p>
-        </div>
-        <button class="btn btn-ghost btn-xs px-1" aria-label="Close" @click="close()">
-          <XMarkIcon class="size-4" />
-        </button>
-      </div>
-
-      <div class="flex flex-col gap-3 px-3 pb-3">
-        <!-- 1. The channel, chosen rather than inferred. -->
-        <template v-if="step === 'channel'">
-          <button
-            v-for="kind in CHANNEL_CHOICES"
-            :key="kind"
-            class="flex w-full items-start gap-3 rounded-[10px] border border-base-300 p-3 text-left hover:border-primary hover:bg-base-200"
-            :data-testid="`pair-channel-${kind}`"
-            @click="pickChannel(kind)"
-          >
-            <span class="grid size-[34px] shrink-0 place-items-center rounded-[9px] bg-base-200">
-              <ChannelIcon :kind="kind" class="size-5 opacity-70" />
-            </span>
-            <span class="flex min-w-0 flex-1 flex-col gap-0.5">
-              <b class="text-[13px] font-semibold">{{ channelName(kind) }}</b>
-              <span class="text-[11.5px] text-[var(--fg-3)]">
-                {{ channelChoiceHint(kind) }}
-              </span>
-            </span>
-          </button>
-        </template>
-
-        <!-- 2. Looking. An empty list is the consent rule made visible:
-             there is nobody to pair with who has not also asked. -->
-        <template v-else-if="step === 'looking'">
-          <div v-if="candidates.length === 0" class="flex flex-col items-center gap-3 py-2 text-center">
-            <span class="grid size-16 place-items-center rounded-full bg-base-200">
-              <ChannelIcon :kind="channel!" class="size-6 opacity-70" />
-            </span>
-            <h4 class="text-[15px] font-semibold">
-              Looking for devices on {{ channelName(channel!) }}
-            </h4>
-          </div>
-
-          <ul v-else class="flex list-none flex-col overflow-hidden rounded-lg">
-            <li
-              v-for="row in renderLists.lookingRows"
-              :key="row.device.device_id"
-              class="flex items-center gap-2.5 border-b border-base-200 bg-base-100 px-2 py-2 last:border-b-0"
-              data-testid="nearby-device-row"
-              :data-device-hostname="row.device.hostname"
-              :data-device-id="row.device.device_id"
-              :data-channel-kind="row.device.channel_kind"
+          <h3 class="flex-1 text-sm font-semibold">Add device</h3>
+          <div v-if="renderFlags.hintInfo" class="dropdown dropdown-end">
+            <button
+              type="button"
+              tabindex="0"
+              class="btn btn-ghost btn-xs px-1"
+              data-testid="setup-hint-info"
+              aria-label="About this step"
             >
-              <span class="size-2.5 shrink-0 rounded-full bg-success" />
-              <span class="min-w-0 flex-1 truncate text-sm font-medium">{{ row.device.hostname }}</span>
-              <span
-                v-if="row.pairedHere"
-                class="shrink-0 text-[11px] text-[var(--fg-3)]"
-                data-testid="paired-here"
-              >Paired here</span>
-              <button
-                class="btn btn-primary btn-xs"
-                data-testid="request-pair"
-                @click="void requestPair(row.device)"
-              >{{ row.pairLabel }}</button>
-            </li>
-          </ul>
-        </template>
-
-        <!-- 2b. Declined. Nothing was shared and no code was ever generated
-             -- worth saying, or the asker is left guessing. -->
-        <template v-else-if="step === 'declined'">
-          <div class="flex flex-col items-center gap-3 py-2 text-center">
-            <span class="grid size-13 place-items-center rounded-full bg-base-200 p-3 text-error">
-              <XMarkIcon class="size-6" />
-            </span>
-            <h4 class="text-[15px] font-semibold">{{ outgoing?.to_hostname }} said no</h4>
+              <InformationCircleIcon class="size-4" />
+            </button>
+            <p
+              tabindex="0"
+              class="dropdown-content z-10 w-64 rounded-box bg-base-200 p-2 text-xs shadow"
+              data-testid="setup-hint-popup"
+            >
+              {{ hint }}
+            </p>
           </div>
-        </template>
+          <button class="btn btn-ghost btn-xs px-1" aria-label="Close" @click="close()">
+            <XMarkIcon class="size-4" />
+          </button>
+        </div>
 
-        <!-- 2b-ii. The request never left this device. Distinct from a
+        <div class="flex flex-col gap-3 px-3 pb-3">
+          <!-- 1. The channel, chosen rather than inferred. -->
+          <template v-if="step === 'channel'">
+            <button
+              v-for="kind in CHANNEL_CHOICES"
+              :key="kind"
+              class="flex w-full items-start gap-3 rounded-[10px] border border-base-300 p-3 text-left hover:border-primary hover:bg-base-200"
+              :data-testid="`pair-channel-${kind}`"
+              @click="pickChannel(kind)"
+            >
+              <span class="grid size-[34px] shrink-0 place-items-center rounded-[9px] bg-base-200">
+                <ChannelIcon :kind="kind" class="size-5 opacity-70" />
+              </span>
+              <span class="flex min-w-0 flex-1 flex-col gap-0.5">
+                <b class="text-[13px] font-semibold">{{ channelName(kind) }}</b>
+                <span class="text-[11.5px] text-[var(--fg-3)]">
+                  {{ channelChoiceHint(kind) }}
+                </span>
+              </span>
+            </button>
+          </template>
+
+          <!-- 2. Looking. An empty list is the consent rule made visible:
+             there is nobody to pair with who has not also asked. -->
+          <template v-else-if="step === 'looking'">
+            <div v-if="candidates.length === 0" class="flex flex-col items-center gap-3 py-2 text-center">
+              <span class="grid size-16 place-items-center rounded-full bg-base-200">
+                <ChannelIcon :kind="channel!" class="size-6 opacity-70" />
+              </span>
+              <h4 class="text-[15px] font-semibold">
+                Looking for devices on {{ channelName(channel!) }}
+              </h4>
+            </div>
+
+            <ul v-else class="flex list-none flex-col overflow-hidden rounded-lg">
+              <li
+                v-for="row in renderLists.lookingRows"
+                :key="row.device.device_id"
+                class="flex items-center gap-2.5 border-b border-base-200 bg-base-100 px-2 py-2 last:border-b-0"
+                data-testid="nearby-device-row"
+                :data-device-hostname="row.device.hostname"
+                :data-device-id="row.device.device_id"
+                :data-channel-kind="row.device.channel_kind"
+              >
+                <span class="size-2.5 shrink-0 rounded-full bg-success" />
+                <span class="min-w-0 flex-1 truncate text-sm font-medium">{{ row.device.hostname }}</span>
+                <span
+                  v-if="row.pairedHere"
+                  class="shrink-0 text-[11px] text-[var(--fg-3)]"
+                  data-testid="paired-here"
+                >Paired here</span>
+                <button
+                  class="btn btn-primary btn-xs"
+                  data-testid="request-pair"
+                  @click="void requestPair(row.device)"
+                >{{ row.pairLabel }}</button>
+              </li>
+            </ul>
+          </template>
+
+          <!-- 2b. Declined. Nothing was shared and no code was ever generated
+             -- worth saying, or the asker is left guessing. -->
+          <template v-else-if="step === 'declined'">
+            <div class="flex flex-col items-center gap-3 py-2 text-center">
+              <span class="grid size-13 place-items-center rounded-full bg-base-200 p-3 text-error">
+                <XMarkIcon class="size-6" />
+              </span>
+              <h4 class="text-[15px] font-semibold">{{ outgoing?.to_hostname }} said no</h4>
+            </div>
+          </template>
+
+          <!-- 2b-ii. The request never left this device. Distinct from a
              decline: naming the peer as having refused would be a claim
              about a device that never received the question. -->
-        <template v-else-if="step === 'sendFailed'">
-          <div class="flex flex-col items-center gap-3 py-2 text-center">
-            <span class="grid size-13 place-items-center rounded-full bg-base-200 p-3 text-error">
-              <ExclamationCircleIcon class="size-6" />
-            </span>
-            <h4 class="text-[15px] font-semibold">Couldn't reach {{ outgoing?.to_hostname }}</h4>
-          </div>
-        </template>
+          <template v-else-if="step === 'sendFailed'">
+            <div class="flex flex-col items-center gap-3 py-2 text-center">
+              <span class="grid size-13 place-items-center rounded-full bg-base-200 p-3 text-error">
+                <ExclamationCircleIcon class="size-6" />
+              </span>
+              <h4 class="text-[15px] font-semibold">Couldn't reach {{ outgoing?.to_hostname }}</h4>
+            </div>
+          </template>
 
-        <!-- 2c. Ran out. The causes are physical -- asleep, locked, walked
+          <!-- 2c. Ran out. The causes are physical -- asleep, locked, walked
              off -- so name those rather than "request timed out". When a
              code had already been issued, say it is dead: otherwise someone
              keeps typing it into a device that no longer accepts it. -->
-        <template v-else-if="step === 'timeout'">
-          <div class="flex flex-col items-center gap-3 py-2 text-center">
-            <span class="grid size-13 place-items-center rounded-full bg-base-200 p-3 text-error">
-              <ClockIcon class="size-6" />
-            </span>
-            <h4 class="text-[15px] font-semibold">The request ran out</h4>
-          </div>
-        </template>
+          <template v-else-if="step === 'timeout'">
+            <div class="flex flex-col items-center gap-3 py-2 text-center">
+              <span class="grid size-13 place-items-center rounded-full bg-base-200 p-3 text-error">
+                <ClockIcon class="size-6" />
+              </span>
+              <h4 class="text-[15px] font-semibold">The request ran out</h4>
+            </div>
+          </template>
 
-        <!-- 3. Asked, and only able to wait. Saying so is the point. -->
-        <template v-else-if="step === 'sent'">
-          <div class="flex flex-col items-center gap-3 py-2 text-center">
-            <span class="loading loading-spinner loading-md text-primary" />
-            <h4 class="text-[15px] font-semibold">Waiting for {{ outgoing?.to_hostname }}</h4>
-            <span class="font-mono text-[11px] text-[var(--fg-4)]">
-              expires in {{ outgoing ? secondsLeft(outgoing.expires_at) : 0 }}s
-            </span>
-          </div>
-        </template>
+          <!-- 3. Asked, and only able to wait. Saying so is the point. -->
+          <template v-else-if="step === 'sent'">
+            <div class="flex flex-col items-center gap-3 py-2 text-center">
+              <span class="loading loading-spinner loading-md text-primary" />
+              <h4 class="text-[15px] font-semibold">Waiting for {{ outgoing?.to_hostname }}</h4>
+              <span class="font-mono text-[11px] text-[var(--fg-4)]">
+                expires in {{ outgoing ? secondsLeft(outgoing.expires_at) : 0 }}s
+              </span>
+            </div>
+          </template>
 
-        <!-- 4. Only now does a code exist: before acceptance there was
+          <!-- 4. Only now does a code exist: before acceptance there was
              nothing to intercept and nothing to shoulder-surf. -->
-        <template v-else-if="step === 'code'">
-          <h4 class="text-[15px] font-semibold">Read this to {{ outgoing?.to_hostname }}</h4>
-          <div class="flex justify-center gap-[7px] py-1">
-            <b
-              v-for="(character, index) in (outgoing?.sender_code ?? '').split('')"
-              :key="index"
-              class="grid h-[54px] w-[42px] place-items-center rounded-[9px] bg-base-200 font-mono text-2xl font-medium"
-              data-testid="pair-code"
-            >{{ character }}</b>
-          </div>
-          <p class="text-center text-[11.5px] text-[var(--fg-3)]">
-            Waiting for {{ outgoing?.to_hostname }} to type it
-          </p>
-        </template>
+          <template v-else-if="step === 'code'">
+            <h4 class="text-[15px] font-semibold">Read this to {{ outgoing?.to_hostname }}</h4>
+            <div class="flex justify-center gap-[7px] py-1">
+              <b
+                v-for="(character, index) in (outgoing?.sender_code ?? '').split('')"
+                :key="index"
+                class="grid h-[54px] w-[42px] place-items-center rounded-[9px] bg-base-200 font-mono text-2xl font-medium"
+                data-testid="pair-code"
+              >{{ character }}</b>
+            </div>
+            <p class="text-center text-[11.5px] text-[var(--fg-3)]">
+              Waiting for {{ outgoing?.to_hostname }} to type it
+            </p>
+          </template>
 
-        <!-- 5. The other side. Accepting costs nothing to refuse: it only
+          <!-- 5. The other side. Accepting costs nothing to refuse: it only
              lets the other device ask for a code. -->
-        <template v-else-if="step === 'incoming'">
-          <h4 class="text-[15px] font-semibold">{{ incoming?.from_hostname }} wants to pair</h4>
-          <p class="font-mono text-[11px] text-[var(--fg-4)]">
-            expires in {{ incoming ? secondsLeft(incoming.expires_at) : 0 }}s
-          </p>
-        </template>
+          <template v-else-if="step === 'incoming'">
+            <h4 class="text-[15px] font-semibold">{{ incoming?.from_hostname }} wants to pair</h4>
+            <p class="font-mono text-[11px] text-[var(--fg-4)]">
+              expires in {{ incoming ? secondsLeft(incoming.expires_at) : 0 }}s
+            </p>
+          </template>
 
-        <template v-else-if="step === 'entercode'">
-          <h4 class="text-[15px] font-semibold">Type the code from {{ incoming?.from_hostname }}</h4>
-          <input
-            v-model="codeInput"
-            maxlength="6"
-            type="tel"
-            inputmode="numeric"
-            pattern="[0-9]*"
-            class="input input-bordered w-full text-center font-mono text-2xl tracking-[0.4em]"
-            data-testid="pair-code-input"
-            placeholder="······"
-          />
-          <p v-if="codeError" class="text-center text-[12px] text-error">{{ codeError }}</p>
-        </template>
+          <template v-else-if="step === 'entercode'">
+            <h4 class="text-[15px] font-semibold">Type the code from {{ incoming?.from_hostname }}</h4>
+            <input
+              v-model="codeInput"
+              maxlength="6"
+              type="tel"
+              inputmode="numeric"
+              pattern="[0-9]*"
+              class="input input-bordered w-full text-center font-mono text-2xl tracking-[0.4em]"
+              data-testid="pair-code-input"
+              placeholder="······"
+            />
+            <p v-if="codeError" class="text-center text-[12px] text-error">{{ codeError }}</p>
+          </template>
 
-        <template v-else>
-          <div class="flex flex-col items-center gap-3 py-2 text-center">
-            <span class="grid size-13 place-items-center rounded-full bg-success p-3 text-white">
-              <CheckIcon class="size-6" />
+          <template v-else>
+            <div class="flex flex-col items-center gap-3 py-2 text-center">
+              <span class="grid size-13 place-items-center rounded-full bg-success p-3 text-white">
+                <CheckIcon class="size-6" />
+              </span>
+              <h4 class="text-[15px] font-semibold">Paired</h4>
+            </div>
+          </template>
+        </div>
+
+        <div class="flex items-center gap-2 border-t border-base-200 p-3">
+          <template v-if="step === 'looking'">
+            <button class="btn btn-ghost btn-sm" @click="channel = null">Back</button>
+            <span class="flex-1" />
+            <span class="inline-flex items-center gap-1.5 font-mono text-[11px] text-[var(--fg-4)]">
+              <MagnifyingGlassIcon class="size-3.5" />
+              looking
             </span>
-            <h4 class="text-[15px] font-semibold">Paired</h4>
-          </div>
-        </template>
-      </div>
-
-      <div class="flex items-center gap-2 border-t border-base-200 p-3">
-        <template v-if="step === 'looking'">
-          <button class="btn btn-ghost btn-sm" @click="channel = null">Back</button>
-          <span class="flex-1" />
-          <span class="inline-flex items-center gap-1.5 font-mono text-[11px] text-[var(--fg-4)]">
-            <MagnifyingGlassIcon class="size-3.5" />
-            looking
-          </span>
-        </template>
-        <template v-else-if="step === 'declined' || step === 'timeout' || step === 'sendFailed'">
-          <button class="btn btn-ghost btn-sm" @click="emit('close')">Close</button>
-          <span class="flex-1" />
-          <button class="btn btn-primary btn-sm" data-testid="pair-ask-again" @click="startOver()">
-            Ask again
-          </button>
-        </template>
-        <template v-else-if="step === 'sent' || step === 'code'">
-          <button class="btn btn-ghost btn-sm" @click="deviceStore.cancelOutgoingRequest()">
-            Cancel request
-          </button>
-        </template>
-        <template v-else-if="step === 'incoming'">
-          <button class="btn btn-ghost btn-sm" @click="declineIncoming(incoming!.request_id)">Decline</button>
-          <span class="flex-1" />
-          <button
-            class="btn btn-primary btn-sm"
-            data-testid="accept-incoming-request"
-            @click="void acceptIncoming(incoming!.request_id)"
-          >Accept</button>
-        </template>
-        <template v-else-if="step === 'entercode'">
-          <button class="btn btn-ghost btn-sm" @click="acceptedRequestId = null">Cancel</button>
-          <span class="flex-1" />
-          <button
-            class="btn btn-primary btn-sm"
-            data-testid="pair-code-submit"
-            :disabled="digits.length < 6"
-            @click="void submitCode(incoming!.request_id)"
-          >Pair</button>
-        </template>
+          </template>
+          <template v-else-if="step === 'declined' || step === 'timeout' || step === 'sendFailed'">
+            <button class="btn btn-ghost btn-sm" @click="emit('close')">Close</button>
+            <span class="flex-1" />
+            <button class="btn btn-primary btn-sm" data-testid="pair-ask-again" @click="startOver()">
+              Ask again
+            </button>
+          </template>
+          <template v-else-if="step === 'sent' || step === 'code'">
+            <button class="btn btn-ghost btn-sm" @click="deviceStore.cancelOutgoingRequest()">
+              Cancel request
+            </button>
+          </template>
+          <template v-else-if="step === 'incoming'">
+            <button class="btn btn-ghost btn-sm" @click="declineIncoming(incoming!.request_id)">Decline</button>
+            <span class="flex-1" />
+            <button
+              class="btn btn-primary btn-sm"
+              data-testid="accept-incoming-request"
+              @click="void acceptIncoming(incoming!.request_id)"
+            >Accept</button>
+          </template>
+          <template v-else-if="step === 'entercode'">
+            <button class="btn btn-ghost btn-sm" @click="acceptedRequestId = null">Cancel</button>
+            <span class="flex-1" />
+            <button
+              class="btn btn-primary btn-sm"
+              data-testid="pair-code-submit"
+              :disabled="digits.length < 6"
+              @click="void submitCode(incoming!.request_id)"
+            >Pair</button>
+          </template>
           <template v-else-if="step === 'paired'">
             <span class="flex-1" />
             <button class="btn btn-primary btn-sm" data-testid="pair-done" @click="emit('close')">Done</button>

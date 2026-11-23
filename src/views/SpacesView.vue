@@ -44,9 +44,9 @@ function cancelEdit() {
           <input
             v-model="editingName"
             class="input input-bordered input-sm flex-1"
+            autofocus
             @keyup.enter="confirmEdit(space.id)"
             @keyup.escape="cancelEdit"
-            autofocus
           />
           <button class="btn btn-sm btn-primary" @click="confirmEdit(space.id)">Save</button>
           <button class="btn btn-sm btn-ghost" @click="cancelEdit">Cancel</button>

@@ -11,8 +11,8 @@ const { toasts } = useToast();
         :key="t.id"
         class="flex items-center gap-2 rounded-xl px-4 py-3 text-sm font-medium shadow-lg pointer-events-auto"
         :class="{
-          'bg-red-600 text-white':   t.type === 'error',
-          'bg-zinc-800 text-white':  t.type === 'info',
+          'bg-red-600 text-white': t.type === 'error',
+          'bg-zinc-800 text-white': t.type === 'info',
           'bg-green-600 text-white': t.type === 'success',
         }"
       >
