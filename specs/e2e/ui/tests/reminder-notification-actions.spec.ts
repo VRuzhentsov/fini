@@ -109,8 +109,14 @@ async function createQuestWithTodayReminder(
   const quest = quests.find((q) => q.title === title);
   if (!quest) throw new Error(`quest not found after creation: ${title}`);
 
-  const reminders = await invokeTauri<Reminder[]>(tauriPage, 'get_reminders', { questId: quest.id });
-  if (reminders.length === 0) throw new Error(`no reminder created for quest: ${title}`);
+  // The click on `reminder-done` only starts the save: the editor awaits
+  // `updateQuest`, and the reminder row comes after it. The reminders were
+  // read at once, so in CI they were sometimes read before the row was there.
+  let reminders: Reminder[] = [];
+  await expect.poll(async () => {
+    reminders = await invokeTauri<Reminder[]>(tauriPage, 'get_reminders', { questId: quest.id });
+    return reminders.length;
+  }, { message: `no reminder created for quest: ${title}`, timeout: 30_000 }).toBeGreaterThan(0);
 
   return { quest, reminder: reminders[0] };
 }

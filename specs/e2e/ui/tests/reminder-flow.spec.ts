@@ -233,7 +233,17 @@ test('near-future reminder becomes Focus only after its due time arrives', async
   expect(manualQuest).toBeTruthy();
 
   await invokeTauri<Quest>(tauriPage, 'set_focus', { id: manualQuest!.id });
-  await tauriPage.evaluate(`(() => { window.location.reload(); })()`);
+  // `reload()` only asks for a new page, and the old page stays until the new
+  // one comes. The old page also has the nav and the manual quest, so the
+  // waits below could pass on it, and the new quest was then typed into a
+  // page that the reload removed. The marker shows which page is there. Each
+  // check is short, because a check that runs in the page when the reload
+  // removes it gives no result.
+  await tauriPage.evaluate(`(() => { window.__e2eOldPage = true; window.location.reload(); })()`);
+  await expect.poll(
+    () => tauriPage.evaluate<boolean>(`(() => document.readyState === 'complete' && !window.__e2eOldPage)()`),
+    { message: 'the page did not reload', timeout: 60_000 },
+  ).toBe(true);
   await tauriPage.waitForSelector('nav.nav a[href="#/main"]', 30_000);
   await tauriPage.click('nav.nav a[href="#/main"]');
   await tauriPage.waitForFunction(`(() => document.body.textContent?.includes(${JSON.stringify(manualTitle)}))()`, 30_000);
