@@ -33,51 +33,58 @@ async function chooseSpace(wrapper: ReturnType<typeof mount>, spaceId: string) {
   await wrapper.find(`[data-space-id="${spaceId}"]`).trigger("click");
 }
 
-describe("NewQuestForm", () => {
-  let createQuest: jest.Mock;
-  let fetchSpaces: jest.Mock;
-  let spaceStoreState: {
-    selectedSpaceId: string | null;
-    spaces: Array<{ id: string; name: string }>;
-    fetchSpaces: jest.Mock;
-  };
+async function addChecklistDraftItem(wrapper: ReturnType<typeof mount>, text: string) {
+  const input = wrapper.find('[data-testid="new-quest-checklist-item-input"]');
+  await input.setValue(text);
+  await input.trigger("keydown", { key: "Enter" });
+}
 
-  beforeEach(() => {
-    createQuest = jest.fn().mockResolvedValue({
-      id: "quest-1",
-      space_id: "1",
-      title: "Created quest",
-      description: null,
-      status: "active",
-      energy: "medium",
-      priority: "medium",
-      due: null,
-      due_time: null,
-      repeat_rule: null,
-      completed_at: null,
-      order_rank: 0,
-      focus_enter_count: 0,
-      created_at: "",
-      updated_at: "",
-      series_id: null,
-      period_key: null,
-    });
-    fetchSpaces = jest.fn().mockResolvedValue(undefined);
-    spaceStoreState = reactive({
-      selectedSpaceId: null,
-      spaces: [
-        { id: "1", name: "Personal" },
-        { id: "2", name: "Family" },
-      ],
-      fetchSpaces,
-    });
+// The mocked stores of each test, for all the `describe` blocks below.
+let createQuest: jest.Mock;
+let fetchSpaces: jest.Mock;
+let spaceStoreState: {
+  selectedSpaceId: string | null;
+  spaces: Array<{ id: string; name: string }>;
+  fetchSpaces: jest.Mock;
+};
 
-    (useQuestStore as unknown as jest.Mock).mockReturnValue({
-      createQuest,
-    });
-    (useSpaceStore as unknown as jest.Mock).mockReturnValue(spaceStoreState);
+beforeEach(() => {
+  createQuest = jest.fn().mockResolvedValue({
+    id: "quest-1",
+    space_id: "1",
+    title: "Created quest",
+    description: null,
+    status: "active",
+    energy: "medium",
+    priority: "medium",
+    due: null,
+    due_time: null,
+    repeat_rule: null,
+    completed_at: null,
+    order_rank: 0,
+    focus_enter_count: 0,
+    created_at: "",
+    updated_at: "",
+    series_id: null,
+    period_key: null,
+  });
+  fetchSpaces = jest.fn().mockResolvedValue(undefined);
+  spaceStoreState = reactive({
+    selectedSpaceId: null,
+    spaces: [
+      { id: "1", name: "Personal" },
+      { id: "2", name: "Family" },
+    ],
+    fetchSpaces,
   });
 
+  (useQuestStore as unknown as jest.Mock).mockReturnValue({
+    createQuest,
+  });
+  (useSpaceStore as unknown as jest.Mock).mockReturnValue(spaceStoreState);
+});
+
+describe("NewQuestForm", () => {
   it("renders as the persistent bottom composer surface", () => {
     const wrapper = mount(NewQuestForm, {
       global: {
@@ -231,13 +238,9 @@ describe("NewQuestForm", () => {
       repeat_rule: null,
     });
   });
+});
 
-  async function addChecklistDraftItem(wrapper: ReturnType<typeof mount>, text: string) {
-    const input = wrapper.find('[data-testid="new-quest-checklist-item-input"]');
-    await input.setValue(text);
-    await input.trigger("keydown", { key: "Enter" });
-  }
-
+describe("NewQuestForm checklist draft", () => {
   it("shows a checkbox row for each item as it's added, before the quest is created", async () => {
     const wrapper = mount(NewQuestForm, {
       global: {
@@ -327,7 +330,9 @@ describe("NewQuestForm", () => {
       is_checklist: true,
     }));
   });
+});
 
+describe("NewQuestForm drafts and submit", () => {
   it("allows non-empty metadata drafts to collapse", async () => {
     const wrapper = mount(NewQuestForm, {
       global: {
