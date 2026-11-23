@@ -340,15 +340,18 @@ the quest's value.
 
 ### Rank
 
-The manual order of the quests: the place that a person gives a quest with
-drag-and-drop or `fini quest update --before/--after/--top/--bottom`. Each
-quest has a **rank key** (`quests.order_rank`, `models/rank.rs`): text,
-compared byte by byte. Between two different keys there is always one more
-key, so a move gives the moved quest a key between its new neighbours and
-changes no other quest. When two neighbours have the same key, or a key
-becomes longer than 32 characters, a move gives all quests new keys in their
-order (a rebalance). The lists show overdue quests first, then the quests by
-rank key, then by Priority, then the oldest first, then by id.
+The manual order of the quests: the place that a person gives each quest in
+the list.
+
+### Rank key
+
+The text that stores the rank of one quest (`quests.order_rank`). Keys
+compare byte by byte, and there is always a key between two different keys.
+
+### Rebalance
+
+A move that gives all quests new rank keys in their current order, because
+no short key is between the two neighbours.
 
 ### Reminder
 
