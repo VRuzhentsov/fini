@@ -450,6 +450,19 @@ fn fallback_order(mut quests: Vec<Quest>) -> Vec<Quest> {
     quests
 }
 
+/// The quest as the lists show it: an active repeating quest as its oldest
+/// open day (with the fields of that day), any other quest as stored.
+/// `marks` can hold the marks of other quests too.
+fn shown_quest(quest: &Quest, marks: &[QuestOccurrence]) -> Quest {
+    match RepeatingQuest::new(quest, marks) {
+        Some(repeating) if quest.status == "active" => repeating
+            .oldest_open()
+            .map(|period_key| repeating.on_day(&period_key))
+            .unwrap_or_else(|| quest.clone()),
+        _ => quest.clone(),
+    }
+}
+
 // ── Manual order (rank keys, models/rank.rs) ────────────────────────────────
 
 impl QuestRepository<'_> {
@@ -468,22 +481,49 @@ impl QuestRepository<'_> {
         Rank::between(largest, None)
     }
 
+    /// Each quest once, as the lists show it (a repeating quest as its oldest
+    /// open day, with the fields of that day), in `Quest::rank_order`: the
+    /// list in which a move finds the neighbours. The lists sort the same
+    /// quests with `Quest::list_order`, which uses `Quest::rank_order` too.
+    fn rank_list(&mut self) -> Result<Vec<Quest>, String> {
+        let quests = self.load_all()?;
+        let marks = self.all_occurrences()?;
+        let mut list: Vec<Quest> = quests
+            .iter()
+            .map(|quest| shown_quest(quest, &marks))
+            .collect();
+        list.sort_by(Quest::rank_order);
+        Ok(list)
+    }
+
+    /// An error when quest `id` cannot move to `placement`: the quest or the
+    /// neighbour that the placement names is not there, or the neighbour is
+    /// the quest itself. It only reads.
+    pub fn check_placement(&mut self, id: &str, placement: &QuestPlacement) -> Result<(), String> {
+        self.get(id)?;
+        let others: Vec<Quest> = self
+            .rank_list()?
+            .into_iter()
+            .filter(|quest| quest.id != id)
+            .collect();
+        Self::placement_slot(&others, id, placement).map(|_| ())
+    }
+
     /// Moves quest `id` to `placement` and gives it a rank key between its
-    /// new neighbours. The neighbours are in the order of all quests by
-    /// `Quest::rank_order`; overdue quests stay first in each list. Usually
-    /// this writes only the moved quest. When the two neighbours have the
-    /// same key, or the new key is longer than `Rank::MAX_KEY_LEN`, it gives
-    /// all quests new keys in their order (a rebalance). Returns the ids of
-    /// the quests it wrote, the moved quest first.
+    /// new neighbours. The neighbours are in the order of `rank_list`;
+    /// overdue quests stay first in each list. Usually this writes only the
+    /// moved quest. When the two neighbours have the same key, or the new
+    /// key is longer than `Rank::MAX_KEY_LEN`, it gives all quests new keys
+    /// in their order (a rebalance). Returns the ids of the quests it wrote,
+    /// the moved quest first.
     pub fn move_quest(
         &mut self,
         id: &str,
         placement: &QuestPlacement,
     ) -> Result<Vec<String>, String> {
         self.get(id)?;
-        let mut others = self.load_all()?;
+        let mut others = self.rank_list()?;
         others.retain(|quest| quest.id != id);
-        others.sort_by(Quest::rank_order);
         let slot = Self::placement_slot(&others, id, placement)?;
         let lower = slot
             .checked_sub(1)
@@ -641,13 +681,7 @@ impl<'a> QuestRepository<'a> {
     pub fn resolved(&mut self, id: &str) -> Result<Quest, String> {
         let quest = self.get(id)?;
         let marks = self.occurrences(id)?;
-        Ok(match RepeatingQuest::new(&quest, &marks) {
-            Some(repeating) if quest.status == "active" => repeating
-                .oldest_open()
-                .map(|period_key| repeating.on_day(&period_key))
-                .unwrap_or_else(|| quest.clone()),
-            _ => quest.clone(),
-        })
+        Ok(shown_quest(&quest, &marks))
     }
 
     /// For a repeating quest: the open occurrence a reminder is for (the
@@ -2105,6 +2139,73 @@ mod tests {
             keys.len(),
             "after a rebalance each key is different"
         );
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    /// A move finds its neighbours in the list as it is shown: on equal
+    /// keys, a repeating quest is ordered by the Priority of its shown day,
+    /// not by the Priority of the quest.
+    #[test]
+    fn a_move_orders_equal_keys_by_the_priority_of_the_shown_day() {
+        let db_path = temp_db_path();
+        let mut conn = open_db_at_path(&db_path);
+        let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
+        let daily = QuestRepository::new(&mut conn)
+            .create(crate::models::CreateQuestInput {
+                space_id: "1".to_string(),
+                title: "daily".to_string(),
+                description: None,
+                energy: crate::models::ENERGY_MEDIUM,
+                priority: crate::models::PRIORITY_LOW,
+                due: Some(today),
+                due_time: None,
+                repeat_rule: Some(r#"{"preset":"daily"}"#.to_string()),
+                order_rank: None,
+                is_checklist: false,
+            })
+            .expect("create a repeating quest");
+        // Today's day of the repeating quest has High Priority.
+        QuestRepository::new(&mut conn)
+            .update(
+                &daily.id,
+                QuestUpdatePatch::unchanged(UpdateQuestInput {
+                    space_id: None,
+                    title: None,
+                    description: None,
+                    status: None,
+                    energy: None,
+                    priority: Some(crate::models::PRIORITY_HIGH),
+                    due: None,
+                    due_time: None,
+                    repeat_rule: None,
+                    is_checklist: None,
+                }),
+                EditScope::Day,
+                None,
+                None,
+            )
+            .expect("give the day High Priority");
+        let a = create_titled(&mut conn, "a");
+        let c = create_titled(&mut conn, "c");
+        for (id, created_at) in [
+            (&daily.id, "2026-01-03T00:00:00Z"),
+            (&a.id, "2026-01-01T00:00:00Z"),
+            (&c.id, "2026-01-02T00:00:00Z"),
+        ] {
+            set_rank(&mut conn, id, "cQ0u");
+            diesel::update(quests::table.find(id))
+                .set(quests::created_at.eq(created_at))
+                .execute(&mut conn)
+                .expect("set the creation time");
+        }
+        // Equal keys: High Priority of the day first, then the oldest.
+        assert_eq!(listed_titles(&mut conn), ["daily", "a", "c"]);
+
+        // "Before a" is directly after the repeating quest in the shown list.
+        QuestRepository::new(&mut conn)
+            .move_quest(&c.id, &QuestPlacement::Before(a.id.clone()))
+            .expect("move c before a");
+        assert_eq!(listed_titles(&mut conn), ["daily", "c", "a"]);
         let _ = std::fs::remove_file(db_path);
     }
 
