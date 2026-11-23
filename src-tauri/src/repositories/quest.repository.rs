@@ -2007,7 +2007,7 @@ mod tests {
         let written = repository
             .move_quest(&c.id, &QuestPlacement::Before(b.id.clone()))
             .expect("move c before b");
-        assert_eq!(written, [c.id.clone()]);
+        assert_eq!(written, std::slice::from_ref(&c.id));
         assert_eq!(repository.get(&a.id).unwrap().order_rank, a.order_rank);
         assert_eq!(repository.get(&b.id).unwrap().order_rank, b.order_rank);
         assert_eq!(listed_titles(&mut conn), ["a", "c", "b"]);
