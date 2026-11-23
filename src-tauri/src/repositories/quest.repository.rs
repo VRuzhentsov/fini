@@ -763,7 +763,7 @@ impl<'a> QuestRepository<'a> {
                 match &patch.due_time {
                     QuestFieldPatch::Set(time) => {
                         mark.due_time =
-                            (Some(time) != quest.due_time.as_ref()).then(|| time.clone())
+                            (Some(time) != quest.due_time.as_ref()).then(|| time.clone());
                     }
                     QuestFieldPatch::Clear => mark.due_time = None,
                     QuestFieldPatch::Unchanged => {}
@@ -1159,7 +1159,7 @@ impl<'a> QuestRepository<'a> {
         mark.checklist_base = if incoming_matches_merged {
             merged.clone()
         } else {
-            local.checklist_base.clone()
+            local.checklist_base
         };
         mark.description = merged;
         let saved = self.save_occurrence(&mark)?;

@@ -29,7 +29,18 @@ required-features = ["ui-plane"]
 
 [lints.clippy]
 # The default clippy set; CI runs clippy with `-D warnings`.
-all = "warn"
+all = { level = "warn", priority = -1 }
+# A function has 300 lines or fewer (`clippy.toml`; docs/code-style.md).
+too_many_lines = "warn"
+# More lints that give few false warnings (docs/code-style.md).
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+redundant_clone = "warn"
+semicolon_if_nothing_returned = "warn"
+undocumented_unsafe_blocks = "warn"
+# Only the CLI writes to stdout; its modules allow it.
+print_stdout = "warn"
 
 [patch.crates-io]
 sherpa-onnx-sys = { path = "patches/sherpa-onnx-sys" }

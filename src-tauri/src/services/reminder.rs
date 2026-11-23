@@ -311,7 +311,7 @@ impl ReminderService<'_> {
                 }),
                 Ok(_) => {}
                 Err(RecvError::Lagged(missed)) => {
-                    log::warn!("[reminder] missed {missed} events; the reconciler puts reminders in step at the next start")
+                    log::warn!("[reminder] missed {missed} events; the reconciler puts reminders in step at the next start");
                 }
                 Err(RecvError::Closed) => return,
             }

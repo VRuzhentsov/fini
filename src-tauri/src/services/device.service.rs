@@ -369,7 +369,7 @@ impl DeviceService {
                 log::info!(
                     "[pairing][ble] identify failed after {:?}: {err}",
                     started.elapsed()
-                )
+                );
             })?;
         let identify = PeerFrame::IdentifyDevice {
             device_id: self.identity.device_id.clone(),
@@ -785,15 +785,15 @@ impl DeviceService {
                         return Ok(());
                     }
                     Ok(Err(err)) => {
-                        log::warn!("[pairing][ble] request link failed: {err}; connecting instead")
+                        log::warn!("[pairing][ble] request link failed: {err}; connecting instead");
                     }
                     Err(_) => {
-                        log::warn!("[pairing][ble] request link timed out; connecting instead")
+                        log::warn!("[pairing][ble] request link timed out; connecting instead");
                     }
                 }
             }
             None => {
-                log::warn!("[pairing][ble] no parked link for {request_id}; connecting instead")
+                log::warn!("[pairing][ble] no parked link for {request_id}; connecting instead");
             }
         }
         #[cfg(all(
