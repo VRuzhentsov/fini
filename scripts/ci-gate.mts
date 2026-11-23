@@ -6,9 +6,11 @@
 // .github/actions/container-stage, and runs the same commands.
 //
 //   node scripts/ci-gate.mts <fe-unit|be-compile|be-unit|e2e-build-image|
-//                             e2e-run|e2e|e2e-artifacts|e2e-cleanup|file-size>
+//                             e2e-run|e2e|e2e-artifacts|e2e-cleanup|file-size|
+//                             rust-impl>
 //
-// `file-size` uses no container: it reads the tracked files of the repo.
+// `file-size` and `rust-impl` use no container: they read the tracked files
+// of the repo.
 // `e2e-run` in the `linux` `e2e` container (FINI_E2E_CONTAINER_RUNNER=1)
 // builds the e2e binaries and runs scripts/e2e-runner.sh; CI calls it there.
 
@@ -204,6 +206,70 @@ const FileSizeLimit = {
   },
 };
 
+/**
+ * The impl rules of docs/code-style.md for the Rust files in git: one
+ * inherent `impl` block for each type in each file, and an
+ * `impl Repository for` for each `struct …Repository`. Clippy
+ * (`multiple_inherent_impl`) does not compare the impls of a type that has a
+ * lifetime, so this check reads the text of the files.
+ */
+const ImplRule = {
+  /** The text from `impl` to `{` of each impl block, with its line. */
+  headers(text: string): { header: string; line: number }[] {
+    return [...text.matchAll(/^[ \t]*(?:unsafe[ \t]+)?impl\b([^{;]*)\{/gm)].map((match) => ({
+      header: match[1],
+      line: text.slice(0, match.index).split('\n').length,
+    }));
+  },
+
+  /** The name of the type of an inherent impl (`<'a> Foo<'a>` gives `Foo`); `null` for a trait impl. */
+  inherentType(header: string): string | null {
+    let rest = header.trim();
+    if (rest.startsWith('<')) {
+      let depth = 0;
+      let end = 0;
+      for (; end < rest.length; end++) {
+        if (rest[end] === '<') depth++;
+        if (rest[end] === '>' && --depth === 0) break;
+      }
+      rest = rest.slice(end + 1);
+    }
+    rest = rest.split(/\bwhere\b/)[0];
+    if (/\bfor\b/.test(rest)) return null;
+    // Only a type path with its generic arguments: this also skips an
+    // `impl Trait` type at the start of a line in a signature.
+    return rest.trim().match(/^(?:\w+::)*(\w+)\s*(?:<[\s\S]*>)?$/)?.[1] ?? null;
+  },
+
+  /** The problems in one file, each as `path:line: text`. */
+  problemsIn(path: string, text: string): string[] {
+    const problems: string[] = [];
+    const firstLine = new Map<string, number>();
+    for (const { header, line } of this.headers(text)) {
+      const type = this.inherentType(header);
+      if (type === null) continue;
+      const first = firstLine.get(type);
+      if (first === undefined) firstLine.set(type, line);
+      else problems.push(`${path}:${line}: a second inherent impl of ${type}; merge it into the one at line ${first}`);
+    }
+    const implemented = new Set(
+      [...text.matchAll(/\bimpl\b[^{;]*?\bRepository\s*<[^{;]*?>\s+for\s+(?:\w+::)*(\w+)/g)].map((match) => match[1]),
+    );
+    for (const match of text.matchAll(/\bstruct\s+(\w+Repository)\b/g)) {
+      if (!implemented.has(match[1])) {
+        problems.push(`${path}: ${match[1]} has no impl of the Repository trait (src-tauri/src/repositories/mod.rs)`);
+      }
+    }
+    return problems;
+  },
+
+  problems(): string[] {
+    return FileSizeLimit.gitFiles()
+      .filter((path) => path.endsWith('.rs'))
+      .flatMap((path) => this.problemsIn(path, readFileSync(join(REPO_ROOT, path), 'utf8')));
+  },
+};
+
 const steps: Record<string, () => unknown> = {
   'fe-unit': () => {
     buildStage('build');
@@ -284,6 +350,15 @@ const steps: Record<string, () => unknown> = {
     }
     if (overLimit.length > 0) process.exit(1);
     console.log(`All Rust and Kotlin files have ${FileSizeLimit.maxLines} lines or fewer.`);
+  },
+
+  // `npm run lint:rust-impl`, on the host or in a container: the impl rules
+  // of docs/code-style.md for the Rust files in git.
+  'rust-impl': () => {
+    const problems = ImplRule.problems();
+    for (const problem of problems) console.error(`${problem} (docs/code-style.md)`);
+    if (problems.length > 0) process.exit(1);
+    console.log('Each Rust file has one inherent impl for each type, and each repository implements Repository.');
   },
 };
 
