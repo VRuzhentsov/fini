@@ -92,14 +92,14 @@ test('a quest dragged with the mouse gets its new place in the stored order',asy
     return JSON.stringify(order) === JSON.stringify(titles);
   })()`, 10_000);
 
-  // The backend wrote the rank keys: the stored keys give the same order.
-  const stored = await tauriPage.evaluate<string[]>(`(async () => {
+  // The list shows the move before the backend answers, so wait until the
+  // stored rank keys give the same order.
+  await expect.poll(() => tauriPage.evaluate<string[]>(`(async () => {
     const titles = ${JSON.stringify(titles)};
     const quests = await window.__TAURI__.core.invoke('get_quests');
     return quests
       .filter((quest) => titles.includes(quest.title))
       .sort((a, b) => (a.order_rank < b.order_rank ? -1 : a.order_rank > b.order_rank ? 1 : 0))
       .map((quest) => quest.title);
-  })()`);
-  expect(stored).toEqual(moved);
+  })()`), { message: 'the stored order is not the order of the drop', timeout: 10_000 }).toEqual(moved);
 });
