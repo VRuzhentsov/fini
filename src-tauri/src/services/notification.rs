@@ -185,7 +185,7 @@ pub fn schedule_reminder(
                         delivery_path: "mobile_plugin".to_string(),
                         reminder_id: reminder.id.clone(),
                         quest_id: quest.id.clone(),
-                        body: body.clone(),
+                        body,
                         due_at_utc: Some(due_utc.format("%Y-%m-%dT%H:%M:%SZ").to_string()),
                         scheduled_notification_id: Some(notif_id.to_string()),
                     },
@@ -212,7 +212,14 @@ pub fn schedule_reminder(
         let reminder_id = reminder.id.clone();
         let reminder_id_key = reminder_id.clone();
         let quest_id = quest.id.clone();
-        let body_for_timer = body;
+        #[cfg_attr(
+            not(feature = "devtools"),
+            allow(
+                clippy::redundant_clone,
+                reason = "the devtools build records `body` below"
+            )
+        )]
+        let body_for_timer = body.clone();
 
         let handle = tauri::async_runtime::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(delay_ms as u64)).await;
