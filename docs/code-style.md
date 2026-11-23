@@ -75,6 +75,25 @@ a view, component, or test that belongs in a store or utility. If the existing
 name is slightly different but semantically identical, prefer renaming the call
 site over adding a wrapper.
 
+**Keep functions and files small.** A function has 300 lines of code or
+fewer: blank lines and comments do not count. A source file (`.rs`, `.ts`,
+`.mts`, `.vue`, `.kt`, `.js`) has 2500 lines or fewer. When a function or a
+file becomes too large, divide it into functions or submodules that each do
+one job, and keep the public paths the same. For Rust, a large module goes
+into a folder next to its file, with a `#[path]` module declaration, as
+`services/bluetooth-channel/`. CI checks the limits: clippy `too_many_lines`
+(`src-tauri/clippy.toml`) for Rust functions, ESLint (`eslint.config.js`) for
+the frontend and the scripts, and `npm run lint:file-size` for the Rust and
+Kotlin files. Generated and vendored code (`src-tauri/gen/`,
+`src-tauri/patches/`, `src-tauri/src/schema.rs`) is not checked.
+
+**Obey the added clippy lints.** `src-tauri/Cargo.toml`, `[lints.clippy]`,
+adds lints to the default clippy set: no `dbg!`, `todo!` or `unimplemented!`;
+no clone that is not necessary; a `;` after a last statement that gives `()`;
+a `// SAFETY:` comment on each `unsafe` block; and no `print!`/`println!`
+outside the CLI. Do not disable a lint for a crate or a module. Put each
+`#[allow]` on the smallest item, with a `reason = "..."` of one line.
+
 **Fix compiler warnings in the code.** Resolve compiler warnings by improving
 code structure, feature boundaries, visibility, or imports. Treat broad
 suppression such as crate-level `allow(dead_code, unused_imports)` as a
@@ -195,6 +214,8 @@ Keep the parent responsible for form/lifecycle orchestration and pass narrow sta
 - Each behavior has an owner. Free functions are limited to the exceptions in
   `architecture/code-design.md`.
 - Each new name, comment and log message passes the STE check in `naming.md`.
+- No function has more than 300 lines of code, and no file more than 2500
+  lines (`npm run lint`, and clippy for Rust).
 - No value from a closed set (state, kind, colour, problem code) is written as
   a string literal; it goes through its named const.
 - Derived state is computed when it is read, not stored.
