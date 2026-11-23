@@ -61,7 +61,7 @@ beforeEach(() => {
     due_time: null,
     repeat_rule: null,
     completed_at: null,
-    order_rank: 0,
+    order_rank: "a0",
     focus_enter_count: 0,
     created_at: "",
     updated_at: "",

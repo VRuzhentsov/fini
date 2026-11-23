@@ -16,7 +16,7 @@ const activeQuests = computed(() => questStore.activeQuests);
     <div v-if="questStore.error" class="text-error text-sm">{{ questStore.error }}</div>
 
     <p v-if="!activeQuests.length" class="text-sm opacity-40">No active quests.</p>
-    <QuestList v-else :quests="activeQuests" />
+    <QuestList v-else :quests="activeQuests" reorderable />
   </div>
 
   <NewQuestForm />

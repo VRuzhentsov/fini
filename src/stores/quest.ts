@@ -61,7 +61,8 @@ export interface Quest {
   due_time: string | null;
   repeat_rule: string | null;
   completed_at: string | null;
-  order_rank: number;
+  /** The rank key: the manual order (src-tauri/src/models/rank.rs). Compare it as text. */
+  order_rank: string;
   focus_enter_count: number;
   created_at: string;
   updated_at: string;
@@ -102,7 +103,6 @@ export interface CreateQuestInput {
   due?: string | null;
   due_time?: string | null;
   repeat_rule?: string | null;
-  order_rank?: number;
   is_checklist?: boolean;
 }
 
@@ -116,24 +116,74 @@ export interface UpdateQuestInput {
   due?: string | null;
   due_time?: string | null;
   repeat_rule?: string | null;
-  order_rank?: number;
   /** A repeating quest only: "day" writes the edit on one occurrence; "all" (default) on the quest. */
   scope?: EditScope;
   /** A repeating quest only: the occurrence (its date) the edit is for; default its oldest open day. */
   period_key?: string;
 }
 
-/** The order of active quests: overdue first, then scheduled, then by date,
- * then `order_rank`, then Priority (high first), then the oldest. */
-function activeOrder(today: string) {
+/** Where a moved quest goes: directly before or after another quest. The
+ * wire form of `QuestPlacement` in src-tauri/src/models/quest.rs. */
+export type QuestPlacement = { before: string } | { after: string };
+
+const DUE_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const UTC_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}$/;
+const ZONED_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+
+/** Whether the quest is overdue: its due date is before `today` (local).
+ * The due badge is red in the same case. The same as `is_overdue` in
+ * src-tauri/src/models/quest.rs. */
+export function isOverdue(quest: Pick<Quest, "due">, today: string): boolean {
+  return !!quest.due && DUE_DATE_PATTERN.test(quest.due) && quest.due < today;
+}
+
+/** A `created_at` as milliseconds; a text that does not read as a time goes
+ * last. Reads the formats of `parse_utc_timestamp` in src-tauri/src/models/quest.rs. */
+function createdMoment(value: string): number {
+  let moment = Number.NaN;
+  if (UTC_TIME_PATTERN.test(value)) moment = Date.parse(`${value.replace(" ", "T")}Z`);
+  else if (ZONED_TIME_PATTERN.test(value)) moment = Date.parse(value);
+  return Number.isNaN(moment) ? Number.POSITIVE_INFINITY : moment;
+}
+
+/** The byte order of two texts, as `str::cmp` in Rust. Rank keys and ids are
+ * ASCII, so the order of the UTF-16 code units is the byte order. */
+function textOrder(a: string, b: string): number {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
+
+/** The order of the active quests in each list: overdue first, then the rank
+ * key, then Priority (high first), then the oldest `created_at`, then the id.
+ * The same as `Quest::list_order` in src-tauri/src/models/quest.rs. */
+export function activeOrder(today: string) {
   return (a: Quest, b: Quest): number =>
-    Number(!!a.due && a.due < today ? 0 : 1) - Number(!!b.due && b.due < today ? 0 : 1) ||
-    Number(a.due || a.repeat_rule ? 0 : 1) - Number(b.due || b.repeat_rule ? 0 : 1) ||
-    Number(a.due ? 0 : 1) - Number(b.due ? 0 : 1) ||
-    (a.due && b.due ? a.due.localeCompare(b.due) : 0) ||
-    a.order_rank - b.order_rank ||
+    Number(isOverdue(b, today)) - Number(isOverdue(a, today)) ||
+    textOrder(a.order_rank, b.order_rank) ||
     priorityWeight(b.priority) - priorityWeight(a.priority) ||
-    a.created_at.localeCompare(b.created_at);
+    createdMoment(a.created_at) - createdMoment(b.created_at) ||
+    textOrder(a.id, b.id);
+}
+
+/** A move that waits for the backend. */
+interface PendingMove {
+  id: string;
+  placement: QuestPlacement;
+}
+
+/** `list` with the quest of `move` at its new place: the list shows a move
+ * before the backend answers. */
+export function withMove(list: Quest[], move: PendingMove | null): Quest[] {
+  if (!move) return list;
+  const moved = list.find((quest) => quest.id === move.id);
+  if (!moved) return list;
+  const rest = list.filter((quest) => quest.id !== move.id);
+  const before = "before" in move.placement;
+  const targetId = "before" in move.placement ? move.placement.before : move.placement.after;
+  const index = rest.findIndex((quest) => quest.id === targetId);
+  if (index === -1) return list;
+  rest.splice(before ? index : index + 1, 0, moved);
+  return rest;
 }
 
 export const useQuestStore = defineStore("quest", () => {
@@ -141,10 +191,14 @@ export const useQuestStore = defineStore("quest", () => {
   const activeQuest = ref<Quest | null>(null);
   const loading = ref(false);
   const error = ref<string | null>(null);
+  const pendingMove = ref<PendingMove | null>(null);
 
   /** The active quests, in their order. A repeating quest is here as its oldest open day. */
   const activeQuests = computed(() =>
-    quests.value.filter((q) => q.status === "active").sort(activeOrder(localDateStr(new Date()))),
+    withMove(
+      quests.value.filter((q) => q.status === "active").sort(activeOrder(localDateStr(new Date()))),
+      pendingMove.value,
+    ),
   );
   /** The completed and abandoned quests and days, newest first (History). */
   const historyQuests = computed(() =>
@@ -186,6 +240,20 @@ export const useQuestStore = defineStore("quest", () => {
       await fetchQuests();
     }
     return quest;
+  }
+
+  /** Moves a quest in the manual order. The list shows the move at once;
+   * the backend writes the rank key and returns each quest it wrote. When the
+   * backend rejects the move, the list goes back to its order. */
+  async function moveQuest(id: string, placement: QuestPlacement) {
+    pendingMove.value = { id, placement };
+    try {
+      const written = await invoke<Quest[]>("move_quest", { id, placement });
+      written.forEach(applyLocalQuest);
+      return written;
+    } finally {
+      pendingMove.value = null;
+    }
   }
 
   /** "Complete through today" (ADR-0012 D7): closes every open occurrence of
@@ -287,6 +355,7 @@ export const useQuestStore = defineStore("quest", () => {
     fetchActiveQuest,
     createQuest,
     updateQuest,
+    moveQuest,
     completeThroughToday,
     setFocusQuest,
     deleteQuest,

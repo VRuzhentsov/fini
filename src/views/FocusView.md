@@ -21,10 +21,10 @@ All sections respect the active space from [[SpacePicker]]. When a specific spac
 ### Active backlog
 
 - Shows all active quests below Focus quest
-- Default ordering: overdue, then `order_rank`, then Priority (`high > medium > low`), then oldest `created_at`
+- Ordering: overdue (due date before today), then the rank key (`order_rank`, glossary "Rank"), then Priority (`high > medium > low`), then oldest `created_at`, then id. The backend (`Quest::list_order`), `fini quest list` and the store (`activeOrder`) use the same order
 - Includes expand/edit controls via [[QuestList]]
 - Each quest has explicit "Set Focus" action (manual focus override)
-- Drag-and-drop reorder is currently deferred in UI
+- Drag-and-drop reorder: a person moves a row to a new place ([[QuestList]], "Drag-and-drop"). An overdue quest stays in the overdue part at the top
 
 ### Quick capture
 
@@ -37,6 +37,6 @@ All sections respect the active space from [[SpacePicker]]. When a specific spac
 - Active reminder due timestamps are virtual Focus events: once `due + due_time` arrives, the reminder timestamp competes with manual Focus timestamps and the youngest valid timestamp wins
 - Reminder preemption is temporary and unwinds to previous valid target
 - A quest comes to Focus at its `due + due_time` (09:00 when there is no time); before that moment it is not on Focus. For a repeating quest this is the moment of its shown day: a daily meeting at 09:00 comes to Focus each day at 09:00
-- If no active override exists, fallback is overdue > `order_rank` > Priority (`high > medium > low`) > oldest `created_at`
+- If no active override exists, fallback is the first quest in the backlog order: overdue > rank key > Priority (`high > medium > low`) > oldest `created_at` > id
 
 See `specs/e2e/focus-reminder-preemption.md` for the open-app e2e contract.

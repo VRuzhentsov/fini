@@ -37,7 +37,7 @@ Checkbox, due/repeat badge, title, checklist badge, non-medium energy/priority b
 | Abandon | Sets `status = abandoned` |
 | Delete | Permanent delete with confirmation |
 
-Energy is a quest effort estimate (Small / Medium / Large) and Priority is urgency (Low / Medium / High); both default to Medium and are hidden from the collapsed row at the default level so the glance surface stays quiet. Priority participates in ordering as high > medium > low after overdue and order-rank precedence.
+Energy is a quest effort estimate (Small / Medium / Large) and Priority is urgency (Low / Medium / High); both default to Medium and are hidden from the collapsed row at the default level so the glance surface stays quiet. Priority participates in ordering as high > medium > low after overdue and the rank key (glossary "Rank"); with rank keys from moves, two quests rarely have the same key, so Priority rarely decides.
 
 ### History rows
 

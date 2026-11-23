@@ -89,7 +89,7 @@ const activeQuest = computed(() => {
     </section>
 
     <section v-if="backlog.length">
-      <QuestList :quests="backlog" />
+      <QuestList :quests="backlog" reorderable />
     </section>
 
     <section>
