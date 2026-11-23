@@ -14,6 +14,7 @@ use crate::repositories::quest_repository::append_focus_history;
 use crate::repositories::quest_repository::QuestChange;
 use crate::repositories::OutboxRepository;
 use crate::repositories::QuestRepository;
+use crate::repositories::SpaceRepository;
 use crate::services::backup;
 use crate::services::bluetooth_channel_service::BluetoothChannelService;
 use crate::services::channel_service::{ChannelService, LinkHandlers};
@@ -25,7 +26,6 @@ use crate::services::event_bus_service::EventBus;
 use crate::services::network_channel_service::NetworkChannelService;
 use crate::services::reminder::ReminderService;
 use crate::services::settings::{self, ThemeMode};
-use crate::services::space::SpaceRepository;
 use crate::services::space_sync_service::{SpaceResolutionMode, SpaceSyncService};
 #[cfg(any(feature = "cli-plane", test))]
 use chrono::Utc;
