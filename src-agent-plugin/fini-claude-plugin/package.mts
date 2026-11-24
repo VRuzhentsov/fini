@@ -8,11 +8,11 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const output = join(root, '.artifacts', 'claude', 'fini');
 rmSync(output, { recursive: true, force: true });
 mkdirSync(join(output, 'fini-claude-plugin'), { recursive: true });
-for (const name of ['.claude-plugin', 'hooks', 'skills', 'README.md']) {
+for (const name of ['.claude-plugin', 'hooks', 'commands', 'README.md']) {
   cpSync(join(root, 'fini-claude-plugin', name), join(output, name), { recursive: true });
 }
 const files = ['fini-claude-plugin/bridge.mts', 'shared/core.mts', 'shared/store.mts',
-  'shared/locked-worker.mts', 'shared/transport.mts', 'shared/cli.mts'];
+  'shared/transport.mts', 'shared/cli.mts'];
 const hashes: Record<string, string> = {};
 for (const name of files) {
   mkdirSync(dirname(join(output, name)), { recursive: true });
@@ -20,6 +20,16 @@ for (const name of files) {
   writeFileSync(join(output, name), bytes);
   hashes[name] = createHash('sha256').update(bytes).digest('hex');
 }
+// Include the locked production packages, including the SQLite native binaries.
+// No source-checkout path or network install is needed after cache relocation.
+const lock = JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8')) as {
+  packages: Record<string, { dev?: boolean; devOptional?: boolean }>;
+};
+for (const [name, entry] of Object.entries(lock.packages)) {
+  if (!name || entry.dev || entry.devOptional) continue;
+  cpSync(join(root, name), join(output, name), { recursive: true, dereference: true });
+}
+writeFileSync(join(output, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
 writeFileSync(join(output, 'source-hashes.json'), `${JSON.stringify(hashes, null, 2)}\n`);
 // An optional local marketplace, pointing ONLY at the assembled root.
 mkdirSync(join(root, '.artifacts', 'claude', '.claude-plugin'), { recursive: true });

@@ -16,7 +16,12 @@
     "check": "npm run typecheck && npm test && npm run test:claude && npm run test:hermes"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "9.6.0",
     "@types/node": "24.19.2",
     "typescript": "7.0.2"
+  },
+  "dependencies": {
+    "better-sqlite3": "13.2.0",
+    "drizzle-orm": "0.45.4"
   }
 }

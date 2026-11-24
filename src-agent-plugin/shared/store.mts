@@ -1,57 +1,93 @@
-import { closeSync, constants, fsyncSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
-import { dirname, join } from 'node:path';
-import { TextDecoder } from 'node:util';
-import { listing, parseState } from './core.mts';
-import type { Request, State } from './core.mts';
+import Database from 'better-sqlite3';
+import { and, asc, eq, sql } from 'drizzle-orm';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { chmodSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 
-export function readState(path: string): State {
-  try {
-    const bytes = readFileSync(path);
-    // Fail on invalid UTF-8 instead of silently replacing identifiers.
-    return parseState(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { version: 2, quests: Object.create(null) };
-    }
-    throw error;
-  }
+export type Session = { agent: string; session_id: string };
+export type Relation = Session & { quest_id: string; is_primary: boolean | null };
+
+export interface RelationsRepository {
+  link(quest: string, session: Session): boolean;
+  unlink(quest: string, session: Session): boolean;
+  promote(quest: string, session: Session): void;
+  clear(quest: string, agent: string): void;
+  sessions(quest: string): Relation[];
+  quests(session: Session): Relation[];
+  close(): void;
 }
 
-// The injectable rename seam is for deterministic replacement-failure verification.
-export function writeState(path: string, state: State, replace = renameSync): void {
-  const root = dirname(path);
-  const temporary = join(root, `.sessions-${randomUUID()}.json`);
-  try {
-    const fd = openSync(temporary, 'wx', 0o600);
+const relations = sqliteTable('relations', {
+  quest_id: text().notNull(),
+  agent: text().notNull(),
+  session_id: text().notNull(),
+  is_primary: integer({ mode: 'boolean' }),
+});
+
+export class SqliteRelationsRepository implements RelationsRepository {
+  private connection: Database.Database;
+  private db: ReturnType<typeof drizzle>;
+
+  constructor(path: string) {
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    this.connection = new Database(path, { timeout: 8000 });
     try {
-      writeFileSync(fd, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
-      fsyncSync(fd);
-    } finally { closeSync(fd); }
-    replace(temporary, path);
-    const directory = openSync(root, constants.O_RDONLY | constants.O_DIRECTORY);
-    try { fsyncSync(directory); } finally { closeSync(directory); }
-  } finally {
-    try { unlinkSync(temporary); }
-    // eslint-disable-next-line no-unsafe-finally -- Keep cleanup errors visible to the caller.
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      chmodSync(path, 0o600);
+      this.db = drizzle(this.connection);
+      // SQLite owns uniqueness and serializes first-link and primary changes.
+      this.connection.exec(`
+        CREATE TABLE IF NOT EXISTS relations (
+          quest_id TEXT NOT NULL, agent TEXT NOT NULL, session_id TEXT NOT NULL,
+          is_primary INTEGER CHECK (is_primary IS NULL OR is_primary = 1),
+          PRIMARY KEY (quest_id, agent, session_id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS relations_primary
+          ON relations (quest_id, agent) WHERE is_primary = 1;
+        CREATE INDEX IF NOT EXISTS relations_session ON relations (agent, session_id);
+      `);
+    } catch (error) { this.connection.close(); throw error; }
   }
-}
 
-// INTERNAL: only called inside util-linux flock's no-fork child.
-// Every public store entry point goes through execute() in core.mts.
-export function transaction(request: Request): unknown {
-  const state = readState(request.state_path);
-  const providers = state.quests[request.quest_id] ?? {};
-  if (request.action === 'list') return listing(request, providers);
-  state.quests[request.quest_id] = providers;
-  const ids = providers[request.provider] ??= [];
-  const added = !ids.includes(request.session_id);
-  if (added) ids.push(request.session_id);
-  if (added || state.version === 1) {
-    state.version = 2;
-    writeState(request.state_path, state);
+  link(quest: string, session: Session): boolean {
+    return this.db.transaction(tx => {
+      const group = and(eq(relations.quest_id, quest), eq(relations.agent, session.agent));
+      const first = tx.select().from(relations).where(group).limit(1).get() === undefined;
+      return tx.insert(relations).values({ quest_id: quest, ...session, is_primary: first ? true : null })
+        .onConflictDoNothing().run().changes === 1;
+    }, { behavior: 'immediate' });
   }
-  return { ...listing(request, providers), provider: request.provider,
-    session_id: request.session_id, added };
+
+  unlink(quest: string, session: Session): boolean {
+    return this.db.delete(relations).where(and(eq(relations.quest_id, quest),
+      eq(relations.agent, session.agent), eq(relations.session_id, session.session_id))).run().changes === 1;
+  }
+
+  promote(quest: string, session: Session): void {
+    this.db.transaction(tx => {
+      const group = and(eq(relations.quest_id, quest), eq(relations.agent, session.agent));
+      const target = and(group, eq(relations.session_id, session.session_id));
+      if (!tx.select().from(relations).where(target).get()) throw new Error('Link this session before making it primary.');
+      tx.update(relations).set({ is_primary: null }).where(group).run();
+      tx.update(relations).set({ is_primary: true }).where(target).run();
+    }, { behavior: 'immediate' });
+  }
+
+  clear(quest: string, agent: string): void {
+    this.db.update(relations).set({ is_primary: null })
+      .where(and(eq(relations.quest_id, quest), eq(relations.agent, agent))).run();
+  }
+
+  sessions(quest: string): Relation[] {
+    return this.db.select().from(relations).where(eq(relations.quest_id, quest))
+      .orderBy(asc(relations.agent), sql`${relations.is_primary} DESC`, asc(relations.session_id)).all();
+  }
+
+  quests(session: Session): Relation[] {
+    return this.db.select().from(relations)
+      .where(and(eq(relations.agent, session.agent), eq(relations.session_id, session.session_id)))
+      .orderBy(asc(relations.quest_id)).all();
+  }
+
+  close(): void { this.connection.close(); }
 }

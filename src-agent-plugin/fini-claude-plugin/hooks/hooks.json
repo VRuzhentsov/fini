@@ -2,7 +2,7 @@
   "hooks": {
     "UserPromptExpansion": [
       {
-        "matcher": "^fini:(link|sessions)$",
+        "matcher": "^fini:(link|unlink|primary|relations)$",
         "hooks": [
           {
             "type": "command",
