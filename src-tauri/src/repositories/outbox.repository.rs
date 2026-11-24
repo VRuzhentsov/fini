@@ -366,6 +366,20 @@ impl OutboxRepository<'_> {
         Ok(())
     }
 
+    /// Records each of the stored quest rows `quest_ids`, each in its own
+    /// space: the quests that a move wrote (`QuestRepository::move_quest`).
+    pub fn record_quests(
+        &mut self,
+        origin_device_id: &str,
+        quest_ids: &[String],
+    ) -> Result<(), String> {
+        for quest_id in quest_ids {
+            let space_id = QuestRepository::new(self.conn).get(quest_id)?.space_id;
+            self.record_quest(origin_device_id, &space_id, quest_id)?;
+        }
+        Ok(())
+    }
+
     /// Records one occurrence mark: the entity `quest_occurrence`, keyed by
     /// (quest_id, period_key) (ADR-0012 D11).
     pub fn record_occurrence(

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use diesel::connection::SimpleConnection;
 use diesel::prelude::*;
-use diesel::sql_types::Text;
+use diesel::sql_types::{Double, Text};
 use diesel::sqlite::SqliteConnection;
 use serde::{Deserialize, Serialize};
 #[cfg(any(feature = "ui-plane", test))]
@@ -15,7 +15,7 @@ use tauri_plugin_fs::{FilePath, FsExt};
 use uuid::Uuid;
 use zip::write::SimpleFileOptions;
 
-use crate::models::{ChecklistActivity, Quest, QuestOccurrence, Space};
+use crate::models::{ChecklistActivity, Quest, QuestOccurrence, Rank, Space};
 use crate::schema::{checklist_activity, quest_occurrences, quests, spaces};
 use crate::services::db::utc_now;
 #[cfg(any(feature = "ui-plane", test))]
@@ -158,6 +158,15 @@ struct TableNameRow {
 struct ColumnNameRow {
     #[diesel(sql_type = Text)]
     name: String,
+}
+
+/// A quest of a backup from before rank keys, with its decimal `order_rank`.
+#[derive(QueryableByName)]
+struct LegacyRankRow {
+    #[diesel(sql_type = Text)]
+    id: String,
+    #[diesel(sql_type = Double)]
+    order_rank: f64,
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -591,7 +600,7 @@ fn create_backup_schema(conn: &mut SqliteConnection) -> Result<(), String> {
             due_time TEXT,
             repeat_rule TEXT,
             completed_at TEXT,
-            order_rank REAL NOT NULL DEFAULT 0,
+            order_rank TEXT NOT NULL DEFAULT 'a0',
             focus_enter_count INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
@@ -657,7 +666,28 @@ fn migrate_backup_schema(conn: &mut SqliteConnection) -> Result<(), String> {
         "checklist_base",
         "ALTER TABLE quests ADD COLUMN checklist_base TEXT",
     )?;
-    ensure_checklist_activity_table(conn)
+    ensure_checklist_activity_table(conn)?;
+    ensure_backup_rank_keys(conn)
+}
+
+/// A backup from before rank keys has a decimal `order_rank`. Each value
+/// becomes its rank key (`Rank::from_legacy`), as migration
+/// `quest_rank_key` does for the database. A rank key starts with a
+/// letter, so SQLite keeps it as text also in a `REAL` column.
+fn ensure_backup_rank_keys(conn: &mut SqliteConnection) -> Result<(), String> {
+    let rows = diesel::sql_query(
+        "SELECT id, CAST(order_rank AS REAL) AS order_rank FROM quests
+         WHERE typeof(order_rank) IN ('real', 'integer')",
+    )
+    .load::<LegacyRankRow>(conn)
+    .map_err(|e| format!("failed to read the backup quest order: {e}"))?;
+    for row in rows {
+        diesel::update(quests::table.find(&row.id))
+            .set(quests::order_rank.eq(Rank::from_legacy(row.order_rank)))
+            .execute(conn)
+            .map_err(|e| format!("failed to migrate the backup quest order: {e}"))?;
+    }
+    Ok(())
 }
 
 fn ensure_checklist_activity_table(conn: &mut SqliteConnection) -> Result<(), String> {
@@ -1017,7 +1047,7 @@ fn insert_quest(
             quests::due_time.eq(&quest.due_time),
             quests::repeat_rule.eq(&quest.repeat_rule),
             quests::completed_at.eq(&quest.completed_at),
-            quests::order_rank.eq(quest.order_rank),
+            quests::order_rank.eq(&quest.order_rank),
             quests::focus_enter_count.eq(quest.focus_enter_count),
             quests::created_at.eq(&quest.created_at),
             quests::updated_at.eq(&quest.updated_at),
@@ -1120,7 +1150,7 @@ fn upsert_quest_for_import(
                 quests::due_time.eq(&quest.due_time),
                 quests::repeat_rule.eq(&quest.repeat_rule),
                 quests::completed_at.eq(&quest.completed_at),
-                quests::order_rank.eq(quest.order_rank),
+                quests::order_rank.eq(&quest.order_rank),
                 quests::focus_enter_count.eq(quest.focus_enter_count),
                 quests::created_at.eq(&quest.created_at),
                 quests::updated_at.eq(&quest.updated_at),
@@ -1181,7 +1211,7 @@ fn mapped_quest(quest: &Quest, space_map: &HashMap<String, String>) -> Quest {
         due_time: quest.due_time.clone(),
         repeat_rule: quest.repeat_rule.clone(),
         completed_at: quest.completed_at.clone(),
-        order_rank: quest.order_rank,
+        order_rank: quest.order_rank.clone(),
         focus_enter_count: quest.focus_enter_count,
         created_at: quest.created_at.clone(),
         updated_at: quest.updated_at.clone(),

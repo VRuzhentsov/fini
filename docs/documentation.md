@@ -75,6 +75,8 @@ code tree, and update the links to it. Do not start new docs next to code.
   rules.
 - Put a rule in the document that owns its topic: development rules go in
   the development guidelines, not in a skill.
+- Keep glossary entries to a short definition of the term; put examples and
+  usage in the doc that covers the feature.
 
 ## Instructions for agents
 

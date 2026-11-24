@@ -50,7 +50,7 @@ mod resume_watcher;
 #[cfg(feature = "ui-plane")]
 use commands::quest_commands::{
     add_checklist_item, complete_quest_through_today, create_quest, delete_quest,
-    edit_checklist_item, get_active_focus, get_checklist_activity, get_quests,
+    edit_checklist_item, get_active_focus, get_checklist_activity, get_quests, move_quest,
     remove_checklist_item, reorder_checklist, set_focus, toggle_checklist_item, update_quest,
 };
 #[cfg(feature = "ui-plane")]
@@ -520,6 +520,7 @@ pub fn run() {
             create_quest,
             set_focus,
             update_quest,
+            move_quest,
             delete_quest,
             complete_quest_through_today,
             add_checklist_item,

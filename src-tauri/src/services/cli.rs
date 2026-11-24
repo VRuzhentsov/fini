@@ -5,11 +5,11 @@ use diesel::sqlite::SqliteConnection;
 use serde_json::{json, Value};
 
 use crate::models::{
-    CreateQuestInput, CreateReminderInput, CreateSpaceInput, QuestUpdatePatch, UpdateQuestInput,
-    UpdateSpaceInput,
+    CreateQuestInput, CreateReminderInput, CreateSpaceInput, QuestPlacement, QuestUpdatePatch,
+    UpdateQuestInput, UpdateSpaceInput,
 };
 
-use crate::models::{is_overdue, parse_utc_timestamp, EditScope, Quest};
+use crate::models::{parse_utc_timestamp, EditScope, Quest};
 use crate::repositories::quest_repository::append_focus_history;
 use crate::repositories::quest_repository::QuestChange;
 use crate::repositories::OutboxRepository;
@@ -245,8 +245,24 @@ struct QuestUpdateArgs {
         help = "Recurring preset, or literal null to clear; omit to preserve"
     )]
     repeat: Option<String>,
-    #[arg(long)]
-    order_rank: Option<f64>,
+    #[arg(
+        long,
+        value_name = "ID",
+        group = "placement",
+        help = "Move the quest directly before the quest with this id, in the order of `fini quest list`"
+    )]
+    before: Option<String>,
+    #[arg(
+        long,
+        value_name = "ID",
+        group = "placement",
+        help = "Move the quest directly after the quest with this id, in the order of `fini quest list`"
+    )]
+    after: Option<String>,
+    #[arg(long, group = "placement", action = ArgAction::SetTrue, help = "Move the quest to the top of the list")]
+    top: bool,
+    #[arg(long, group = "placement", action = ArgAction::SetTrue, help = "Move the quest to the bottom of the list")]
+    bottom: bool,
     #[arg(long, action = ArgAction::SetTrue)]
     set_focus: bool,
     #[arg(long, action = ArgAction::SetTrue)]
@@ -1087,6 +1103,7 @@ fn update_quest_from_cli(
     conn: &mut diesel::sqlite::SqliteConnection,
     args: QuestUpdateArgs,
 ) -> CliResult<Value> {
+    let placement = args.placement();
     let description = parse_nullable_quest_patch(args.description);
     let due = parse_nullable_quest_patch(args.due);
     let due_time = parse_nullable_quest_patch(args.due_time);
@@ -1110,7 +1127,6 @@ fn update_quest_from_cli(
         due: None,
         due_time: None,
         repeat_rule: None,
-        order_rank: args.order_rank,
         is_checklist: None,
     };
     let patch = QuestUpdatePatch {
@@ -1120,24 +1136,69 @@ fn update_quest_from_cli(
         due_time,
         repeat_rule,
     };
-    write_change(ctx, conn, &args.id, |conn| {
-        let change = QuestRepository::new(conn).update(
-            &args.id,
-            patch,
-            EditScope::All,
-            None,
-            Some(ctx.device_id()),
-        )?;
-        if args.trigger_reminder_focus {
-            append_focus_history(conn, &change.quest.id, &change.quest.space_id, "reminder")?;
-        } else if args.set_focus
-            || args.status.as_deref() == Some("active")
-            || change.restore_should_focus
-        {
-            append_focus_history(conn, &change.quest.id, &change.quest.space_id, "manual")?;
+    // The field change and the move are one transaction: a move that
+    // cannot be done (a missing neighbour, the quest itself) leaves the
+    // fields as they were, also the day that a completion would close.
+    let quest = conn
+        .write_transaction(|conn| {
+            if let Some(placement) = &placement {
+                QuestRepository::new(conn).check_placement(&args.id, placement)?;
+            }
+            let previous_space_id = QuestRepository::new(conn).get(&args.id)?.space_id;
+            let change = QuestRepository::new(conn).update(
+                &args.id,
+                patch,
+                EditScope::All,
+                None,
+                Some(ctx.device_id()),
+            )?;
+            if args.trigger_reminder_focus {
+                append_focus_history(conn, &change.quest.id, &change.quest.space_id, "reminder")?;
+            } else if args.set_focus
+                || args.status.as_deref() == Some("active")
+                || change.restore_should_focus
+            {
+                append_focus_history(conn, &change.quest.id, &change.quest.space_id, "manual")?;
+            }
+            // Move before the change is recorded, so that the outbox has
+            // the final row of the quest once and no row with its old rank.
+            let mut moved_rows = Vec::new();
+            if let Some(placement) = &placement {
+                moved_rows = QuestRepository::new(conn).move_quest(&args.id, placement)?;
+                // `record_change` records the moved row only when the field
+                // change wrote it (a closed day of a repeating quest does not).
+                moved_rows.retain(|quest_id| *quest_id != args.id || !change.quest_row_changed);
+            }
+            OutboxRepository::new(conn).record_change(
+                ctx.device_id(),
+                &previous_space_id,
+                &change,
+            )?;
+            OutboxRepository::new(conn).record_quests(ctx.device_id(), &moved_rows)?;
+            let mut quest = change.quest;
+            quest.order_rank = QuestRepository::new(conn).get(&args.id)?.order_rank;
+            Ok(quest)
+        })
+        .map_err(CliError::from_string)?;
+    refresh_cli_reminder(conn, &quest.id);
+    serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
+}
+
+impl QuestUpdateArgs {
+    /// The move that `--before`, `--after`, `--top` or `--bottom` gives
+    /// (clap lets only one of them through).
+    fn placement(&self) -> Option<QuestPlacement> {
+        if let Some(id) = &self.before {
+            return Some(QuestPlacement::Before(id.clone()));
         }
-        Ok(change)
-    })
+        if let Some(id) = &self.after {
+            return Some(QuestPlacement::After(id.clone()));
+        }
+        if self.top {
+            return Some(QuestPlacement::Top);
+        }
+        self.bottom.then_some(QuestPlacement::Bottom)
+    }
 }
 
 fn update_quest_status(
@@ -1161,7 +1222,10 @@ fn update_quest_status(
             priority: None,
             repeat_rule: None,
             repeat: None,
-            order_rank: None,
+            before: None,
+            after: None,
+            top: false,
+            bottom: false,
             set_focus: false,
             trigger_reminder_focus: false,
         },
@@ -1766,7 +1830,9 @@ fn format_scalar(value: &Value) -> String {
     }
 }
 
-/// The order of `fini quest list`. The UI orders its own lists (stores/quest.ts).
+/// The order of `fini quest list`: the active quests in the order of the
+/// UI lists (`Quest::list_order`, the same as `activeOrder` in
+/// src/stores/quest.ts), then the other quests, the newest change first.
 #[cfg(any(feature = "cli-plane", test))]
 pub(crate) fn sort_quests_for_list(mut loaded: Vec<Quest>) -> Vec<Quest> {
     let now = Utc::now();
@@ -1778,34 +1844,7 @@ pub(crate) fn sort_quests_for_list(mut loaded: Vec<Quest>) -> Vec<Quest> {
         }
 
         if a_active {
-            let a_overdue = is_overdue(a, &now);
-            let b_overdue = is_overdue(b, &now);
-            if a_overdue != b_overdue {
-                return b_overdue.cmp(&a_overdue);
-            }
-
-            if (a.order_rank - b.order_rank).abs() > f64::EPSILON {
-                return a
-                    .order_rank
-                    .partial_cmp(&b.order_rank)
-                    .unwrap_or(std::cmp::Ordering::Equal);
-            }
-
-            if a.priority != b.priority {
-                return b.priority.cmp(&a.priority);
-            }
-            return match (
-                parse_utc_timestamp(&a.created_at),
-                parse_utc_timestamp(&b.created_at),
-            ) {
-                (Some(a_created), Some(b_created)) if a_created != b_created => {
-                    a_created.cmp(&b_created)
-                }
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                _ => a.created_at.cmp(&b.created_at),
-            }
-            .then_with(|| a.id.cmp(&b.id));
+            return a.list_order(b, &now);
         }
 
         match (

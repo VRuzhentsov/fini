@@ -54,10 +54,13 @@ See `specs/` at the repo root for domain model specs ([[Quest]], [[Space]], [[Re
 | Command        | Input                                                        | Returns      |
 |----------------|--------------------------------------------------------------|--------------|
 | `get_quests`   | —                                                            | `Vec<Quest>` |
-| `create_quest` | `{ space_id?, title, description?, energy?, priority?, due?, due_time?, repeat_rule?, order_rank? }` (`space_id` omitted -> `"1"`; `energy` defaults to `medium`; `priority` defaults to `medium`) | `Quest` |
-| `update_quest` | `id`, `{ space_id?, title?, description?, status?, energy?, priority?, due?, due_time?, repeat_rule?, order_rank? }` (`space_id` updates are non-null; omit metadata to preserve it) | `Quest` |
+| `create_quest` | `{ space_id?, title, description?, energy?, priority?, due?, due_time?, repeat_rule? }` (`space_id` omitted -> `"1"`; `energy` defaults to `medium`; `priority` defaults to `medium`; the quest goes to the bottom of the list) | `Quest` |
+| `update_quest` | `id`, `{ space_id?, title?, description?, status?, energy?, priority?, due?, due_time?, repeat_rule? }` (`space_id` updates are non-null; omit metadata to preserve it) | `Quest` |
+| `move_quest` | `id`, `placement`: `{ "before": id }`, `{ "after": id }`, `"top"` or `"bottom"` | `Vec<Quest>`: each quest it wrote, the moved quest first |
 
 `energy` is an effort estimate: `small`, `medium`, or `large`. `priority` is urgency: `low`, `medium`, or `high`. The Tauri/JSON contract exposes these names; SQLite stores their canonical `1|2|3` representation.
+
+`order_rank` is the rank key of the quest (`models/rank.rs`, glossary "Rank"): text, compared byte by byte. Only `move_quest` changes it. A move gives the quest a key between its new neighbours in the order of all quests by rank, and usually writes only that quest. When the neighbours have the same key, or the new key is longer than 32 characters, the move gives all quests new keys in their order (a rebalance) and returns them all. A rebalance changes only the key of the other quests; their `updated_at` stays.
 | `delete_quest` | `id`                                                         | —            |
 
 ### Focus

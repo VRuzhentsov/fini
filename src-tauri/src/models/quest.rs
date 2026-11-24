@@ -1,6 +1,7 @@
-use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, Utc};
 use diesel::prelude::*;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use crate::models::{QuestOccurrence, OCCURRENCE_COMPLETED};
@@ -143,7 +144,8 @@ pub struct Quest {
     /// JSON-encoded RepeatRule, or null
     pub repeat_rule: Option<String>,
     pub completed_at: Option<String>,
-    pub order_rank: f64,
+    /// The rank key: the manual order of the quests (`models::rank`).
+    pub order_rank: String,
     #[serde(default)]
     pub focus_enter_count: i64,
     pub created_at: String,
@@ -178,10 +180,28 @@ pub struct CreateQuestInput {
     pub due: Option<String>,
     pub due_time: Option<String>,
     pub repeat_rule: Option<String>,
-    pub order_rank: Option<f64>,
+    /// The rank key. Not part of the input: a new quest goes to the bottom
+    /// of the list (`QuestRepository::insert`).
+    #[serde(skip)]
+    pub order_rank: Option<String>,
     /// Marks this quest as a checklist quest — `description` is authored as task-list text.
     #[serde(default)]
     pub is_checklist: bool,
+}
+
+/// Where a moved quest goes in the list (`QuestRepository::move_quest`).
+/// On the wire: `{"before": id}`, `{"after": id}`, `"top"` or `"bottom"`.
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum QuestPlacement {
+    /// Directly before the quest with this id.
+    Before(String),
+    /// Directly after the quest with this id.
+    After(String),
+    /// Before all quests.
+    Top,
+    /// After all quests.
+    Bottom,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -222,6 +242,29 @@ impl Quest {
     pub fn due_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
         crate::services::due_time::compute_fire_utc(self.due.as_deref()?, self.due_time.as_deref())
     }
+
+    /// The order of the active quests in each list (src/views/FocusView.md,
+    /// "Active backlog"): overdue first, then `rank_order`. The frontend
+    /// uses the same order (`activeOrder` in src/stores/quest.ts).
+    pub fn list_order(&self, other: &Quest, now: &DateTime<Utc>) -> Ordering {
+        is_overdue(other, now)
+            .cmp(&is_overdue(self, now))
+            .then_with(|| self.rank_order(other))
+    }
+
+    /// The order of the rank keys (byte comparison), then Priority (high
+    /// first), then the oldest `created_at`, then the id. A `created_at`
+    /// that does not read as a time goes last.
+    pub fn rank_order(&self, other: &Quest) -> Ordering {
+        let created = |quest: &Quest| {
+            parse_utc_timestamp(&quest.created_at).unwrap_or(DateTime::<Utc>::MAX_UTC)
+        };
+        self.order_rank
+            .cmp(&other.order_rank)
+            .then_with(|| other.priority.cmp(&self.priority))
+            .then_with(|| created(self).cmp(&created(other)))
+            .then_with(|| self.id.cmp(&other.id))
+    }
 }
 
 impl QuestUpdatePatch {
@@ -251,7 +294,6 @@ pub struct UpdateQuestInput {
     pub due: Option<String>,
     pub due_time: Option<String>,
     pub repeat_rule: Option<String>,
-    pub order_rank: Option<f64>,
     pub is_checklist: Option<bool>,
 }
 
@@ -278,7 +320,6 @@ pub struct UpdateQuestCommandInput {
     pub due_time: QuestFieldPatch<String>,
     #[serde(default)]
     pub repeat_rule: QuestFieldPatch<String>,
-    pub order_rank: Option<f64>,
     pub is_checklist: Option<bool>,
     /// A repeating quest only (ADR-0012 D8): `"day"` writes the edit on one
     /// occurrence, `"all"` (the default) on the quest.
@@ -303,7 +344,6 @@ impl UpdateQuestCommandInput {
                 due: None,
                 due_time: None,
                 repeat_rule: None,
-                order_rank: self.order_rank,
                 is_checklist: self.is_checklist,
             },
             description: self.description,
@@ -324,10 +364,6 @@ pub fn default_space_id() -> String {
 
 pub fn default_energy() -> i64 {
     ENERGY_MEDIUM
-}
-
-pub fn clamp_order_rank(value: f64) -> f64 {
-    value.clamp(-100.0, 100.0)
 }
 
 // ── Repeat rule ──────────────────────────────────────────────────────────────
@@ -669,22 +705,16 @@ pub fn parse_utc_timestamp(value: &str) -> Option<DateTime<Utc>> {
     None
 }
 
-fn parse_due_deadline_utc(quest: &Quest) -> Option<DateTime<Utc>> {
-    let due = quest.due.as_deref()?;
-    let date = NaiveDate::parse_from_str(due, "%Y-%m-%d").ok()?;
-    let time = match quest.due_time.as_deref() {
-        Some(value) => NaiveTime::parse_from_str(value, "%H:%M")
-            .or_else(|_| NaiveTime::parse_from_str(value, "%H:%M:%S"))
-            .ok()?,
-        None => NaiveTime::from_hms_opt(23, 59, 59)?,
-    };
-    Some(NaiveDateTime::new(date, time).and_utc())
-}
-
+/// Whether the quest is overdue at `now`: its due date is before the local
+/// date of `now`. The due badge of the list is red in the same case
+/// (`dueBadgeClass` in src/stores/quest.ts).
 pub fn is_overdue(quest: &Quest, now: &DateTime<Utc>) -> bool {
-    parse_due_deadline_utc(quest)
-        .map(|deadline| deadline < *now)
-        .unwrap_or(false)
+    let today = now.with_timezone(&Local).date_naive();
+    quest
+        .due
+        .as_deref()
+        .and_then(parse_period_key)
+        .is_some_and(|due| due < today)
 }
 
 pub(crate) fn validate_metadata(energy: i64, priority: i64) -> Result<(), String> {
@@ -761,7 +791,6 @@ impl UpdateQuestInputBuilder {
             due: None,
             due_time: None,
             repeat_rule: self.repeat_rule,
-            order_rank: None,
             is_checklist: None,
         }
     }

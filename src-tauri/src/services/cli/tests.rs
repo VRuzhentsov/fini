@@ -1324,3 +1324,104 @@ fn cli_execute_rejects_unknown_schema_migration_before_device_state_creation() {
 
     let _ = std::fs::remove_file(db_path);
 }
+
+/// One `fini quest ...` command, from its arguments after `fini quest`.
+fn run_quest_command(ctx: &CliContext, args: &[&str]) -> CliResult<Value> {
+    let cli = Cli::try_parse_from(["fini", "quest"].iter().chain(args))
+        .unwrap_or_else(|error| panic!("parse quest command {args:?}: {error}"));
+    match cli.command {
+        Some(Command::Quest { command }) => handle_quest(ctx, command),
+        _ => panic!("expected a quest command"),
+    }
+}
+
+/// `fini quest update` writes its field change and its move in one
+/// transaction: a move that cannot be done leaves the fields as they were,
+/// and a completion of a repeating quest does not close its day.
+#[test]
+fn a_failed_move_leaves_no_field_change() {
+    let _guard = ENV_LOCK.lock().expect("lock env");
+    let db_path = temp_db_path("cli-failed-move-no-field-change");
+    std::env::set_var("FINI_DB_PATH", &db_path);
+    let ctx = CliContext::new()
+        .unwrap_or_else(|error| panic!("initialize isolated CLI database: {}", error.message));
+    let today = chrono::Local::now()
+        .date_naive()
+        .format("%Y-%m-%d")
+        .to_string();
+
+    let one_time = run_quest_command(&ctx, &["create", "--title", "one time"])
+        .unwrap_or_else(|error| panic!("create a quest: {}", error.message));
+    let one_time_id = one_time["id"].as_str().expect("an id").to_string();
+    let daily = run_quest_command(
+        &ctx,
+        &[
+            "create", "--title", "daily", "--repeat", "daily", "--due", &today,
+        ],
+    )
+    .unwrap_or_else(|error| panic!("create a repeating quest: {}", error.message));
+    let daily_id = daily["id"].as_str().expect("an id").to_string();
+
+    let missing = run_quest_command(
+        &ctx,
+        &[
+            "update",
+            "--id",
+            &one_time_id,
+            "--title",
+            "changed",
+            "--before",
+            "missing",
+        ],
+    );
+    assert!(missing.is_err(), "a move before a missing quest fails");
+    let itself = run_quest_command(
+        &ctx,
+        &[
+            "update",
+            "--id",
+            &daily_id,
+            "--status",
+            "completed",
+            "--after",
+            &daily_id,
+        ],
+    );
+    assert!(itself.is_err(), "a move next to the quest itself fails");
+
+    let one_time = run_quest_command(&ctx, &["get", "--id", &one_time_id])
+        .unwrap_or_else(|error| panic!("get the quest: {}", error.message));
+    assert_eq!(one_time["title"], "one time", "the title did not change");
+    let daily = run_quest_command(&ctx, &["get", "--id", &daily_id])
+        .unwrap_or_else(|error| panic!("get the repeating quest: {}", error.message));
+    assert_eq!(daily["status"], "active", "the day was not completed");
+    assert_eq!(
+        daily["due"],
+        today.as_str(),
+        "the oldest open day is still today"
+    );
+
+    let moved = run_quest_command(
+        &ctx,
+        &[
+            "update",
+            "--id",
+            &daily_id,
+            "--title",
+            "daily moved",
+            "--top",
+        ],
+    )
+    .unwrap_or_else(|error| panic!("change and move the quest: {}", error.message));
+    assert_eq!(moved["title"], "daily moved");
+    let listed = run_quest_command(&ctx, &["list"])
+        .unwrap_or_else(|error| panic!("list the quests: {}", error.message));
+    assert_eq!(
+        listed["quests"][0]["id"],
+        daily_id.as_str(),
+        "the moved quest is first"
+    );
+
+    std::env::remove_var("FINI_DB_PATH");
+    let _ = std::fs::remove_file(db_path);
+}

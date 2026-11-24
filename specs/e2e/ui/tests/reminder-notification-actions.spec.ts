@@ -34,6 +34,15 @@ async function invokeTauri<T>(
   })()`);
 }
 
+/** The stored status of a quest, or null when it is not there. */
+async function questStatus(
+  tauriPage: { evaluate: <R>(script: string) => Promise<R> },
+  questId: string,
+): Promise<string | null> {
+  const quests = await invokeTauri<Quest[]>(tauriPage, 'get_quests');
+  return quests.find((q) => q.id === questId)?.status ?? null;
+}
+
 async function fillTextarea(
   tauriPage: { evaluate: <R>(script: string) => Promise<R> },
   selector: string,
@@ -136,9 +145,10 @@ test('complete action marks quest as completed', async ({ tauriPage }) => {
     actionId: 'complete',
   });
 
-  const updatedQuests = await invokeTauri<Quest[]>(tauriPage, 'get_quests');
-  const updated = updatedQuests.find((q) => q.id === quest.id);
-  expect(updated?.status).toBe('completed');
+  await expect.poll(() => questStatus(tauriPage, quest.id), {
+    message: `the quest was not completed: ${title}`,
+    timeout: 30_000,
+  }).toBe('completed');
 });
 
 test('snooze_30m action creates a snooze record without completing the quest', async ({ tauriPage }) => {
@@ -155,12 +165,12 @@ test('snooze_30m action creates a snooze record without completing the quest', a
     actionId: 'snooze_30m',
   });
 
-  const quests = await invokeTauri<Quest[]>(tauriPage, 'get_quests');
-  const after = quests.find((q) => q.id === quest.id);
-  expect(after?.status).toBe('active');
-
-  const reminders = await invokeTauri<Reminder[]>(tauriPage, 'get_reminders', { questId: quest.id });
-  expect(reminders.length).toBeGreaterThan(0);
+  await expect.poll(() => questStatus(tauriPage, quest.id), { timeout: 30_000 }).toBe('active');
+  // The reminder rows follow the quest change through an event: wait for them.
+  await expect.poll(async () => {
+    const reminders = await invokeTauri<Reminder[]>(tauriPage, 'get_reminders', { questId: quest.id });
+    return reminders.length;
+  }, { message: `no reminder after the snooze of: ${title}`, timeout: 30_000 }).toBeGreaterThan(0);
 });
 
 test('snooze_1d action keeps quest active', async ({ tauriPage }) => {
@@ -177,9 +187,7 @@ test('snooze_1d action keeps quest active', async ({ tauriPage }) => {
     actionId: 'snooze_1d',
   });
 
-  const quests = await invokeTauri<Quest[]>(tauriPage, 'get_quests');
-  const after = quests.find((q) => q.id === quest.id);
-  expect(after?.status).toBe('active');
+  await expect.poll(() => questStatus(tauriPage, quest.id), { timeout: 30_000 }).toBe('active');
 });
 
 test('schedule event is recorded when reminder is created', async ({ tauriPage }) => {
@@ -203,10 +211,13 @@ test('schedule event is recorded when reminder is created', async ({ tauriPage }
     input: { quest_id: quest.id, kind: 'absolute', due_at_utc: dueAtUtc },
   });
 
-  // schedule_reminder is synchronous within create_reminder — event should be immediate.
-  const events = await invokeTauri<NotificationEvent[]>(tauriPage, 'e2e_list_notification_events');
-  const scheduled = events.filter((e) => e.phase === 'scheduled' && e.quest_id === quest.id);
-
+  // Wait for the schedule event rather than read it once: the quest and the
+  // reminder change also publish events that schedule again.
+  let scheduled: NotificationEvent[] = [];
+  await expect.poll(async () => {
+    const events = await invokeTauri<NotificationEvent[]>(tauriPage, 'e2e_list_notification_events');
+    scheduled = events.filter((e) => e.phase === 'scheduled' && e.quest_id === quest.id);
+    return scheduled[scheduled.length - 1]?.reminder_id ?? null;
+  }, { message: `the reminder of ${title} was not scheduled`, timeout: 30_000 }).toBe(reminder.id);
   expect(scheduled.length).toBeGreaterThan(0);
-  expect(scheduled[scheduled.length - 1].reminder_id).toBe(reminder.id);
 });

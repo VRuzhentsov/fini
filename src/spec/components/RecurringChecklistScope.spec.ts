@@ -58,7 +58,7 @@ function baseQuest(overrides: Partial<Quest> = {}): Quest {
     due_time: null,
     repeat_rule: DAILY,
     completed_at: null,
-    order_rank: 0,
+    order_rank: "a0",
     focus_enter_count: 0,
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",

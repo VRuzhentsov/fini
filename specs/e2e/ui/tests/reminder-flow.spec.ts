@@ -158,20 +158,30 @@ test('creating a quest and setting due time schedules its reminder path', async 
     return !!button && button.textContent?.includes('14:30');
   })()`, 10_000);
 
-  const quests = await invokeTauri<Quest[]>(tauriPage, 'get_quests');
-  const quest = quests.find((item) => item.title === title);
-  expect(quest).toBeTruthy();
-  expect(quest?.due).toBe(tomorrow);
-  expect(quest?.due_time).toBe('14:30');
+  let quest: Quest | undefined;
+  await expect.poll(async () => {
+    const quests = await invokeTauri<Quest[]>(tauriPage, 'get_quests');
+    quest = quests.find((item) => item.title === title);
+    return quest ? `${quest.due} ${quest.due_time}` : null;
+  }, { message: `the quest was not saved with its due time: ${title}`, timeout: 30_000 }).toBe(`${tomorrow} 14:30`);
 
-  const reminders = await invokeTauri<Reminder[]>(tauriPage, 'get_reminders', { questId: quest!.id });
-  expect(reminders).toHaveLength(1);
+  // The reminder row and its schedule come from the event that the quest
+  // change publishes, after the UI shows the new time. Read them only when
+  // they are there.
+  let reminders: Reminder[] = [];
+  await expect.poll(async () => {
+    reminders = await invokeTauri<Reminder[]>(tauriPage, 'get_reminders', { questId: quest!.id });
+    return reminders.length;
+  }, { message: `no reminder created for quest: ${title}`, timeout: 30_000 }).toBe(1);
   expect(reminders[0].quest_id).toBe(quest!.id);
   expect(reminders[0].due_at_utc).toBe(`${tomorrow}T14:30:00Z`);
 
-  const events = await invokeTauri<NotificationEvent[]>(tauriPage, 'e2e_list_notification_events');
-  const scheduled = events.filter((event) => event.phase === 'scheduled' && event.quest_id === quest!.id);
-  expect(scheduled.length).toBeGreaterThan(0);
+  let scheduled: NotificationEvent[] = [];
+  await expect.poll(async () => {
+    const events = await invokeTauri<NotificationEvent[]>(tauriPage, 'e2e_list_notification_events');
+    scheduled = events.filter((event) => event.phase === 'scheduled' && event.quest_id === quest!.id);
+    return scheduled.length;
+  }, { message: `the reminder of ${title} was not scheduled`, timeout: 30_000 }).toBeGreaterThan(0);
   expect(scheduled[scheduled.length - 1]).toMatchObject({
     delivery_path: 'desktop_in_process',
     due_at_utc: `${tomorrow}T14:30:00Z`,

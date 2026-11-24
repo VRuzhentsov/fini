@@ -104,7 +104,7 @@ const draftQuest = computed<Quest>(() => ({
   due_time: dueTime.value,
   repeat_rule: repeatRule.value,
   completed_at: null,
-  order_rank: 0,
+  order_rank: "",
   focus_enter_count: 0,
   created_at: "",
   updated_at: "",

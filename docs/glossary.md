@@ -338,6 +338,21 @@ abandoned) or changed (a tick, a "This day" edit), in `quest_occurrences`.
 Its fields override the quest's fields for that day; an empty field takes
 the quest's value.
 
+### Rank
+
+The manual order of the quests: the place that a person gives each quest in
+the list.
+
+### Rank key
+
+The text that stores the rank of one quest (`quests.order_rank`). Keys
+compare byte by byte, and there is always a key between two different keys.
+
+### Rebalance
+
+A move that gives all quests new rank keys in their current order, because
+no short key is between the two neighbours.
+
 ### Reminder
 
 A stored record that says when Fini reminds a person about a quest (table
