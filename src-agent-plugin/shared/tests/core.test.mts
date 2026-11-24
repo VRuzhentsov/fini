@@ -143,3 +143,32 @@ test('independent SQLite writers retain all links and one first primary', async 
     assert.ok(group.primary); assert.equal(group.related.length, 3);
   }
 });
+
+test('session relations expand each quest one level and stop', t => {
+  const { call, env, quests: [q, other] } = fixture(t);
+  assert.ok(q && other);
+  // Two sessions share two quests: a recursive expansion would loop between them.
+  call(Command.Link, q); call(Command.Link, other);
+  call(Command.Link, `${q} --agent claude --session ${uuid}`);
+  call(Command.Link, `${other} --agent claude --session ${uuid}`);
+  const listed = call(Command.Relations, '');
+  assert.deepEqual(listed.quests, [q, other].sort().map(id => ({
+    quest_id: id, title: id === q ? 'first' : 'second', is_primary: true,
+    agents: [{ agent: 'claude', primary: uuid, related: [] },
+      { agent: 'hermes', primary: 'runtime-a', related: [] }],
+  })));
+  // Sessions are plain IDs: no quest list inside an agent group, at any depth.
+  for (const quest of listed.quests) {
+    for (const group of quest.agents) {
+      assert.deepEqual(Object.keys(group).sort(), ['agent', 'primary', 'related']);
+      for (const id of [group.primary, ...group.related]) assert.equal(typeof id, 'string');
+    }
+  }
+  // The other direction also stops: a quest lists sessions, not their quests.
+  assert.equal(JSON.stringify(call(Command.Relations, `--quest ${q}`)).includes('"quests"'), false);
+  // A quest that Fini no longer has keeps its link and shows a null title.
+  assert.equal(spawnSync('fini', ['quest', 'delete', '--id', other], { env }).status, 0);
+  const after = call(Command.Relations, '').quests.find((row: { quest_id: string }) => row.quest_id === other);
+  assert.equal(after.title, null);
+  assert.equal(after.agents.length, 2);
+});

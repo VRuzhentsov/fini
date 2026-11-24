@@ -22,7 +22,8 @@ Both agents use these exact commands:
 - The default target is the actual calling runtime's agent and session ID.
 - Explicit targets require both `--agent` and `--session`. Their IDs are not proof that a session exists.
 - `primary --clear` needs only the current agent. An explicit `--agent` selects another agent.
-- `relations` without arguments shows quests for the current session.
+- `relations` without arguments shows quests for the current session. Each quest has its Fini title
+  (null when Fini cannot get the quest) and the sessions of all agents. It does not expand those sessions again.
 - `relations --quest ID` shows sessions grouped by agent, with a nullable `primary` and a `related` list.
 - A link is unique by quest, agent and session. Each session can link to many quests.
 - Each quest can have many sessions and at most one primary for each agent.
@@ -98,7 +99,7 @@ npm run test:claude:native
 ```
 
 No Make target or hosted CI check exists for this subtree.
-`check` runs typecheck, five shared tests, one Claude package test and three
+`check` runs typecheck, six shared tests, one Claude package test and three
 native Hermes dispatch tests. Tests use real Fini CLI records in disposable homes.
 All data paths are isolated under `$TMPDIR`; set it to your scratch directory.
 The native Claude check uses twelve invocations with a dead model endpoint,

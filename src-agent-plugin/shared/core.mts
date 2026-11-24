@@ -108,7 +108,10 @@ export class RelationCommand {
 
   run(repository: RelationsRepository) {
     if (this.command === Command.Relations && this.quest === undefined) {
-      return { ...this.session!, quests: repository.quests(this.session!) };
+      // Show each linked quest with the sessions of every agent, not only this one.
+      return { ...this.session!, quests: repository.quests(this.session!).map(row => ({
+        quest_id: row.quest_id, is_primary: row.is_primary === true,
+        agents: RelationCommand.agents(repository, row.quest_id) })) };
     }
     const quest = this.quest!;
     let changed: boolean | undefined;
@@ -117,15 +120,31 @@ export class RelationCommand {
     if (this.command === Command.Primary) {
       if (this.clear) repository.clear(quest, this.agent!); else repository.promote(quest, this.session!);
     }
+    return { quest_id: quest, ...(this.session ?? {}), ...(changed === undefined ? {} : { changed }),
+      agents: RelationCommand.agents(repository, quest) };
+  }
+
+  static agents(repository: RelationsRepository, quest: string) {
     const groups = new Map<string, { agent: string; primary: string | null; related: string[] }>();
     for (const row of repository.sessions(quest)) {
       const group = groups.get(row.agent) ?? { agent: row.agent, primary: null, related: [] };
       if (row.is_primary) group.primary = row.session_id; else group.related.push(row.session_id);
       groups.set(row.agent, group);
     }
-    return { quest_id: quest, ...(this.session ?? {}), ...(changed === undefined ? {} : { changed }),
-      agents: [...groups.values()] };
+    return [...groups.values()];
   }
+}
+
+// Fini is accessed only through its CLI. Returns null when Fini cannot get the exact quest.
+function getQuest(id: string): Record<string, unknown> | null {
+  const result = spawnSync('fini', ['quest', 'get', '--id', id, '--json'], {
+    encoding: 'utf8', timeout: 8000, maxBuffer: MAX_BYTES, killSignal: 'SIGKILL',
+  });
+  if (result.error || result.status !== 0) return null;
+  try {
+    const quest: unknown = JSON.parse(result.stdout);
+    return object(quest) && quest.id === id ? quest : null;
+  } catch { return null; }
 }
 
 export function execute(value: unknown): unknown {
@@ -136,17 +155,21 @@ export function execute(value: unknown): unknown {
     const command = new RelationCommand(value.command, value.raw_args, value.current);
     const path = value.db_path ?? process.env.FINI_AGENT_SESSIONS_DB ?? join(homedir(), '.fini', 'agent-sessions.db');
     if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0')) throw new Error('Database path must be an absolute file path.');
-    if (command.command === Command.Link) {
-      // Fini is accessed only through its CLI. Validate before any plugin DB I/O.
-      const result = spawnSync('fini', ['quest', 'get', '--id', command.quest!, '--json'], {
-        encoding: 'utf8', timeout: 8000, maxBuffer: MAX_BYTES, killSignal: 'SIGKILL',
-      });
-      if (result.error || result.status !== 0) throw new Error('Fini could not get this quest; no link was changed.');
-      const quest: unknown = JSON.parse(result.stdout);
-      if (!object(quest) || quest.id !== command.quest) throw new Error('Fini returned a different or invalid quest; no link was changed.');
+    if (command.command === Command.Link && !getQuest(command.quest!)) {
+      // Validate before any plugin DB I/O.
+      throw new Error('Fini could not get this quest; no link was changed.');
     }
     const repository: RelationsRepository = new SqliteRelationsRepository(path);
-    try { return { ...command.run(repository), db_path: path }; }
+    let result;
+    try { result = command.run(repository); }
     finally { repository.close(); }
+    if ('quests' in result) {
+      // A deleted or unreadable quest keeps its link and shows a null title.
+      result = { ...result, quests: result.quests.map(({ quest_id, ...rest }) => {
+        const title = getQuest(quest_id)?.title;
+        return { quest_id, title: typeof title === 'string' ? title : null, ...rest };
+      }) };
+    }
+    return { ...result, db_path: path };
   } catch (error) { return errorResult(error); }
 }
