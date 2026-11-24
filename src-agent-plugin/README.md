@@ -99,10 +99,10 @@ npm run test:claude:native
 ```
 
 No Make target or hosted CI check exists for this subtree.
-`check` runs typecheck, six shared tests, one Claude package test and three
+`check` runs typecheck, the shared tests, the Claude package test and the
 native Hermes dispatch tests. Tests use real Fini CLI records in disposable homes.
 All data paths are isolated under `$TMPDIR`; set it to your scratch directory.
-The native Claude check uses twelve invocations with a dead model endpoint,
+The native Claude check uses a dead model endpoint,
 ZIP cache relocation, resume and exact runtime IDs, with zero model turns.
 The package includes canonical shared modules and locked production dependencies,
 including SQLite native binaries. A relocated cache needs no source checkout or npm install.

@@ -17,8 +17,8 @@ letters, digits, `_` and `-`. The markdown descriptors keep the names, and the
 mod answers them. Display-only output needs Claude Code 2.1.326 or later.
 
 The local acceptance check uses the installed client's real command discovery
-and mod dispatch. It checks all four commands after ZIP cache relocation with
-twelve invocations, zero model turns, zero API duration and zero cost. It also
+and mod dispatch. It checks all commands after ZIP cache relocation, with no
+model turns, no API duration and no cost. It also
 checks resume, explicit targets, both relation directions and invalid input.
 Live interactive acceptance is a separate step. After a source change, run
 `/reload-plugins` in the open session.
