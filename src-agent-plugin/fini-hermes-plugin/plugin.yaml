@@ -1,0 +1,7 @@
+name: fini-hermes-plugin
+version: 0.3.0
+description: Explicit local quest-session tracking via native commands and a runtime-identified Hermes tool.
+kind: standalone
+provides_tools:
+  - fini_link_current_session
+provides_hooks: []

@@ -1,0 +1,23 @@
+{
+  "name": "fini-plugins",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.12.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test shared/tests/*.test.mts",
+    "test:hermes": "hermes --run-module unittest discover -s fini-hermes-plugin/tests -v",
+    "package:claude": "node fini-claude-plugin/package.mts",
+    "test:claude:native": "node fini-claude-plugin/tests/native-check.mts",
+    "test:claude": "node --test fini-claude-plugin/tests/*.test.mts",
+    "check:ci": "npm run typecheck && npm test && npm run test:claude && npm run package:claude",
+    "check": "npm run typecheck && npm test && npm run test:claude && npm run test:hermes"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2"
+  }
+}

@@ -35,6 +35,38 @@ A behavior that does not fit the surfaces above needs a harness change, not a te
 
 ## Running tests
 
+### Agent plugins
+
+Run these commands from `src-agent-plugin/` after `npm ci` in that folder:
+
+```sh
+npm run check:ci
+npm run test:hermes
+npm run test:claude:native
+```
+
+There is no Make target for these checks. `check:ci` runs strict TypeScript
+checks, shared-code tests, Claude hook and cache tests, and package assembly.
+It needs Node (see the package manifest), POSIX and util-linux `flock`.
+It needs neither the Hermes binary nor the Claude binary.
+
+`test:hermes` needs an installed Hermes runtime on PATH with its plugin API.
+It uses the real PluginContext, native tool registry and command dispatch.
+The Python code calls the migrated TypeScript code in temporary Hermes homes.
+A temporary plugin symlink points at the copied source, independent of the
+live installed link. The tests preserve the live config and stored associations.
+`npm run check` runs the shared, Claude and Hermes suites together.
+
+`test:claude:native` also needs the Claude CLI and Python 3 for ZIP assembly.
+It loads the assembled ZIP in a temporary home with an unreachable API endpoint.
+It checks native IDs, resume, duplicate links and listing with zero model turns.
+Use `claude plugin validate --strict .artifacts/claude/fini` to check its manifest
+after `npm run package:claude`. These checks do not install or enable a plugin.
+
+Set `TMPDIR` to a disposable scratch folder before running the suites.
+The CI job runs only `check:ci`; report local Hermes and native Claude evidence
+separately from that job. Interactive acceptance remains a separate check.
+
 ### Frontend unit
 
 ```sh

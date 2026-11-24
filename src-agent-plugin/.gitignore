@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+.env.*
+plugin-data/
+node_modules/
+coverage/
+*.tsbuildinfo
+.artifacts/

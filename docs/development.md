@@ -8,6 +8,7 @@ is the `dev` skill (`.agents/skills/dev/SKILL.md`).
 
 - Frontend: `src/`, Vue 3, TypeScript, Vite, Tailwind CSS, DaisyUI, Pinia.
 - Backend: `src-tauri/`, Rust, Tauri 2, Diesel, SQLite.
+- Agent plugins: `src-agent-plugin/`, a separate npm package ("Agent plugins" below).
 - Domain specs and companion specs: `specs/`, folder `README.md` files, and sidecar `.md` files next to source files. They move to `docs/` when they change ([`documentation.md`](documentation.md)).
 - Product semantics and decision history: `specs/` and `docs/adr/`.
 - Repo automation: `Makefile` is the primary human execution entrypoint, `npm run` owns JS/TS package tasks, and `xtask/` owns non-trivial automation logic ("Repo automation" below).
@@ -204,6 +205,39 @@ Node scripts in `scripts/*.mts` (TypeScript that Node 24 runs as it is) are the 
 If adding a new automation runner, make it explicit in project dependencies and update this section with when to use it.
 
 Shell in Makefile is acceptable for simple local guards. Logic that CI also runs goes into `scripts/*.mts` (or `xtask` for Rust-side work), never into a Make recipe.
+
+## Agent plugins
+
+`src-agent-plugin/` contains the imported agent plugins and their shared code.
+It has its own npm package, lockfile and TypeScript config. The frontend
+dependencies and build stay separate.
+
+```text
+src-agent-plugin/
+  shared/                 TypeScript validation, commands, file storage and locks
+  fini-hermes-plugin/     Python registration and runtime context
+  fini-claude-plugin/     Claude hooks, skills and package assembly
+```
+
+Both plugins send JSON to `shared/cli.mts`. The shared code checks the input
+and reads or writes the same provider-qualified quest and agent-session IDs.
+The native runtime supplies the current agent-session ID. The user selects
+the quest ID. Linking does not complete a quest or read its transcript.
+These agent sessions are separate from the device sessions in SpaceSync.
+
+The [imported package documents](../src-agent-plugin/README.md) hold the command
+and storage contract. The import preserves these documents with their source.
+The [test commands](testing.md#agent-plugins) describe local and CI checks.
+
+Run package commands from `src-agent-plugin/`. Use `npm ci` there to install
+its locked development dependencies. There is no Make target for this package.
+Runtime requirements are in its [manifest](../src-agent-plugin/package.json)
+and [README](../src-agent-plugin/README.md#runtime-and-installation).
+
+This is a source import, not a deployment. The standalone checkout, installed
+Hermes link, active config and stored associations stay in place. A later
+install must keep each plugin with its shared code. It needs separate approval.
+The import adds no SQLite schema, ORM or primary-session behavior.
 
 ## Fini CLI
 

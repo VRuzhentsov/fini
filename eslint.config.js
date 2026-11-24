@@ -18,7 +18,7 @@ const sizeRules = {
 
 export default [
   // Build output, and generated or vendored code.
-  { ignores: ['dist/', 'tmp/', '**/target/', 'src-tauri/gen/', 'src-tauri/patches/', '**/test-results/', '**/playwright-report/'] },
+  { ignores: ['dist/', 'tmp/', '**/target/', 'src-tauri/gen/', 'src-tauri/patches/', '**/test-results/', '**/playwright-report/', '**/.artifacts/'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   ...pluginVue.configs['flat/recommended'],
