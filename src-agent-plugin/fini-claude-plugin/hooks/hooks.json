@@ -1,16 +1,1 @@
-{
-  "hooks": {
-    "UserPromptExpansion": [
-      {
-        "matcher": "^fini:(link|unlink|primary|relations)$",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/fini-claude-plugin/bridge.mts\"",
-            "timeout": 20
-          }
-        ]
-      }
-    ]
-  }
-}
+{ "modules": ["./register.js"] }

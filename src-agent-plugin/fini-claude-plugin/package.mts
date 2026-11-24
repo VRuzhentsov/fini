@@ -7,12 +7,11 @@ import { fileURLToPath } from 'node:url';
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const output = join(root, '.artifacts', 'claude', 'fini');
 rmSync(output, { recursive: true, force: true });
-mkdirSync(join(output, 'fini-claude-plugin'), { recursive: true });
+mkdirSync(output, { recursive: true });
 for (const name of ['.claude-plugin', 'hooks', 'commands', 'README.md']) {
   cpSync(join(root, 'fini-claude-plugin', name), join(output, name), { recursive: true });
 }
-const files = ['fini-claude-plugin/bridge.mts', 'shared/core.mts', 'shared/store.mts',
-  'shared/transport.mts', 'shared/cli.mts'];
+const files = ['shared/core.mts', 'shared/store.mts', 'shared/transport.mts', 'shared/cli.mts'];
 const hashes: Record<string, string> = {};
 for (const name of files) {
   mkdirSync(dirname(join(output, name)), { recursive: true });

@@ -30,8 +30,9 @@ try {
     const result = JSON.parse(command('claude', [...common, ...(resume ? ['--resume', resume] : []), '-p', prompt], env, work));
     assert.equal(result.is_error, false);
     assert.equal(result.num_turns, 0); assert.equal(result.total_cost_usd, 0); assert.equal(result.duration_api_ms, 0);
-    assert.match(result.result, /UserPromptExpansion operation blocked by hook/);
-    const body = JSON.parse(result.result.split('\n')[1]);
+    assert.doesNotMatch(result.result, /blocked by hook/);
+    assert.match(result.result, /^fini: \{/);
+    const body = JSON.parse(result.result.slice('fini: '.length));
     assert.equal(typeof body.error === 'string', expectError, JSON.stringify(body)); invocations++;
     return { result, body };
   }
@@ -52,6 +53,6 @@ try {
   assert.equal(native(`/fini:link ${quest} --agent hermes --session explicit-native`, sid).body.agent, 'hermes');
   assert.equal(native('/fini:relations --agent hermes --session explicit-native').body.quests.length, 1);
   assert.equal(existsSync(join(home, 'hermes', 'plugin-data')), false);
-  console.log(JSON.stringify({ verified: 'native commands, ZIP cache relocation with Drizzle and SQLite, runtime IDs, resume, primary, unlink, both relation directions, CLI failure and invalid options',
+  console.log(JSON.stringify({ verified: 'mod command.run answers for native /fini:* commands, display-only output, ZIP cache relocation with Drizzle and SQLite, runtime IDs, resume, primary, unlink, both relation directions, CLI failure and invalid options',
     version: command('claude', ['--version'], env, work).trim(), invocations, model_turns: 0, api_ms: 0, cost_usd: 0 }));
 } finally { rmSync(home, { recursive: true, force: true }); }

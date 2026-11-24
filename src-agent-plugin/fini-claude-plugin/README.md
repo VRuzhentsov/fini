@@ -4,19 +4,24 @@ Native `commands/*.md` descriptors register `/fini:link`, `/fini:unlink`,
 `/fini:primary` and `/fini:relations`. They are commands, not skills.
 The [shared guide](../README.md) owns syntax, rules, storage and local checks.
 
-The native `UserPromptExpansion` hook receives the actual runtime `session_id`,
-command name and arguments. The hook checks plugin command context, calls the
-shared library and returns `decision: block` with the JSON result as its reason.
-Both successful results and errors appear in Claude's hook-block message.
-This intentionally stops prompt expansion before a model turn.
+`hooks/register.js` is a Claude Code mod module (`hooks.json` names it under
+`modules`). It hooks `command.run` for the four commands. It reads the runtime
+session ID with `$.session.id()`, sends one request to `shared/cli.mts` with
+`$.process.run`, and returns the JSON result as `{ text, isTextDisplayOnly: true }`.
+It does not call `next`, so the command body never reaches the model.
+The result shows as normal command output, not as a hook error.
 No model tools, MCP server, stored runtime ID or transcript lookup are involved.
 
-Use a client with native `UserPromptExpansion` support. The local acceptance
-check exercises the installed client's actual command discovery and hook dispatch.
-It checks all four commands after ZIP cache relocation with twelve invocations,
-zero model turns, zero API duration and zero cost. It also checks resume,
-explicit targets, both relation directions and invalid input.
-Live interactive acceptance remains separate.
+The mod API cannot register `fini:*` names: `$.command.register` accepts only
+letters, digits, `_` and `-`. The markdown descriptors keep the names, and the
+mod answers them. Display-only output needs Claude Code 2.1.326 or later.
+
+The local acceptance check uses the installed client's real command discovery
+and mod dispatch. It checks all four commands after ZIP cache relocation with
+twelve invocations, zero model turns, zero API duration and zero cost. It also
+checks resume, explicit targets, both relation directions and invalid input.
+Live interactive acceptance is a separate step. After a source change, run
+`/reload-plugins` in the open session.
 
 ## Package and load
 
@@ -42,16 +47,15 @@ Packaging and validation do not activate the plugin or change Claude settings.
 
 ## Failure limits
 
-The hook bounds input and escaped output to 1 MiB. Stdin requires EOF and has a
-15-second deadline. The native hook has a 20-second timeout.
-A timeout or output error can follow a committed SQLite transaction;
-read relations before repeating an operation.
+The shared transport limits each request and response to 1 MiB. The mod stops
+the core process after 20 seconds and shows an error. A timeout can occur after
+a committed SQLite transaction; read relations before you do an operation again.
 
-The command descriptor has no executable fallback. Its text tells the client to
-stop if the native hook is unavailable. Disabled hooks, unsupported clients or a
-hook launcher failure are not guaranteed to stop model processing. Use only the
-validated native path; this plugin is not a model-execution sandbox.
-A local process can forge hook JSON. Runtime context is not cryptographic identity proof.
+The command descriptor has no executable fallback. Its text tells the model to
+stop if the mod hook did not run. A disabled plugin, an unsupported client or a
+failed mod load does not guarantee that the model stops.
+Use only the validated native path; this plugin is not a model-execution sandbox.
+Runtime context is not cryptographic identity proof.
 
 ## Checks
 

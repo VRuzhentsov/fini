@@ -54,7 +54,7 @@ shared/
   cli.mts        # one JSON document on stdin, one result on stdout
   transport.mts  # bounded JSON input and output
 fini-hermes-plugin/  # native command registration, runtime identity, Python transport
-fini-claude-plugin/  # commands/*.md, native expansion hook, cache packaging
+fini-claude-plugin/  # commands/*.md, mod command.run hook, cache packaging
 ```
 
 The default plugin database is `~/.fini/agent-sessions.db`, shared across agents
@@ -98,7 +98,7 @@ npm run test:claude:native
 ```
 
 No Make target or hosted CI check exists for this subtree.
-`check` runs typecheck, five shared tests, three Claude bridge tests and three
+`check` runs typecheck, five shared tests, one Claude package test and three
 native Hermes dispatch tests. Tests use real Fini CLI records in disposable homes.
 All data paths are isolated under `$TMPDIR`; set it to your scratch directory.
 The native Claude check uses twelve invocations with a dead model endpoint,
@@ -114,5 +114,6 @@ for native loading and limits. Local checks do not establish live interactive ac
 - https://orm.drizzle.team/docs/get-started-sqlite
 - https://github.com/WiseLibs/better-sqlite3
 - https://hermes-agent.nousresearch.com/docs/developer-guide/plugins/
-- https://code.claude.com/docs/en/hooks#userpromptexpansion
+- https://code.claude.com/docs/en/plugins/mods/api
+- https://code.claude.com/docs/en/plugins/mods/events
 - https://code.claude.com/docs/en/plugins-reference

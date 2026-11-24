@@ -1,6 +1,6 @@
 {
   "name": "fini",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Explicit local quest associations for the current Claude Code session, using the shared Fini session core.",
   "author": { "name": "Vitalii Ruzhentsov" }
 }
