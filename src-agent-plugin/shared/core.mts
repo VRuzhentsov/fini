@@ -73,10 +73,23 @@ export class RelationCommand {
     return tokens;
   }
 
-  constructor(command: unknown, raw: unknown, current: unknown) {
+  // Model tools give fields, not text. The fields become the same tokens as the command text.
+  static inputTokens(command: CommandName, input: unknown): string[] {
+    if (!object(input) || Object.keys(input).some(key => !['quest_id', 'agent', 'session_id'].includes(key))
+        || Object.values(input).some(value => typeof value !== 'string')) {
+      throw new Error('Supply only the text fields quest_id, agent and session_id.');
+    }
+    const { quest_id: quest, agent, session_id: session } = input as Record<string, string | undefined>;
+    if (quest !== undefined) this.identifier(quest);
+    return [...(quest === undefined ? [] : command === Command.Relations ? ['--quest', quest] : [quest]),
+      ...(agent === undefined ? [] : ['--agent', agent]), ...(session === undefined ? [] : ['--session', session])];
+  }
+
+  constructor(command: unknown, raw: unknown, current: unknown, input?: unknown) {
     if (!Object.values(Command).includes(command as CommandName)) throw new Error('Unsupported command.');
     this.command = command as CommandName;
-    const tokens = RelationCommand.tokens(raw), positional: string[] = [], options = new Map<string, string | true>();
+    const tokens = input === undefined ? RelationCommand.tokens(raw) : RelationCommand.inputTokens(this.command, input);
+    const positional: string[] = [], options = new Map<string, string | true>();
     for (let i = 0; i < tokens.length; i++) {
       const token = tokens[i]!;
       if (!token.startsWith('-')) { positional.push(token); continue; }
@@ -191,10 +204,11 @@ export function contextText(linked: { quest_id: string; title: string | null; is
 
 export function execute(value: unknown): unknown {
   try {
-    if (!object(value) || Object.keys(value).some(key => !['command', 'raw_args', 'current', 'db_path'].includes(key))) {
-      throw new Error('Supply only command, raw_args, current and optional db_path.');
+    if (!object(value) || Object.keys(value).some(key => !['command', 'raw_args', 'input', 'current', 'db_path'].includes(key))
+        || ('raw_args' in value) === ('input' in value)) {
+      throw new Error('Supply command, raw_args or input, current and optional db_path.');
     }
-    const command = new RelationCommand(value.command, value.raw_args, value.current);
+    const command = new RelationCommand(value.command, value.raw_args, value.current, value.input);
     const path = value.db_path ?? process.env.FINI_AGENT_SESSIONS_DB ?? join(homedir(), '.fini', 'agent-sessions.db');
     if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0')) throw new Error('Database path must be an absolute file path.');
     if (command.command === Command.Link && !getQuest(command.quest!)) {

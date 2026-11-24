@@ -10,11 +10,26 @@ session ID with `$.session.id()`, sends one request to `shared/cli.mts` with
 `$.process.run`, and returns the JSON result as `{ text, isTextDisplayOnly: true }`.
 It does not call `next`, so the command body never reaches the model.
 The result shows as normal command output, not as a hook error.
-No model tools, MCP server, stored runtime ID or transcript lookup are involved.
+No stored runtime ID or transcript lookup is involved.
 
-The mod also reads the quest note at `session.start` and after each Fini command.
-A `prompt.compose` hook adds it as the last system prompt section (`fini:quests`).
-The note changes only when it is read again, so the prompt cache stays valid.
+## Model tools
+
+At `session.start` the mod registers `fini_link`, `fini_unlink` and `fini_relations`
+with `$.tool.register` (not deferred). Claude Code serves them on a local `fini` tool
+server, so the model calls them as `mcp__fini__fini_link` and so on.
+A `tool.run` hook answers each call: it sends only `quest_id`, `agent` and `session_id`
+to the core, and the current session ID comes from `$.session.id()`, not from the model.
+The result is the core JSON. The usual tool permission check runs before `tool.run`.
+
+## Quest note
+
+The mod reads the quest note at `session.start` and after each Fini command or tool
+that can change links. It adds the note with `$.session.append` as a `user` row:
+the model gets it as a reminder from the plugin, and the person does not see it as a prompt.
+An earlier version added the note in a `prompt.compose` hook. A higher-tier plugin
+(the built-in `cc-plugin-sec-default`) sent that event past the hook, so the model
+did not get the note. A call on `$` reaches the session at each tier.
+Each new note is a new row; the older notes stay in the conversation.
 
 The mod API cannot register `fini:*` names: `$.command.register` accepts only
 letters, digits, `_` and `-`. The markdown descriptors keep the names, and the

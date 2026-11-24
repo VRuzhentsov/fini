@@ -39,6 +39,23 @@ Both agents use these exact commands:
 - Clear removes only primary selection. It retains every link.
 - Link first runs `fini quest get --id <ID> --json`. CLI failure or a different returned ID changes no links.
 
+## Model tools
+
+Both agents also give the model three tools. They use the same shared core and rules as the commands.
+
+```text
+fini_link       quest_id (required), agent + session_id (both or neither)
+fini_unlink     quest_id (required), agent + session_id (both or neither)
+fini_relations  quest_id (optional)
+```
+
+- The default target is the current session. The runtime supplies its session ID to the
+  adapter; the model cannot give it. `agent` and `session_id` select an explicit target.
+- `fini_relations` without `quest_id` shows the quests of the current session.
+- After a link or unlink, the plugin reads the quest note again.
+- The tools only change links. Quest content updates stay with the `fini` CLI.
+- Results are the same JSON as the commands.
+
 Arguments use spaces to separate tokens. Single or double quotes group a token;
 backslash escapes the next character outside single quotes. Parsed IDs retain
 all characters, case and leading zeros. Shell expansion never runs.
@@ -78,9 +95,11 @@ The equivalent local transport is `node shared/cli.mts`, with this JSON shape:
 {"command":"fini:relations","raw_args":"","current":{"agent":"hermes","session_id":"runtime-owned-id"},"db_path":"/absolute/disposable/agent-sessions.db"}
 ```
 
+A model tool sends its fields as `input` (only `quest_id`, `agent` and `session_id`)
+in place of `raw_args`. The core makes the same tokens from them, so no quoting is necessary.
 `db_path` is optional. This is a local library transport, not a service or MCP server.
 Native bridges own runtime identity. The library owns syntax, rules and storage.
-No model-callable tools, skills, session launching, reminders or synchronization are included.
+No skills, session launching, reminders or synchronization are included.
 
 Old JSON files remain untouched. There is no migration, import or automatic fallback.
 A future approved cutover starts empty. This source change does not activate either
