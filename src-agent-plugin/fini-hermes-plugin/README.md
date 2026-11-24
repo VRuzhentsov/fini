@@ -16,6 +16,11 @@ Transport limits are 1 MiB for input and aggregate output, with a 15-second
 process deadline. SQLite and Fini CLI each have an 8-second wait limit.
 A transport error can follow a committed write. Read relations before retrying.
 
+## Quest note
+
+A `pre_llm_call` hook adds the quest note to each turn. The plugin keeps the note
+for each session and reads it again after a Fini command.
+
 ## Installation boundary
 
 Source-only delivery leaves the current installed source unchanged.

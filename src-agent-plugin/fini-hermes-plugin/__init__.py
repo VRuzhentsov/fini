@@ -73,12 +73,32 @@ def _transport(payload):
                 process.wait()
 
 
+# The quest note per session. A Fini command clears it, so the next turn reads it again.
+_notes = {}
+
+
+def _command(command, raw_args, session_id=None):
+    result = _call(command, raw_args, session_id)
+    _notes.clear()
+    return result
+
+
+def _context(session_id=None, **_):
+    if not session_id:
+        return None
+    if session_id not in _notes:
+        result = json.loads(_call("fini:context", "", session_id))
+        _notes[session_id] = result.get("text") or ""
+    return {"context": _notes[session_id]} if _notes[session_id] else None
+
+
 def register(ctx):
     from functools import partial
 
+    ctx.register_hook("pre_llm_call", _context)
     for name in ("link", "unlink", "primary", "relations"):
         ctx.register_command(
-            f"fini:{name}", partial(_call, f"fini:{name}"),
+            f"fini:{name}", partial(_command, f"fini:{name}"),
             description=f"Fini quest-session {name} (local only).",
             args_hint="[quest-id] [--agent NAME --session ID]", argument_mode="text",
         )

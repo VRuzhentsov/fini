@@ -12,6 +12,10 @@ It does not call `next`, so the command body never reaches the model.
 The result shows as normal command output, not as a hook error.
 No model tools, MCP server, stored runtime ID or transcript lookup are involved.
 
+The mod also reads the quest note at `session.start` and after each Fini command.
+A `prompt.compose` hook adds it as the last system prompt section (`fini:quests`).
+The note changes only when it is read again, so the prompt cache stays valid.
+
 The mod API cannot register `fini:*` names: `$.command.register` accepts only
 letters, digits, `_` and `-`. The markdown descriptors keep the names, and the
 mod answers them. Display-only output needs Claude Code 2.1.326 or later.

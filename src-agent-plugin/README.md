@@ -25,6 +25,11 @@ Both agents use these exact commands:
 - `relations` without arguments shows quests for the current session. Each quest has its Fini title
   (null when Fini cannot get the quest) and the sessions of all agents. It does not expand those sessions again.
 - `relations --quest ID` shows sessions grouped by agent, with a nullable `primary` and a `related` list.
+- The plugins also give the model a quest note: the quests linked to the current session
+  and the top active quests in the Fini list order (`fini quest list`). The internal request
+  `fini:context` makes this note; it is not a user command. From `SUGGEST_QUEST_FROM` in
+  `shared/core.mts`, a session without a quest also tells the model to suggest one quest
+  one time. Only the user links it.
 - A link is unique by quest, agent and session. Each session can link to many quests.
 - Each quest can have many sessions and at most one primary for each agent.
 - The first link in an empty quest-agent group becomes primary. Later links are related.

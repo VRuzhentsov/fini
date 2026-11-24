@@ -1,6 +1,6 @@
 name: fini-hermes-plugin
-version: 0.3.0
+version: 0.4.0
 description: Local quest-session relations through native commands.
 kind: standalone
 provides_tools: []
-provides_hooks: []
+provides_hooks: [pre_llm_call]
