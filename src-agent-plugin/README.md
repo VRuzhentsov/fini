@@ -1,7 +1,16 @@
-# Fini plugins
+# Fini agent plugins
 
-Agent plugins in the Fini repository. Run the commands on this page from
-`src-agent-plugin/`, not from the Fini repository root.
+Link an explicitly selected Fini quest ID to an agent session, then list its
+linked sessions across Hermes and Claude Code. Linking is not quest completion.
+The current plugins store associations locally. They do not call Fini or check
+whether a quest exists.
+
+Run the commands on this page from `src-agent-plugin/`, not from the Fini
+repository root. Agent plugins have no CI checks at present. Runtime-specific
+details are in the [Hermes guide](fini-hermes-plugin/README.md) and
+[Claude guide](fini-claude-plugin/README.md).
+
+## Source tree
 
 ```text
 shared/
@@ -15,18 +24,6 @@ fini-hermes-plugin/   # thin Python registration/context/subprocess bridge
 fini-claude-plugin/   # native Claude hook/skills + reproducible cache packaging
 ```
 
-## Source location
-
-The shared TypeScript code and the native Hermes and Claude Code plugins are here:
-
-```text
-fini/
-  src-agent-plugin/
-    shared/
-    fini-hermes-plugin/
-    fini-claude-plugin/
-```
-
 - **Shared core:** the sole owner of validation, schema, migrations, deduplication,
   locking and persistence. All bridges use one provider-qualified quest-session
   store, supporting multiple sessions per quest across agents.
@@ -38,23 +35,53 @@ fini/
   is navigation evidence, not inferred quest progress or completion.
 - **Shared storage:** target an explicitly selected, agent-neutral path outside
   the code repository. The current Hermes-default store remains a compatibility
-  default for both bridges; an explicit shared path is already supported. Final
-  storage ownership, the canonical path and any live-storage migration remain
-  future decisions, not implemented changes.
+  default for both bridges; an explicit shared path is already supported. The
+  target storage design below is not implemented. No live store is moved.
 
 This source import keeps the nested npm package and its lockfile separate from
 the frontend package. It changes no installed plugin, config or live state.
 The standalone checkout and its Git history stay in place for review.
 
+## Current commands
+
+| Runtime | Interface | Result |
+|---|---|---|
+| Hermes | `/fini-link <quest-id>` | Link the calling Hermes session |
+| Hermes | `/fini-sessions <quest-id>` | List Hermes and Claude links for the quest |
+| Hermes | `/fini-link-claude {"quest_id":"<quest-id>","session_id":"<claude-uuid>"}` | Link an explicitly supplied Claude UUID |
+| Hermes toolset `fini` | `fini_link_current_session` with `{"quest_id":"<quest-id>"}` | Link the calling agent's runtime session; a child links itself, not its parent |
+| Claude Code | `/fini:link <quest-id>` | Link the current native Claude session |
+| Claude Code | `/fini:sessions <quest-id>` | List Hermes and Claude links for the quest |
+
+Current-session commands take identity from the runtime, not from model arguments.
+The explicit Hermes command for a Claude UUID checks its format, not its existence.
+See the [Hermes contract](fini-hermes-plugin/README.md#commands) and
+[Claude contract](fini-claude-plugin/README.md#build-and-use) for exact argument rules.
+
+## Target design — approved, not implemented
+
+The approved direction is one shared association store with SQLite and Drizzle,
+separate native Hermes and Claude plugins, and native `/fini:*` commands for
+link, unlink, primary-session selection and relations. These are target features,
+not the current command contract. Current storage is locked JSON; there is no
+Drizzle dependency, SQLite schema, unlink command or primary-session behavior here.
+The existing Claude `/fini:link` and `/fini:sessions` commands do not implement
+the full target interface.
+
+In the target design, Fini access is through the Fini CLI only. The association
+store holds quest-session links; it is not direct access to the Fini app database.
+The current shared JSON executable described below is a plugin entry point,
+not the Fini app CLI. Current plugins do not read or change Fini records.
+
+Reminder import is separate work and is not included in this source tree.
+
 ## Runtime and installation
 
 Requires **Node.js 24.12+**, **util-linux `flock` on PATH**, POSIX process groups
 and a local filesystem supporting `flock`, atomic rename and directory `fsync`.
-Node's native stable type stripping runs `.mts` as ESM: no compiler, Bun,
-TypeScript loader, server or service is required at runtime. Bun 1.3.14 and Node
-24.13.0 were available during implementation; Node was selected to avoid a
-runtime package/FFI dependency for OS locking. Bun execution is not supported or
-tested. Do not install only the Hermes subdirectory: the shared sibling is required.
+Node runs `.mts` as ESM through native type stripping. No compiler, TypeScript
+loader, server or service is required at runtime. Bun is not supported.
+Keep the Hermes plugin and its shared sibling together when installing.
 
 There are **no npm production dependencies**. `typescript`, `@types/node` and
 their transitive development dependencies are locked:
@@ -66,14 +93,9 @@ npm run check
 
 The Python bridge requires the installed Hermes plugin API. Its fixed reviewed
 command is `node <resolved-repository>/shared/cli.mts`, not a configurable shell
-command. The installed source symlink remains:
-
-```text
-~/.hermes/plugins/fini-hermes-plugin -> ../../projects/fini-plugins/fini-hermes-plugin
-```
-
-The source import leaves the installed link above in place. A later install
-can point a plugin link at `<fini-checkout>/src-agent-plugin/fini-hermes-plugin`.
+command. This source import does not change an installed plugin link.
+To install this source, point the Hermes plugin link at
+`<fini-checkout>/src-agent-plugin/fini-hermes-plugin`.
 Keep its sibling `shared/` folder available. Changing that link or enabling
 the plugin requires separate approval and a new Hermes process. See
 [Hermes commands and storage](fini-hermes-plugin/README.md).
@@ -171,11 +193,22 @@ same-user executable/file boundaries, not authentication or a sandbox.
 
 ```bash
 npm run typecheck       # strict production AND test TypeScript
-npm run check:ci        # shared and Claude checks; no Hermes install required
 npm test                # direct CLI/core, real independent processes and OS lock
 npm run test:hermes     # installed Hermes PluginContext/dispatch through Node
 npm run test:claude     # native representative hook + relocated cache layout
+npm run package:claude  # assemble the Claude plugin cache
 npm run test:claude:native # optional real Claude CLI ZIP/session-ID acceptance
+```
+
+There is no Make target for these checks. `npm run check` runs TypeScript,
+shared-code, Claude and Hermes checks together. Run `npm run package:claude`
+separately for package assembly. TypeScript, shared-code and Claude hook tests
+need no Hermes or Claude binary. Hermes tests need the installed Hermes runtime.
+The native Claude check also needs the Claude CLI and Python 3 for ZIP assembly.
+After package assembly, validate the manifest locally with:
+
+```bash
+claude plugin validate --strict .artifacts/claude/fini
 ```
 
 Tests use isolated `HERMES_HOME` directories under `$TMPDIR` (set it to a scratch
@@ -186,8 +219,10 @@ The Hermes suite requires an installed Hermes runtime on PATH. It registers
 this copied plugin through the real PluginContext in temporary homes, then
 calls the shared TypeScript code. Its temporary plugin link points at this
 source, not at an operator's installed plugin. It changes no live installation.
-The CI check runs without Hermes or Claude binaries. The native Claude check
-requires the Claude CLI separately; see the [test commands](../docs/testing.md#agent-plugins).
+The native Claude check uses an isolated home and an unreachable API endpoint.
+It checks runtime IDs, resume, duplicate links and listing without model turns.
+Report local results separately from interactive acceptance. These checks do
+not install or enable either plugin.
 
 Official sources consulted for this rewrite:
 

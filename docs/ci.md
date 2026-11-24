@@ -11,17 +11,6 @@ at their own computer.
 
 ## Targets
 
-### Agent plugins
-
-The `agent-plugin` job in `ci.yml` checks changes in `src-agent-plugin/**`
-and changes to that workflow. It follows the existing draft-PR rule.
-It installs the nested lockfile with `npm ci` and runs `npm run check:ci`
-from `src-agent-plugin/`. Node is set up separately from the frontend.
-The job checks shared code, Claude hook behavior and the assembled cache.
-It does not assume that Hermes or Claude is installed on the runner.
-Run the [Hermes and native Claude checks](testing.md#agent-plugins) locally
-with those runtimes installed. This job does not change the app or release jobs.
-
 ✅ = a supported target. ❌ = not a supported target.
 
 | Target | CI | Local development | Supported | Today |

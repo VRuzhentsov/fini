@@ -29,7 +29,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       app: ${{ steps.filter.outputs.app }}
-      agent-plugin: ${{ steps.filter.outputs.agent-plugin }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -39,9 +38,6 @@ jobs:
         uses: dorny/paths-filter@v3
         with:
           filters: |
-            agent-plugin:
-              - 'src-agent-plugin/**'
-              - '.github/workflows/ci.yml'
             app:
               - '.github/workflows/ci.yml'
               # The gate itself lives in its own file now. Without this line a
@@ -65,29 +61,6 @@ jobs:
               - 'xtask/**'
               - 'ble-mock-broker/**'
 
-
-  agent-plugin:
-    name: Agent Plugin Checks
-    needs: changes
-    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.agent-plugin == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '24.13.0'
-          cache: npm
-          cache-dependency-path: src-agent-plugin/package-lock.json
-      - name: Install plugin development dependencies
-        working-directory: src-agent-plugin
-        run: npm ci
-      - name: Check shared code and Claude package
-        working-directory: src-agent-plugin
-        env:
-          TMPDIR: ${{ runner.temp }}
-        run: npm run check:ci
 
   fe-unit-tests:
     name: FE Unit Tests

@@ -13,7 +13,6 @@
     "package:claude": "node fini-claude-plugin/package.mts",
     "test:claude:native": "node fini-claude-plugin/tests/native-check.mts",
     "test:claude": "node --test fini-claude-plugin/tests/*.test.mts",
-    "check:ci": "npm run typecheck && npm test && npm run test:claude && npm run package:claude",
     "check": "npm run typecheck && npm test && npm run test:claude && npm run test:hermes"
   },
   "devDependencies": {

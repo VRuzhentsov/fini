@@ -25,7 +25,6 @@ All documents are in `docs/`:
 | How code is shaped, in all parts of the app | `docs/architecture/code-design.md` |
 | Code style rules, backend and frontend | [`code-style.md`](code-style.md) |
 | Development guidelines: project map, design source, commands, repo automation, agent work | [`development.md`](development.md) |
-| Agent plugin structure and source import | [`development.md`, Agent plugins](development.md#agent-plugins); imported contracts in [`src-agent-plugin/README.md`](../src-agent-plugin/README.md) |
 | Test surfaces, test commands, how to write tests | [`testing.md`](testing.md); the e2e harness in [`e2e.md`](e2e.md) and [`e2e-android.md`](e2e-android.md) |
 | Android development on a phone or emulator | [`android.md`](android.md) |
 | Database access and schema migrations | [`db.md`](db.md) |
