@@ -1137,35 +1137,46 @@ fn update_quest_from_cli(
         due_time,
         repeat_rule,
     };
-    let quest = write_change(ctx, conn, &args.id, |conn| {
-        let change = QuestRepository::new(conn).update(
-            &args.id,
-            patch,
-            EditScope::All,
-            None,
-            Some(ctx.device_id()),
-        )?;
-        if args.trigger_reminder_focus {
-            append_focus_history(conn, &change.quest.id, &change.quest.space_id, "reminder")?;
-        } else if args.set_focus
-            || args.status.as_deref() == Some("active")
-            || change.restore_should_focus
-        {
-            append_focus_history(conn, &change.quest.id, &change.quest.space_id, "manual")?;
-        }
-        Ok(change)
-    })?;
-    let Some(placement) = placement else {
-        return Ok(quest);
-    };
-    let moved = conn
+    // The field change and the move are one transaction: a move that
+    // cannot be done (a missing neighbour, the quest itself) leaves the
+    // fields as they were, also the day that a completion would close.
+    let quest = conn
         .write_transaction(|conn| {
-            let written = QuestRepository::new(conn).move_quest(&args.id, &placement)?;
-            OutboxRepository::new(conn).record_quests(ctx.device_id(), &written)?;
-            QuestRepository::new(conn).resolved(&args.id)
+            if let Some(placement) = &placement {
+                QuestRepository::new(conn).check_placement(&args.id, placement)?;
+            }
+            let previous_space_id = QuestRepository::new(conn).get(&args.id)?.space_id;
+            let change = QuestRepository::new(conn).update(
+                &args.id,
+                patch,
+                EditScope::All,
+                None,
+                Some(ctx.device_id()),
+            )?;
+            if args.trigger_reminder_focus {
+                append_focus_history(conn, &change.quest.id, &change.quest.space_id, "reminder")?;
+            } else if args.set_focus
+                || args.status.as_deref() == Some("active")
+                || change.restore_should_focus
+            {
+                append_focus_history(conn, &change.quest.id, &change.quest.space_id, "manual")?;
+            }
+            OutboxRepository::new(conn).record_change(
+                ctx.device_id(),
+                &previous_space_id,
+                &change,
+            )?;
+            let mut quest = change.quest;
+            if let Some(placement) = &placement {
+                let written = QuestRepository::new(conn).move_quest(&args.id, placement)?;
+                OutboxRepository::new(conn).record_quests(ctx.device_id(), &written)?;
+                quest.order_rank = QuestRepository::new(conn).get(&args.id)?.order_rank;
+            }
+            Ok(quest)
         })
         .map_err(CliError::from_string)?;
-    serde_json::to_value(moved).map_err(|e| CliError::runtime(e.to_string()))
+    refresh_cli_reminder(conn, &quest.id);
+    serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
 }
 
 impl QuestUpdateArgs {
