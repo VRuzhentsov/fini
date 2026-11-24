@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref } from "vue";
-import { useQuestStore, type Quest, type QuestPlacement } from "../../stores/quest";
+import { isOverdue, useQuestStore, type Quest, type QuestPlacement } from "../../stores/quest";
+import { localDateStr } from "../../utils/date";
 import QuestListItem from "./QuestListItem.vue";
 
 const props = defineProps<{
@@ -128,12 +129,19 @@ function onPointerUp(event: PointerEvent) {
   void dropRow(state);
 }
 
-/** The move of a drop: before the row after the moved row, or after the row before it. */
+/** The move of a drop: before the row after the moved row, or after the row
+ * before it. The neighbour is in the same part of the list (overdue or not)
+ * as the moved row: a key next to a row of the other part does not keep the
+ * place, because overdue quests stay first. */
 function placementAt(rows: Quest[], index: number): QuestPlacement | null {
+  const today = localDateStr(new Date());
+  const overdue = isOverdue(rows[index], today);
+  const samePart = (quest: Quest | undefined): quest is Quest =>
+    !!quest && isOverdue(quest, today) === overdue;
   const next = rows[index + 1];
-  if (next) return { before: next.id };
+  if (samePart(next)) return { before: next.id };
   const previous = rows[index - 1];
-  return previous ? { after: previous.id } : null;
+  return samePart(previous) ? { after: previous.id } : null;
 }
 
 async function dropRow(state: Drag) {

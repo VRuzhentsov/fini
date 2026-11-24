@@ -558,15 +558,21 @@ impl QuestRepository<'_> {
             if quest_id == id {
                 self.write_rank(id, &key)?;
             } else if old_key != Some(key.as_str()) {
-                self.write_rank(quest_id, &key)?;
+                // Only the key changes: `updated_at` stays, because History
+                // shows it as the time of an abandoned quest. The callers
+                // still record the row, so it syncs.
+                diesel::update(quests::table.find(quest_id))
+                    .set(quests::order_rank.eq(&key))
+                    .execute(self.conn)
+                    .map_err(|error| error.to_string())?;
                 written.push(quest_id.to_string());
             }
         }
         Ok(written)
     }
 
-    /// Writes the rank key of one quest. It is a change of the quest, so
-    /// `updated_at` changes and the quest syncs.
+    /// Writes the rank key of the moved quest. A move is a change of the
+    /// quest, so `updated_at` changes too.
     fn write_rank(&mut self, id: &str, key: &str) -> Result<(), String> {
         diesel::update(quests::table.find(id))
             .set((quests::order_rank.eq(key), quests::updated_at.eq(utc_now())))
@@ -2092,6 +2098,10 @@ mod tests {
             .collect();
         for quest in &quests {
             set_rank(&mut conn, &quest.id, "cQ0u");
+            diesel::update(quests::table.find(&quest.id))
+                .set(quests::updated_at.eq("2026-01-01T00:00:00Z"))
+                .execute(&mut conn)
+                .expect("set an old change time");
         }
         // Equal keys: the list order is the oldest first, then the id.
         let before = listed_titles(&mut conn);
@@ -2124,12 +2134,14 @@ mod tests {
         expected.insert(slot, moved.title.clone());
         assert_eq!(listed_titles(&mut conn), expected);
 
-        let keys: Vec<String> = QuestRepository::new(&mut conn)
-            .load_all()
-            .unwrap()
-            .into_iter()
-            .map(|quest| quest.order_rank)
-            .collect();
+        let stored = QuestRepository::new(&mut conn).load_all().unwrap();
+        for quest in stored.iter().filter(|quest| quest.id != moved.id) {
+            assert_eq!(
+                quest.updated_at, "2026-01-01T00:00:00Z",
+                "a rebalance keeps the change time of the other quests"
+            );
+        }
+        let keys: Vec<String> = stored.into_iter().map(|quest| quest.order_rank).collect();
         let mut unique = keys.clone();
         unique.sort();
         unique.dedup();
