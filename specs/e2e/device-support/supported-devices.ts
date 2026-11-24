@@ -21,7 +21,7 @@ export interface SupportedDevice {
 }
 
 const ANDROID_PACKAGE = process.env.FINI_E2E_PACKAGE ?? 'com.fini.app.debug';
-/** `CHANNEL_ID` in src-tauri/src/services/notification.rs. */
+/** `CHANNEL_ID` in src-tauri/src/services/notification.service.rs. */
 const ANDROID_NOTIFICATION_CHANNEL = 'fini.reminders';
 const ANDROID_CHANNEL_TIMEOUT_MS = 20_000;
 

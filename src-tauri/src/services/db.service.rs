@@ -311,6 +311,10 @@ pub fn temp_db_path(label: &str) -> std::path::PathBuf {
 }
 
 #[cfg(test)]
+#[path = "db/migrations-tests.rs"]
+mod migrations_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::schema::{quests, spaces};

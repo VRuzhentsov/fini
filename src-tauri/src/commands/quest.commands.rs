@@ -386,11 +386,11 @@ pub fn update_quest_in_db(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::checklist;
     use crate::models::QuestOccurrence;
     use crate::models::{period_key_of, validate_metadata, RepeatingQuest, UpdateQuestInput};
     use crate::repositories::quest_repository::log_checklist_activity;
     use crate::schema::{focus_history, quests};
-    use crate::services::checklist;
     use diesel::prelude::*;
 
     #[test]
@@ -2034,7 +2034,7 @@ mod tests {
         );
 
         let comes_at =
-            crate::services::due_time::compute_fire_utc(&day(1), Some("20:00")).expect("moment");
+            crate::utils::due_time::compute_fire_utc(&day(1), Some("20:00")).expect("moment");
         assert_eq!(
             QuestRepository::new(&mut conn)
                 .focus(comes_at - chrono::Duration::minutes(1))

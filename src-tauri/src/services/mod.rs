@@ -1,9 +1,10 @@
-#[cfg(target_os = "android")]
-pub mod android_context;
 #[cfg(all(any(feature = "ui-plane", test), target_os = "linux"))]
+#[path = "appimage-desktop.service.rs"]
 pub mod appimage_desktop;
+#[path = "backup.service.rs"]
 pub mod backup;
 #[cfg(all(target_os = "android", feature = "ui-plane"))]
+#[path = "ble-plugin.service.rs"]
 pub mod ble_plugin;
 #[cfg(all(
     feature = "ui-plane",
@@ -13,32 +14,36 @@ pub mod ble_plugin;
 pub mod bluetooth_channel_service;
 #[path = "channel.service.rs"]
 pub mod channel_service;
-pub mod checklist;
 #[cfg(feature = "cli-plane")]
+#[path = "cli.service.rs"]
 pub mod cli;
 #[cfg(feature = "cli-plane")]
+#[path = "cli-update.service.rs"]
 pub mod cli_update;
+#[path = "db.service.rs"]
 pub mod db;
 #[cfg(feature = "ui-plane")]
+#[path = "desktop-update.service.rs"]
 pub mod desktop_update;
 #[path = "device.service.rs"]
 pub mod device_service;
-pub mod due_time;
 #[path = "event-bus.service.rs"]
 pub mod event_bus_service;
-#[cfg(test)]
-mod migrations_tests;
 #[path = "network-channel.service.rs"]
 pub mod network_channel_service;
 #[cfg(any(feature = "ui-plane", test))]
+#[path = "notification.service.rs"]
 pub mod notification;
 #[cfg(any(feature = "ui-plane", test))]
+#[path = "reconciler.service.rs"]
 pub mod reconciler;
+#[path = "reminder.service.rs"]
 pub mod reminder;
+#[path = "settings.service.rs"]
 pub mod settings;
-pub mod space;
 #[path = "space-sync.service.rs"]
 pub mod space_sync_service;
+#[path = "update-recovery.service.rs"]
 pub mod update_recovery;
 
 /// The Bluetooth channel when `ble-gatt` is not compiled in (on macOS, and

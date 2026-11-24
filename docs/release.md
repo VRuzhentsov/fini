@@ -105,7 +105,7 @@ Every shipped artifact and visible app version agrees with the release:
 | `src-tauri/Cargo.lock` | Resolved root crate version |
 | `src-tauri/tauri.conf.json` | Tauri app/bundle version metadata |
 | `src/views/settings/SettingsView.vue` | About version read path |
-| `src-tauri/src/services/cli.rs` | CLI version read path through Clap package metadata |
+| `src-tauri/src/services/cli.service.rs` | CLI version read path through Clap package metadata |
 | Android build variables | Android `versionName` and `versionCode` behavior |
 | `.github/workflows/release-tag.yml` | Release CI build and packaging behavior |
 

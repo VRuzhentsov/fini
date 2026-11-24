@@ -4,9 +4,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
+use crate::models::checklist;
 use crate::models::{QuestOccurrence, OCCURRENCE_COMPLETED};
 use crate::schema::quests;
-use crate::services::checklist;
 use crate::services::db::utc_now;
 
 pub const ENERGY_SMALL: i64 = 1;
@@ -240,7 +240,7 @@ impl Quest {
     /// The moment the quest comes: `due` + `due_time`, local time (09:00 when
     /// there is no time). For a repeating quest, of its shown day.
     pub fn due_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
-        crate::services::due_time::compute_fire_utc(self.due.as_deref()?, self.due_time.as_deref())
+        crate::utils::due_time::compute_fire_utc(self.due.as_deref()?, self.due_time.as_deref())
     }
 
     /// The order of the active quests in each list (src/views/FocusView.md,

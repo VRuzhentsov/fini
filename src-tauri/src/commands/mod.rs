@@ -8,5 +8,7 @@ pub mod device_commands;
 #[cfg(any(feature = "ui-plane", test))]
 #[path = "quest.commands.rs"]
 pub mod quest_commands;
+#[path = "space.commands.rs"]
+pub mod space_commands;
 #[path = "space-sync.commands.rs"]
 pub mod space_sync_commands;

@@ -7,9 +7,9 @@
 //
 //   node scripts/ci-gate.mts <fe-unit|be-compile|be-unit|e2e-build-image|
 //                             e2e-run|e2e|e2e-artifacts|e2e-cleanup|file-size|
-//                             rust-impl>
+//                             rust>
 //
-// `file-size` and `rust-impl` use no container: they read the tracked files
+// `file-size` and `rust` use no container: they read the tracked files
 // of the repo.
 // `e2e-run` in the `linux` `e2e` container (FINI_E2E_CONTAINER_RUNNER=1)
 // builds the e2e binaries and runs scripts/e2e-runner.sh; CI calls it there.
@@ -270,6 +270,23 @@ const ImplRule = {
   },
 };
 
+/**
+ * The file name rule of docs/naming.md: each file directly in a role folder
+ * has the suffix of that role. `mod.rs` and the files in the folder of one
+ * service (`services/cli/`) are not checked.
+ */
+const FileNameRule = {
+  suffixes: { 'src-tauri/src/services/': '.service.rs', 'src-tauri/src/repositories/': '.repository.rs' },
+
+  problems(): string[] {
+    return FileSizeLimit.gitFiles().flatMap((path) => Object.entries(this.suffixes)
+      .filter(([folder]) => path.startsWith(folder))
+      .map(([folder, suffix]) => ({ name: path.slice(folder.length), suffix }))
+      .filter(({ name, suffix }) => name.endsWith('.rs') && !name.includes('/') && name !== 'mod.rs' && !name.endsWith(suffix))
+      .map(({ suffix }) => `${path}: the name of this file does not end with ${suffix}`));
+  },
+};
+
 const steps: Record<string, () => unknown> = {
   'fe-unit': () => {
     buildStage('build');
@@ -352,13 +369,18 @@ const steps: Record<string, () => unknown> = {
     console.log(`All Rust and Kotlin files have ${FileSizeLimit.maxLines} lines or fewer.`);
   },
 
-  // `npm run lint:rust-impl`, on the host or in a container: the impl rules
-  // of docs/code-style.md for the Rust files in git.
-  'rust-impl': () => {
-    const problems = ImplRule.problems();
-    for (const problem of problems) console.error(`${problem} (docs/code-style.md)`);
+  // `npm run lint:rust`, on the host or in a container: the impl rules of
+  // docs/code-style.md and the file name rule of docs/naming.md for the Rust
+  // files in git.
+  rust: () => {
+    const problems = [
+      ...ImplRule.problems().map((problem) => `${problem} (docs/code-style.md)`),
+      ...FileNameRule.problems().map((problem) => `${problem} (docs/naming.md)`),
+    ];
+    for (const problem of problems) console.error(problem);
     if (problems.length > 0) process.exit(1);
-    console.log('Each Rust file has one inherent impl for each type, and each repository implements Repository.');
+    console.log('Each Rust file has one inherent impl for each type, each repository implements Repository,'
+      + ' and each service and repository file has its suffix.');
   },
 };
 

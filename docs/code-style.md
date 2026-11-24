@@ -95,12 +95,12 @@ blocks. The exception: a submodule that owns a part of the type has its own
 `impl Type` block, with
 `#[allow(clippy::multiple_inherent_impl, reason = "...")]`
 (`services/bluetooth-channel/endpoint.rs`). Clippy
-`multiple_inherent_impl` checks the crate, and `npm run lint:rust-impl`
+`multiple_inherent_impl` checks the crate, and `npm run lint:rust`
 checks each file, also for the types that have a lifetime.
 
 **Implement `Repository` for each repository.** Each `struct …Repository`
 has an `impl Repository for` in its file (`docs/db.md`, "The Repository
-trait"). `npm run lint:rust-impl` checks it.
+trait"). `npm run lint:rust` checks it.
 
 **Obey the added clippy lints.** `src-tauri/Cargo.toml`, `[lints.clippy]`,
 adds lints to the default clippy set: no `dbg!`, `todo!` or `unimplemented!`;

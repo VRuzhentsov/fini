@@ -760,7 +760,7 @@ fn is_cooling_down(cooldown: &HashMap<String, Instant>, peer_id: &str, now: Inst
     cooldown.get(peer_id).is_some_and(|until| now < *until)
 }
 
-#[path = "mdns_lookup.rs"]
+#[path = "network-channel/mdns-lookup.rs"]
 mod mdns_lookup;
 
 #[cfg(test)]

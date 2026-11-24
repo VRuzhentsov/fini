@@ -161,9 +161,9 @@ When a change adds or changes render flags ([`code-style.md`](code-style.md), "C
 
 ## Writing BE unit tests
 
-Layout: inline `#[cfg(test)] mod tests` at the bottom of the source file. Existing examples live next to the production code in `src-tauri/src/services/db.rs`, `src-tauri/src/commands/quest.commands.rs`, `src-tauri/src/repositories/quest.repository.rs`, `src-tauri/src/services/settings.rs`.
+Layout: inline `#[cfg(test)] mod tests` at the bottom of the source file. Existing examples live next to the production code in `src-tauri/src/services/db.service.rs`, `src-tauri/src/commands/quest.commands.rs`, `src-tauri/src/repositories/quest.repository.rs`, `src-tauri/src/services/settings.service.rs`.
 
-For DB-touching tests, use the `temp_db_path(label)` helper in `src-tauri/src/services/db.rs`:
+For DB-touching tests, use the `temp_db_path(label)` helper in `src-tauri/src/services/db.service.rs`:
 
 ```rust
 #[cfg(test)]

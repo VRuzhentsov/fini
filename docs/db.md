@@ -16,7 +16,7 @@ app start (lib.rs setup) or CLI start (run_cli)
      repositories          the SQL of one kind of data, on that connection
 ```
 
-- **Pool** (`DbPool`, `services/db.rs`): the connections of the process,
+- **Pool** (`DbPool`, `services/db.service.rs`): the connections of the process,
   ten at most (Diesel's `r2d2`). It is made once, at start, and Tauri keeps it
   (`app.manage(pool)`). The CLI makes its own pool when it starts. A test
   makes a pool of one connection.
@@ -57,13 +57,13 @@ Repository<'a>                trait: fn new(conn: &'a mut SqliteConnection) -> S
   same arguments and results in all repositories, so one generic method
   does not fit them. Add a method to the trait only when all repositories
   do it in the same way, and write it one time, as a default method.
-- `npm run lint:rust-impl` fails when a `struct …Repository` has no
+- `npm run lint:rust` fails when a `struct …Repository` has no
   `impl Repository for` in its file.
 
 ## Rules
 
 1. Take a connection from the pool. Do not open the database file anywhere
-   else (`SqliteConnection::establish`, `open_db_at_path`). Only `db.rs`
+   else (`SqliteConnection::establish`, `open_db_at_path`). Only `db.service.rs`
    opens it.
 2. Take one connection for one piece of work, and give it back at the end.
    Do not keep a connection in a struct field, and do not hold one across an
@@ -82,12 +82,12 @@ Repository<'a>                trait: fn new(conn: &'a mut SqliteConnection) -> S
    ```
 
 5. A transaction that writes begins with `IMMEDIATE`, not as a plain
-   `transaction`. `WriteTransaction::write_transaction` (`db.rs`) does this
+   `transaction`. `WriteTransaction::write_transaction` (`db.service.rs`) does this
    for code with `String` errors, and gives the closure's error back. A deferred transaction that reads first and writes later
    fails at once when another connection wrote in between (SQLite
    `SQLITE_BUSY_SNAPSHOT`); `busy_timeout` does not help it. An immediate
    transaction takes the write lock at its start, so another writer waits
-   for it. The tests in `db.rs` (`write_lock_tests`) show both.
+   for it. The tests in `db.service.rs` (`write_lock_tests`) show both.
 6. A change to synced data writes its sync outbox rows in the same
    transaction as the change (transactional outbox). Then a change is never
    saved without its outbox rows, and the reverse.
@@ -108,7 +108,7 @@ The pool sets these on each connection that it opens, in this order:
 Each pragma is its own statement. Diesel runs only the first statement of a
 string with `;` in it.
 
-The migrations run once, before the pool is shared: `db.rs` refuses a
+The migrations run once, before the pool is shared: `db.service.rs` refuses a
 database that has a migration this build does not know (a newer Fini wrote
 it).
 

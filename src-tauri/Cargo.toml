@@ -43,7 +43,7 @@ undocumented_unsafe_blocks = "warn"
 print_stdout = "warn"
 # One inherent `impl` block for each type (docs/code-style.md). Clippy does
 # not compare the impls of a type that has a lifetime (`impl Foo<'_>`);
-# `npm run lint:rust-impl` checks each file for those too.
+# `npm run lint:rust` checks each file for those too.
 multiple_inherent_impl = "deny"
 
 [patch.crates-io]
@@ -108,7 +108,7 @@ notify-rust = { version = "4", optional = true }
 ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", tag = "v0.2.2", optional = true }
 ble-gatt-iroh = { git = "https://github.com/VRuzhentsov/ble-gatt", tag = "v0.2.2", optional = true }
 # Only used behind #[cfg(target_os = "linux")] (resume_watcher's sleep/wake
-# watcher, settings.rs's portal theme-change watcher, both over the
+# watcher, settings.service.rs's portal theme-change watcher, both over the
 # session/system D-Bus) -- kept target-gated rather than unconditional so
 # Windows/macOS builds don't pull in zbus's Windows uds_windows backend at
 # all, which has no reason to be exercised there and can independently break

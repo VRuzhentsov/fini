@@ -1668,7 +1668,7 @@ fn start_sync_service_once() {
     }
     static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     run_until_success(&STARTED, || {
-        crate::services::android_context::call_static_context_void(
+        crate::utils::android_context::call_static_context_void(
             "com.fini.app.SyncForegroundService",
             "start",
         )

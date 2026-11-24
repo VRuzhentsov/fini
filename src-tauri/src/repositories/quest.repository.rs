@@ -3,6 +3,7 @@ use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 use std::collections::HashMap;
 
+use crate::models::checklist;
 use crate::models::{
     parse_utc_timestamp, period_key_of, validate_metadata, validate_optional_metadata,
     CreateFocusHistoryInput, CreateQuestInput, EditScope, Quest, QuestFieldPatch, QuestOccurrence,
@@ -13,7 +14,6 @@ use crate::models::{
 use crate::repositories::OutboxRepository;
 use crate::repositories::Repository;
 use crate::schema::{checklist_activity, focus_history, quest_occurrences, quests, spaces};
-use crate::services::checklist;
 use crate::services::db::utc_now;
 
 /// The quests and the occurrence marks of repeating quests (ADR-0012): the
