@@ -49,7 +49,7 @@ class SessionCommandsTests(unittest.TestCase):
             session_id=sid, session_key="not-the-session", platform="cli", source=None,
         ))
 
-    def test_native_commands_and_runtime_identity_no_tools(self):
+    def test_native_commands_and_runtime_identity(self):
         self.assertEqual(set(self.commands), {"fini:link", "fini:unlink", "fini:primary", "fini:relations"})
         from tools.registry import registry
         self.assertIsNone(registry.get_entry("fini_link_current_session"))
@@ -70,6 +70,29 @@ class SessionCommandsTests(unittest.TestCase):
         self.assertEqual(self.call("link", f"{self.quest} --agent other --session ' Exact 001 '", None)["session_id"], " Exact 001 ")
         self.assertEqual(len(self.call("relations", "--agent other --session ' Exact 001 '", None)["quests"]), 1)
         self.call("primary", f"{self.quest} --agent other --clear", None)
+
+    def test_model_tools_use_runtime_session(self):
+        from tools.registry import registry
+
+        def tool(name, args, sid="runtime-tool"):
+            # The same keyword arguments as the Hermes agent loop gives to each handler.
+            return json.loads(registry.dispatch(name, args, scope=self.manager.scope_key, task_id="task",
+                                                session_id=sid, conversation_id="conversation", user_task=None))
+
+        plugin._notes["runtime-tool"] = "old note"
+        with patch.dict(os.environ, {"HERMES_SESSION_ID": "wrong-parent"}):
+            linked = tool("fini_link", {"quest_id": self.quest})
+        self.assertEqual((linked["agent"], linked["session_id"], linked["changed"]), ("hermes", "runtime-tool", True))
+        self.assertEqual(plugin._notes, {})
+        self.assertEqual(tool("fini_relations", {})["quests"][0]["quest_id"], self.quest)
+        explicit = tool("fini_link", {"quest_id": self.quest, "agent": "claude",
+                                      "session_id": "12345678-1234-1234-1234-123456789abc"})
+        self.assertEqual(explicit["session_id"], "12345678-1234-1234-1234-123456789abc")
+        self.assertEqual({group["agent"] for group in tool("fini_relations", {"quest_id": self.quest})["agents"]},
+                         {"hermes", "claude"})
+        self.assertTrue(tool("fini_unlink", {"quest_id": self.quest})["changed"])
+        self.assertIn("error", tool("fini_link", {"quest_id": self.quest}, ""))
+        self.assertIn("error", tool("fini_link", {"quest_id": self.quest, "agent": "claude"}))
 
     def test_failures_have_no_environment_identity_fallback(self):
         with patch.dict(os.environ, {"HERMES_SESSION_ID": "wrong-parent"}):

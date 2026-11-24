@@ -1,7 +1,7 @@
 # Fini native Hermes plugin
 
 `register(ctx)` registers four native commands: `/fini:link`, `/fini:unlink`,
-`/fini:primary` and `/fini:relations`. There are no model-callable tools or hooks.
+`/fini:primary` and `/fini:relations`, three model tools and one hook.
 The [shared guide](../README.md) owns command syntax, rules, storage and local checks.
 
 The handler accepts the invocation's `session_id`. Hermes supplies the current
@@ -15,6 +15,15 @@ The resolved sibling `shared/cli.mts` owns all behavior and persistence.
 Transport limits are 1 MiB for input and aggregate output, with a 15-second
 process deadline. SQLite and Fini CLI each have an 8-second wait limit.
 A transport error can follow a committed write. Read relations before retrying.
+
+## Model tools
+
+`ctx.register_tool` registers `fini_link`, `fini_unlink` and `fini_relations` in the
+`fini` toolset. The agent loop gives each handler `session_id=agent.session_id`, the same
+ID that commands and the `pre_llm_call` hook get. The handler sends that ID as the current
+session; the model can give only an explicit `agent` and `session_id` target.
+A dispatch without a session ID returns an error unless the call has an explicit target.
+The result is the core JSON. A link or unlink clears the kept quest note.
 
 ## Quest note
 
@@ -42,6 +51,7 @@ The tests use the installed `PluginContext`, `PluginManager` and
 `invoke_plugin_command`. They exercise the installed source symlink, colon-qualified
 commands, per-call identity, both relation directions, primary removal,
 explicit targets, shared profiles and concurrent dispatch in disposable homes.
-They also verify that the removed `fini_link_current_session` tool is absent.
+They also call the model tools through the Hermes tool registry with the agent loop's
+keyword arguments, and verify that the removed `fini_link_current_session` tool is absent.
 A plugin doctor check is separate from dispatch and live frontend acceptance.
 No live session, plugin link, configuration or associations change during these tests.

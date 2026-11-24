@@ -13,9 +13,10 @@ CORE = Path(__file__).resolve().parents[1] / "shared" / "cli.mts"
 MAX_BYTES = 1024 * 1024
 
 
-def _call(command, raw_args, session_id=None):
+def _call(command, args, session_id=None):
+    """`args` is command text (raw_args) or tool fields (input)."""
     try:
-        payload = json.dumps({"command": command, "raw_args": raw_args,
+        payload = json.dumps({"command": command, "raw_args" if isinstance(args, str) else "input": args,
                               "current": {"agent": "hermes", "session_id": session_id}}).encode()
         if len(payload) > MAX_BYTES:
             raise ValueError("Core request exceeds 1 MiB.")
@@ -92,10 +93,44 @@ def _context(session_id=None, **_):
     return {"context": _notes[session_id]} if _notes[session_id] else None
 
 
+# Model tools. Hermes gives the handler the current session_id at dispatch;
+# the model can only give an explicit target.
+_TARGET = {
+    "agent": {"type": "string", "description": "Agent of an explicit target session. Give it with session_id, or give neither."},
+    "session_id": {"type": "string", "description": "ID of an explicit target session. Leave out agent and session_id for the current session."},
+}
+_QUEST = {"type": "string", "description": "Fini quest ID."}
+_TOOLS = (
+    ("fini_link", "fini:link", "Link a Fini quest to the current agent session, or to an explicit agent session. "
+     "Only link when the user asks or agrees. Quest content changes stay with the fini CLI.", True),
+    ("fini_unlink", "fini:unlink", "Remove one link between a Fini quest and the current agent session, "
+     "or an explicit agent session.", True),
+    ("fini_relations", "fini:relations", "Show the Fini quests of the current agent session, "
+     "or with quest_id the agent sessions of that quest.", False),
+)
+
+
+def _tool(command, args, session_id=None, **_):
+    # Only the schema fields go to the core; the session ID comes from Hermes.
+    fields = args if isinstance(args, dict) else {}
+    result = _call(command, {key: fields[key] for key in ("quest_id", "agent", "session_id") if key in fields}, session_id)
+    if command != "fini:relations":
+        _notes.clear()
+    return result
+
+
 def register(ctx):
     from functools import partial
 
     ctx.register_hook("pre_llm_call", _context)
+    for name, command, description, target in _TOOLS:
+        properties = {"quest_id": _QUEST, **(_TARGET if target else {})}
+        ctx.register_tool(
+            name=name, toolset="fini", handler=partial(_tool, command), description=description,
+            schema={"name": name, "description": description, "parameters": {
+                "type": "object", "properties": properties, "additionalProperties": False,
+                **({"required": ["quest_id"]} if target else {})}},
+        )
     for name in ("link", "unlink", "primary", "relations"):
         ctx.register_command(
             f"fini:{name}", partial(_command, f"fini:{name}"),
