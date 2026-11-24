@@ -60,7 +60,7 @@ See `specs/` at the repo root for domain model specs ([[Quest]], [[Space]], [[Re
 
 `energy` is an effort estimate: `small`, `medium`, or `large`. `priority` is urgency: `low`, `medium`, or `high`. The Tauri/JSON contract exposes these names; SQLite stores their canonical `1|2|3` representation.
 
-`order_rank` is the rank key of the quest (`models/rank.rs`, glossary "Rank"): text, compared byte by byte. Only `move_quest` changes it. A move gives the quest a key between its new neighbours in the order of all quests by rank, and usually writes only that quest. When the neighbours have the same key, or the new key is longer than 32 characters, the move gives all quests new keys in their order (a rebalance) and returns them all.
+`order_rank` is the rank key of the quest (`models/rank.rs`, glossary "Rank"): text, compared byte by byte. Only `move_quest` changes it. A move gives the quest a key between its new neighbours in the order of all quests by rank, and usually writes only that quest. When the neighbours have the same key, or the new key is longer than 32 characters, the move gives all quests new keys in their order (a rebalance) and returns them all. A rebalance changes only the key of the other quests; their `updated_at` stays.
 | `delete_quest` | `id`                                                         | —            |
 
 ### Focus

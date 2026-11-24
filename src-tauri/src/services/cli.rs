@@ -1160,17 +1160,23 @@ fn update_quest_from_cli(
             {
                 append_focus_history(conn, &change.quest.id, &change.quest.space_id, "manual")?;
             }
+            // Move before the change is recorded, so that the outbox has
+            // the final row of the quest once and no row with its old rank.
+            let mut moved_rows = Vec::new();
+            if let Some(placement) = &placement {
+                moved_rows = QuestRepository::new(conn).move_quest(&args.id, placement)?;
+                // `record_change` records the moved row only when the field
+                // change wrote it (a closed day of a repeating quest does not).
+                moved_rows.retain(|quest_id| *quest_id != args.id || !change.quest_row_changed);
+            }
             OutboxRepository::new(conn).record_change(
                 ctx.device_id(),
                 &previous_space_id,
                 &change,
             )?;
+            OutboxRepository::new(conn).record_quests(ctx.device_id(), &moved_rows)?;
             let mut quest = change.quest;
-            if let Some(placement) = &placement {
-                let written = QuestRepository::new(conn).move_quest(&args.id, placement)?;
-                OutboxRepository::new(conn).record_quests(ctx.device_id(), &written)?;
-                quest.order_rank = QuestRepository::new(conn).get(&args.id)?.order_rank;
-            }
+            quest.order_rank = QuestRepository::new(conn).get(&args.id)?.order_rank;
             Ok(quest)
         })
         .map_err(CliError::from_string)?;
