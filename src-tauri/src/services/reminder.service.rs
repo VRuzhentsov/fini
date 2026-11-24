@@ -5,7 +5,7 @@ use tauri::{AppHandle, State};
 #[cfg(any(feature = "ui-plane", test))]
 use crate::models::Space;
 use crate::models::{CreateReminderInput, Quest, Reminder};
-use crate::repositories::ReminderRepository;
+use crate::repositories::{ReminderRepository, Repository};
 
 use crate::repositories::QuestRepository;
 #[cfg(any(feature = "ui-plane", test))]
@@ -261,23 +261,11 @@ impl<'a> ReminderService<'a> {
         }
         self.repository.delete(id)
     }
-}
 
-#[cfg(any(feature = "ui-plane", test))]
-/// Upsert a Reminder row and schedule (or reschedule) the OS notification.
-pub fn upsert_reminder_for_quest(
-    conn: &mut SqliteConnection,
-    app: &AppHandle,
-    quest: &Quest,
-) -> Result<(), String> {
-    ReminderService::new(conn).reconcile_with_notifications_for_quest(app, quest)
-}
+    // ---- Reminders in step with the quest events of the bus (docs/db.md, rule 7) ----
 
-/// Keeps reminders in step with the quests, on the quest events of the bus
-/// (docs/db.md, rule 7).
-#[cfg(any(feature = "ui-plane", test))]
-impl ReminderService<'_> {
     /// Hears the event bus until it closes. Started once, at app start.
+    #[cfg(any(feature = "ui-plane", test))]
     pub async fn follow_quest_events(
         mut events: tokio::sync::broadcast::Receiver<crate::models::Event>,
         app: AppHandle,
@@ -322,6 +310,7 @@ impl ReminderService<'_> {
     /// is active with a date has one; a repeating quest has one for the
     /// next open day on which it is still to come (ADR-0012 D9); any other
     /// quest has none.
+    #[cfg(any(feature = "ui-plane", test))]
     pub fn keep_in_step(&mut self, app: &AppHandle, quest_id: &str) -> Result<(), String> {
         let target = if QuestRepository::new(self.repository.conn).is_repeating(quest_id)? {
             self.armed_day(quest_id)?
@@ -334,6 +323,16 @@ impl ReminderService<'_> {
             None => self.delete_for_quest_with_notifications(app, quest_id),
         }
     }
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+/// Upsert a Reminder row and schedule (or reschedule) the OS notification.
+pub fn upsert_reminder_for_quest(
+    conn: &mut SqliteConnection,
+    app: &AppHandle,
+    quest: &Quest,
+) -> Result<(), String> {
+    ReminderService::new(conn).reconcile_with_notifications_for_quest(app, quest)
 }
 
 // ── Tauri commands ───────────────────────────────────────────────────────────

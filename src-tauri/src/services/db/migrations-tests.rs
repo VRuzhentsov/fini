@@ -1,7 +1,8 @@
 //! Tests that are about one migration in particular.
 //!
-//! Kept out of `db`, which is the service for opening and using the
-//! database and should not accumulate knowledge of which migrations exist.
+//! Kept out of `db.service.rs`, which is the service for opening and using
+//! the database and should not accumulate knowledge of which migrations
+//! exist. This file is a test submodule of `db` in its folder.
 //! A migration's test belongs beside the other migrations' tests, not
 //! inside the code that happens to run them.
 //!

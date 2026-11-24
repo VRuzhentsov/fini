@@ -9,6 +9,7 @@ use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 
 use crate::models::channel::{Channel, ChannelKind, NewChannel};
+use crate::repositories::Repository;
 use crate::schema::channels;
 use crate::services::db::utc_now;
 
@@ -16,11 +17,13 @@ pub struct ChannelRepository<'a> {
     conn: &'a mut SqliteConnection,
 }
 
-impl<'a> ChannelRepository<'a> {
-    pub fn new(conn: &'a mut SqliteConnection) -> Self {
+impl<'a> Repository<'a> for ChannelRepository<'a> {
+    fn new(conn: &'a mut SqliteConnection) -> Self {
         Self { conn }
     }
+}
 
+impl ChannelRepository<'_> {
     /// This pair's channel of this kind: `None` if it has none, otherwise
     /// `Off` or `On` by its `enabled` switch (ADR-0008 D15).
     pub fn find(&mut self, device_id: &str, kind: ChannelKind) -> Option<Channel> {

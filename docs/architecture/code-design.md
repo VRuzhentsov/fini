@@ -55,8 +55,9 @@ is used through an interface.
   interface.
 - **Repository:** the only object that reads and writes one kind of stored
   data (the pairs, the channels of a pair, the outbox). A service gets data
-  from a repository, and does not use the database directly. How a
-  repository gets its connection, and the rules for transactions, are in
+  from a repository, and does not use the database directly. Each
+  repository implements the `Repository` trait. How a repository gets its
+  connection, the trait, and the rules for transactions, are in
   [`docs/db.md`](../db.md).
 - **PubSub (event bus):** a service publishes an event when its state
   changes (a device heard, a connection up, a connection down). Other
@@ -98,6 +99,11 @@ is used through an interface.
   state.
   ([rust-analyzer style, "Function Preconditions"](https://github.com/rust-lang/rust-analyzer/blob/master/docs/book/src/contributing/style.md#function-preconditions);
   [Alexis King, "The power of parsing"](https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/#the-power-of-parsing))
+
+- Write the methods of a type in one inherent `impl` block in its file.
+  Put a method that a submodule owns in that submodule
+  ([`docs/code-style.md`](../code-style.md), "Write one inherent `impl`
+  block for each type").
 
 - Put each new module in a new file, and write only the `mod` declaration in
   the parent file. Only the `tests` module of a file stays inline in that

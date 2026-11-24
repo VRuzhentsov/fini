@@ -9,6 +9,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::models::{CreateDeviceInput, Device, Identity};
+use crate::repositories::Repository;
 use crate::schema::paired_devices;
 use crate::services::db::utc_now;
 use crate::services::settings;
@@ -28,11 +29,13 @@ pub struct DeviceRepository<'a> {
     conn: &'a mut SqliteConnection,
 }
 
-impl<'a> DeviceRepository<'a> {
-    pub fn new(conn: &'a mut SqliteConnection) -> Self {
+impl<'a> Repository<'a> for DeviceRepository<'a> {
+    fn new(conn: &'a mut SqliteConnection) -> Self {
         Self { conn }
     }
+}
 
+impl DeviceRepository<'_> {
     /// This device's identity from the settings rows, made the first time.
     /// An id from the old `device_identity.json` file in `app_data_dir` is
     /// moved into the settings, and the file is deleted.

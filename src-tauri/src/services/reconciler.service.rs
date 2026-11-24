@@ -3,7 +3,7 @@ use diesel::prelude::*;
 use tauri::AppHandle;
 
 use crate::models::{CreateFocusHistoryInput, Quest, Reminder, Space};
-use crate::repositories::QuestRepository;
+use crate::repositories::{QuestRepository, Repository};
 use crate::schema::{focus_history, quests, reminders, spaces};
 use crate::services::db::DbPool;
 use crate::services::notification;

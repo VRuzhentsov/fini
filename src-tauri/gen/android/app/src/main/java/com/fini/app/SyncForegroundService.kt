@@ -33,7 +33,7 @@ import androidx.core.app.NotificationCompat
  * to notice and stop it.
  *
  * Started/stopped from Rust over the plain-JNI bridge in
- * `services::android_context`, so the entry points are `@JvmStatic` methods
+ * `utils::android_context`, so the entry points are `@JvmStatic` methods
  * taking a `Context`, matching that bridge's `(Landroid/content/Context;)V`
  * signature.
  */

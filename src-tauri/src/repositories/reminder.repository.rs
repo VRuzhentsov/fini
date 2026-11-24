@@ -2,6 +2,7 @@ use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 
 use crate::models::{CreateReminderInput, Reminder, UpdateReminderInput, REMINDER_RELATIVE};
+use crate::repositories::Repository;
 use crate::schema::reminders;
 use crate::services::db::utc_now;
 
@@ -10,11 +11,13 @@ pub struct ReminderRepository<'a> {
     pub(crate) conn: &'a mut SqliteConnection,
 }
 
-impl<'a> ReminderRepository<'a> {
-    pub fn new(conn: &'a mut SqliteConnection) -> Self {
+impl<'a> Repository<'a> for ReminderRepository<'a> {
+    fn new(conn: &'a mut SqliteConnection) -> Self {
         Self { conn }
     }
+}
 
+impl ReminderRepository<'_> {
     pub fn get(&mut self, id: &str) -> Result<Reminder, String> {
         reminders::table
             .find(id)

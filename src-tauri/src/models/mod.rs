@@ -1,4 +1,5 @@
 pub mod channel;
+pub mod checklist;
 pub mod checklist_activity;
 pub mod device;
 pub mod event;

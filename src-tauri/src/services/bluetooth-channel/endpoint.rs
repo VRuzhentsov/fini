@@ -27,6 +27,10 @@ const SESSION_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// (`keep_pairing_link`).
 const PAIRING_LINK_KEEP_TIME: Duration = Duration::from_secs(15);
 
+#[allow(
+    clippy::multiple_inherent_impl,
+    reason = "this submodule owns the iroh endpoint part of the Bluetooth channel"
+)]
 impl BluetoothChannelService {
     /// Opens an iroh connection to `peer_key` for a pairing step --
     /// `address` is only where to reach it first (ADR-0009 D2/D7: Bluetooth

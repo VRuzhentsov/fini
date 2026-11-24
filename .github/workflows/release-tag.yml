@@ -346,7 +346,7 @@ jobs:
 
       # `fini update` of a CLI at v0.3.19 or older looks first for an asset
       # name with its own target, `x86_64-unknown-linux-gnu`
-      # (cli_update.rs, `cli_asset_target_substrings`). A copy of the musl
+      # (cli-update.service.rs, `cli_asset_target_substrings`). A copy of the musl
       # archive under that old name lets these CLIs update. The copy gets its
       # own signature below: the signature context is the asset name.
       - name: Copy Linux CLI archive to the old asset name

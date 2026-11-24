@@ -54,6 +54,8 @@ use commands::quest_commands::{
     remove_checklist_item, reorder_checklist, set_focus, toggle_checklist_item, update_quest,
 };
 #[cfg(feature = "ui-plane")]
+use commands::space_commands::{create_space, delete_space, get_spaces, update_space};
+#[cfg(feature = "ui-plane")]
 use services::bluetooth_channel_service::BluetoothChannelService;
 #[cfg(feature = "ui-plane")]
 use services::device_service::DeviceService;
@@ -67,8 +69,6 @@ use services::reminder::{
 };
 #[cfg(feature = "ui-plane")]
 use services::settings::{self, ThemeMode};
-#[cfg(feature = "ui-plane")]
-use services::space::{create_space, delete_space, get_spaces, update_space};
 #[cfg(feature = "ui-plane")]
 use services::space_sync_service::SpaceSyncService;
 #[cfg(feature = "ui-plane")]
@@ -442,6 +442,7 @@ pub fn run() {
             // The composition root (ADR-0010 D5, D15): the identity first,
             // then the channels, then the services that use them, and the
             // channels' link handlers last.
+            use repositories::Repository;
             use services::channel_service::{ChannelService, LinkHandlers};
             let data_dir = app_data_dir(app_handle);
             let identity = repositories::DeviceRepository::new(&mut *pool.get()?)

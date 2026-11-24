@@ -54,7 +54,7 @@ designs.
 
 **The only object that reads and writes one kind of stored data**, for
 example the pairs or the outbox. A service gets data from a repository, not
-from the database.
+from the database. Each repository implements the `Repository` trait.
 
 *Elsewhere:* a repository in DDD and Android; a DAO (data access object); a
 store in the Matrix SDK; a registry in Home Assistant.

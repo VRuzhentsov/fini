@@ -14,6 +14,8 @@ use crate::repositories::quest_repository::append_focus_history;
 use crate::repositories::quest_repository::QuestChange;
 use crate::repositories::OutboxRepository;
 use crate::repositories::QuestRepository;
+use crate::repositories::Repository;
+use crate::repositories::SpaceRepository;
 use crate::services::backup;
 use crate::services::bluetooth_channel_service::BluetoothChannelService;
 use crate::services::channel_service::{ChannelService, LinkHandlers};
@@ -25,7 +27,6 @@ use crate::services::event_bus_service::EventBus;
 use crate::services::network_channel_service::NetworkChannelService;
 use crate::services::reminder::ReminderService;
 use crate::services::settings::{self, ThemeMode};
-use crate::services::space::SpaceRepository;
 use crate::services::space_sync_service::{SpaceResolutionMode, SpaceSyncService};
 #[cfg(any(feature = "cli-plane", test))]
 use chrono::Utc;
@@ -870,7 +871,7 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
             let (description, is_checklist) = if !args.items.is_empty() {
                 let mut md: Option<String> = None;
                 for item in &args.items {
-                    md = Some(crate::services::checklist::add_item(md.as_deref(), item));
+                    md = Some(crate::models::checklist::add_item(md.as_deref(), item));
                 }
                 (md, true)
             } else if let Some(checklist) = args.checklist {
@@ -949,7 +950,7 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
             let quest = QuestRepository::new(&mut conn)
                 .resolved(&args.quest_id)
                 .map_err(CliError::from_string)?;
-            let items = crate::services::checklist::parse_opt(quest.description.as_deref());
+            let items = crate::models::checklist::parse_opt(quest.description.as_deref());
             Ok(
                 json!({ "quest_id": args.quest_id, "is_checklist": quest.is_checklist, "items": items }),
             )
@@ -1057,7 +1058,7 @@ fn normalize_repeat_alias(value: &str) -> String {
 }
 
 fn normalize_cli_checklist(value: &str) -> String {
-    crate::services::checklist::serialize(&crate::services::checklist::parse(value))
+    crate::models::checklist::serialize(&crate::models::checklist::parse(value))
 }
 
 /// Like `normalize_cli_checklist`, but for `checklist-set-template --scope future`:
@@ -1069,7 +1070,7 @@ fn normalize_cli_checklist(value: &str) -> String {
 fn normalize_future_template(raw: &str, series_template_checklist: Option<&str>) -> String {
     use std::collections::{HashMap, VecDeque};
 
-    let existing = crate::services::checklist::parse_opt(series_template_checklist);
+    let existing = crate::models::checklist::parse_opt(series_template_checklist);
     // A queue per text, not a single id: two existing items can share the same text, and two raw
     // lines can too. Popping one id per match pairs them up one-to-one in original order instead
     // of handing every matching line the same id (which would give duplicate items the same
@@ -1082,20 +1083,19 @@ fn normalize_future_template(raw: &str, series_template_checklist: Option<&str>)
             .push_back(item.id.as_str());
     }
 
-    let items: Vec<crate::services::checklist::ChecklistItem> =
-        crate::services::checklist::parse(raw)
-            .into_iter()
-            .map(|mut item| {
-                if let Some(existing_id) = existing_by_text
-                    .get_mut(item.text.as_str())
-                    .and_then(VecDeque::pop_front)
-                {
-                    item.id = existing_id.to_string();
-                }
-                item
-            })
-            .collect();
-    crate::services::checklist::serialize(&items)
+    let items: Vec<crate::models::checklist::ChecklistItem> = crate::models::checklist::parse(raw)
+        .into_iter()
+        .map(|mut item| {
+            if let Some(existing_id) = existing_by_text
+                .get_mut(item.text.as_str())
+                .and_then(VecDeque::pop_front)
+            {
+                item.id = existing_id.to_string();
+            }
+            item
+        })
+        .collect();
+    crate::models::checklist::serialize(&items)
 }
 
 fn update_quest_from_cli(

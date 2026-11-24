@@ -69,7 +69,7 @@
 
         <!--
             Not exported: started only from this app, over the JNI bridge in
-            services::android_context. See SyncForegroundService.kt.
+            utils::android_context. See SyncForegroundService.kt.
         -->
         <service
             android:name=".SyncForegroundService"

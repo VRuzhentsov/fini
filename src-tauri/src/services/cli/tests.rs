@@ -339,7 +339,7 @@ fn quest_create_normalizes_raw_cli_checklist_before_saving() {
         .description
         .as_deref()
         .expect("created checklist text");
-    let items = crate::services::checklist::parse(stored_checklist);
+    let items = crate::models::checklist::parse(stored_checklist);
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].text, "headphones");
     assert!(
@@ -364,7 +364,7 @@ fn quest_create_normalizes_raw_cli_checklist_before_saving() {
     };
     let checked = handle_quest(&ctx, check_command)
         .unwrap_or_else(|err| panic!("check listed checklist item: {}", err.message));
-    let checked_items = crate::services::checklist::parse(
+    let checked_items = crate::models::checklist::parse(
         checked["description"]
             .as_str()
             .expect("checked checklist text"),
@@ -430,7 +430,7 @@ fn checklist_set_template_normalizes_raw_cli_input_before_saving() {
             .description
             .as_deref()
             .expect("quest checklist md");
-        let items = crate::services::checklist::parse(stored_checklist);
+        let items = crate::models::checklist::parse(stored_checklist);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].text, "headphones");
         assert!(
@@ -445,13 +445,13 @@ fn checklist_set_template_normalizes_raw_cli_input_before_saving() {
 
 #[test]
 fn normalize_future_template_preserves_ids_for_matching_text() {
-    let series_template = crate::services::checklist::serialize(&[
-        crate::services::checklist::ChecklistItem {
+    let series_template = crate::models::checklist::serialize(&[
+        crate::models::checklist::ChecklistItem {
             id: "a1".into(),
             text: "headphones".into(),
             checked: true,
         },
-        crate::services::checklist::ChecklistItem {
+        crate::models::checklist::ChecklistItem {
             id: "a2".into(),
             text: "key fob".into(),
             checked: false,
@@ -461,7 +461,7 @@ fn normalize_future_template_preserves_ids_for_matching_text() {
     // Raw, undocumented-id input: "headphones" unchanged, "key fob" dropped, "lunch" added.
     let raw = "- [ ] headphones\n- [ ] lunch";
     let normalized = normalize_future_template(raw, Some(&series_template));
-    let items = crate::services::checklist::parse(&normalized);
+    let items = crate::models::checklist::parse(&normalized);
 
     assert_eq!(
         items.iter().find(|it| it.text == "headphones").unwrap().id,
@@ -482,13 +482,13 @@ fn normalize_future_template_matches_the_series_template_not_this_occurrence_onl
     // The occurrence renamed "headphones" to "wireless headphones" via a "this occurrence"
     // scoped edit — that never touched the series template, which still says "headphones".
     let series_template =
-        crate::services::checklist::serialize(&[crate::services::checklist::ChecklistItem {
+        crate::models::checklist::serialize(&[crate::models::checklist::ChecklistItem {
             id: "a1".into(),
             text: "headphones".into(),
             checked: true,
         }]);
     let occurrence_only_rename =
-        crate::services::checklist::serialize(&[crate::services::checklist::ChecklistItem {
+        crate::models::checklist::serialize(&[crate::models::checklist::ChecklistItem {
             id: "a1".into(),
             text: "wireless headphones".into(),
             checked: true,
@@ -497,7 +497,7 @@ fn normalize_future_template_matches_the_series_template_not_this_occurrence_onl
     // Raw future-template input retypes the *template's* original text.
     let raw = "- [ ] headphones";
     let normalized = normalize_future_template(raw, Some(&series_template));
-    let items = crate::services::checklist::parse(&normalized);
+    let items = crate::models::checklist::parse(&normalized);
     assert_eq!(
         items[0].id, "a1",
         "must match against the series template's own item, not the occurrence's \
@@ -508,8 +508,7 @@ fn normalize_future_template_matches_the_series_template_not_this_occurrence_onl
     // Matching against the (stale) occurrence text instead would have missed entirely.
     let normalized_against_occurrence =
         normalize_future_template(raw, Some(&occurrence_only_rename));
-    let items_against_occurrence =
-        crate::services::checklist::parse(&normalized_against_occurrence);
+    let items_against_occurrence = crate::models::checklist::parse(&normalized_against_occurrence);
     assert_ne!(
         items_against_occurrence[0].id, "a1",
         "sanity check: matching against the renamed occurrence text does NOT find the id — \
@@ -519,13 +518,13 @@ fn normalize_future_template_matches_the_series_template_not_this_occurrence_onl
 
 #[test]
 fn normalize_future_template_assigns_duplicate_text_lines_distinct_existing_ids() {
-    let series_template = crate::services::checklist::serialize(&[
-        crate::services::checklist::ChecklistItem {
+    let series_template = crate::models::checklist::serialize(&[
+        crate::models::checklist::ChecklistItem {
             id: "a1".into(),
             text: "milk".into(),
             checked: false,
         },
-        crate::services::checklist::ChecklistItem {
+        crate::models::checklist::ChecklistItem {
             id: "a2".into(),
             text: "milk".into(),
             checked: true,
@@ -534,7 +533,7 @@ fn normalize_future_template_assigns_duplicate_text_lines_distinct_existing_ids(
 
     let raw = "- [ ] milk\n- [ ] milk";
     let normalized = normalize_future_template(raw, Some(&series_template));
-    let items = crate::services::checklist::parse(&normalized);
+    let items = crate::models::checklist::parse(&normalized);
 
     assert_eq!(items.len(), 2);
     let ids: std::collections::HashSet<&str> = items.iter().map(|it| it.id.as_str()).collect();
@@ -594,7 +593,7 @@ fn cli_checklist_activity_sync_dedupes_per_space() {
     let added_description = added["description"]
         .as_str()
         .expect("updated checklist text");
-    let added_item_id = crate::services::checklist::parse(added_description)
+    let added_item_id = crate::models::checklist::parse(added_description)
         .into_iter()
         .find(|item| item.text == "headphones")
         .expect("added checklist item")

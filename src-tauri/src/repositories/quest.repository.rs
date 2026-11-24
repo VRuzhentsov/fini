@@ -3,6 +3,7 @@ use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 use std::collections::HashMap;
 
+use crate::models::checklist;
 use crate::models::{
     parse_utc_timestamp, period_key_of, validate_metadata, validate_optional_metadata,
     CreateFocusHistoryInput, CreateQuestInput, EditScope, Quest, QuestFieldPatch, QuestOccurrence,
@@ -11,8 +12,8 @@ use crate::models::{
 };
 #[cfg(any(feature = "ui-plane", test))]
 use crate::repositories::OutboxRepository;
+use crate::repositories::Repository;
 use crate::schema::{checklist_activity, focus_history, quest_occurrences, quests, spaces};
-use crate::services::checklist;
 use crate::services::db::utc_now;
 
 /// The quests and the occurrence marks of repeating quests (ADR-0012): the
@@ -21,11 +22,13 @@ pub struct QuestRepository<'a> {
     pub(crate) conn: &'a mut SqliteConnection,
 }
 
-impl<'a> QuestRepository<'a> {
-    pub fn new(conn: &'a mut SqliteConnection) -> Self {
+impl<'a> Repository<'a> for QuestRepository<'a> {
+    fn new(conn: &'a mut SqliteConnection) -> Self {
         Self { conn }
     }
+}
 
+impl QuestRepository<'_> {
     pub fn load_all(&mut self) -> Result<Vec<Quest>, String> {
         quests::table
             .select(Quest::as_select())
@@ -438,34 +441,9 @@ impl<'a> QuestRepository<'a> {
             .map_err(|error| error.to_string())?;
         Ok(quest)
     }
-}
 
-// ── Quests as a person sees and changes them (ADR-0012) ─────────────────────
+    // ---- Manual order (rank keys, models/rank.rs) ----
 
-/// The Focus fallback order (src/views/FocusView.md): the list order
-/// (`Quest::list_order`).
-fn fallback_order(mut quests: Vec<Quest>) -> Vec<Quest> {
-    let now = Utc::now();
-    quests.sort_by(|a, b| a.list_order(b, &now));
-    quests
-}
-
-/// The quest as the lists show it: an active repeating quest as its oldest
-/// open day (with the fields of that day), any other quest as stored.
-/// `marks` can hold the marks of other quests too.
-fn shown_quest(quest: &Quest, marks: &[QuestOccurrence]) -> Quest {
-    match RepeatingQuest::new(quest, marks) {
-        Some(repeating) if quest.status == "active" => repeating
-            .oldest_open()
-            .map(|period_key| repeating.on_day(&period_key))
-            .unwrap_or_else(|| quest.clone()),
-        _ => quest.clone(),
-    }
-}
-
-// ── Manual order (rank keys, models/rank.rs) ────────────────────────────────
-
-impl QuestRepository<'_> {
     /// The rank key of a new quest: after the largest valid key of all
     /// quests, so that it is at the bottom of the list.
     fn bottom_rank(&mut self) -> Result<String, String> {
@@ -602,14 +580,9 @@ impl QuestRepository<'_> {
             .map(|_| ())
             .map_err(|error| error.to_string())
     }
-}
 
-/// A change of the status only.
-fn status_patch(status: &str) -> QuestUpdatePatch {
-    QuestUpdatePatch::unchanged(UpdateQuestInputBuilder::default().status(status).build())
-}
+    // ---- Quests as a person sees and changes them (ADR-0012) ----
 
-impl<'a> QuestRepository<'a> {
     // ---- Reading (ADR-0012 D2, D6) ----
 
     /// Every quest, in no order: a one-time quest as stored; a repeating
@@ -1625,6 +1598,32 @@ impl<'a> QuestRepository<'a> {
             .load(self.conn)
             .map_err(|e| e.to_string())
     }
+}
+
+/// The Focus fallback order (src/views/FocusView.md): the list order
+/// (`Quest::list_order`).
+fn fallback_order(mut quests: Vec<Quest>) -> Vec<Quest> {
+    let now = Utc::now();
+    quests.sort_by(|a, b| a.list_order(b, &now));
+    quests
+}
+
+/// The quest as the lists show it: an active repeating quest as its oldest
+/// open day (with the fields of that day), any other quest as stored.
+/// `marks` can hold the marks of other quests too.
+fn shown_quest(quest: &Quest, marks: &[QuestOccurrence]) -> Quest {
+    match RepeatingQuest::new(quest, marks) {
+        Some(repeating) if quest.status == "active" => repeating
+            .oldest_open()
+            .map(|period_key| repeating.on_day(&period_key))
+            .unwrap_or_else(|| quest.clone()),
+        _ => quest.clone(),
+    }
+}
+
+/// A change of the status only.
+fn status_patch(status: &str) -> QuestUpdatePatch {
+    QuestUpdatePatch::unchanged(UpdateQuestInputBuilder::default().status(status).build())
 }
 
 // ── "Focus N" badge: how many times the quest became the Focus quest ───────

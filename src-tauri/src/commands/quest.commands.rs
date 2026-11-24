@@ -14,7 +14,7 @@ use crate::models::{
     UpdateQuestCommandInput, UpdateQuestInputBuilder, OCCURRENCE_COMPLETED,
 };
 use crate::repositories::quest_repository::{append_focus_history, QuestChange};
-use crate::repositories::{OutboxRepository, QuestRepository, ReminderRepository};
+use crate::repositories::{OutboxRepository, QuestRepository, ReminderRepository, Repository};
 use crate::services::db::{DbPool, WriteTransaction};
 use crate::services::event_bus_service::EventBus;
 use crate::services::space_sync_service::SpaceSyncService;
@@ -386,11 +386,11 @@ pub fn update_quest_in_db(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::checklist;
     use crate::models::QuestOccurrence;
     use crate::models::{period_key_of, validate_metadata, RepeatingQuest, UpdateQuestInput};
     use crate::repositories::quest_repository::log_checklist_activity;
     use crate::schema::{focus_history, quests};
-    use crate::services::checklist;
     use diesel::prelude::*;
 
     #[test]
@@ -1453,7 +1453,7 @@ mod tests {
     // text when `is_checklist` is set — there is no dedicated checklist content column.
 
     fn create_active_quest_with_checklist(conn: &mut SqliteConnection, checklist: &str) -> Quest {
-        let result = QuestRepository::new(conn)
+        QuestRepository::new(conn)
             .create(CreateQuestInput {
                 space_id: "1".to_string(),
                 title: "Go to office".to_string(),
@@ -1466,12 +1466,11 @@ mod tests {
                 order_rank: None,
                 is_checklist: true,
             })
-            .expect("create quest with checklist");
-        result
+            .expect("create quest with checklist")
     }
 
     fn create_active_quest_with_prose(conn: &mut SqliteConnection, description: &str) -> Quest {
-        let result = QuestRepository::new(conn)
+        QuestRepository::new(conn)
             .create(CreateQuestInput {
                 space_id: "1".to_string(),
                 title: "Meeting notes".to_string(),
@@ -1484,8 +1483,7 @@ mod tests {
                 order_rank: None,
                 is_checklist: false,
             })
-            .expect("create quest with prose");
-        result
+            .expect("create quest with prose")
     }
 
     #[test]
@@ -2036,7 +2034,7 @@ mod tests {
         );
 
         let comes_at =
-            crate::services::due_time::compute_fire_utc(&day(1), Some("20:00")).expect("moment");
+            crate::utils::due_time::compute_fire_utc(&day(1), Some("20:00")).expect("moment");
         assert_eq!(
             QuestRepository::new(&mut conn)
                 .focus(comes_at - chrono::Duration::minutes(1))

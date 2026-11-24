@@ -178,6 +178,11 @@ role suffix: `device.service.rs`, `channel.repository.rs`,
 `device.commands.rs`, `device.store.ts`. How two devices reach each other is
 in [`docs/architecture/communication.md`](architecture/communication.md).
 
+Give each file directly in `services/` the suffix `.service.rs`
+(`reminder.service.rs`), and each file directly in `repositories/` the suffix
+`.repository.rs`; `mod.rs` and the files in the folder of one service
+(`services/cli/tests.rs`) keep their names. `npm run lint:rust` checks it.
+
 Give a module the name of the concept that it owns, not the name of the trait
 that it exports.
 

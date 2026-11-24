@@ -5,6 +5,7 @@ use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 
 use crate::models::CreateSpaceMappingInput;
+use crate::repositories::Repository;
 use crate::schema::pair_space_mappings as mappings;
 use crate::services::db::utc_now;
 
@@ -12,11 +13,13 @@ pub struct SpaceMappingRepository<'a> {
     conn: &'a mut SqliteConnection,
 }
 
-impl<'a> SpaceMappingRepository<'a> {
-    pub fn new(conn: &'a mut SqliteConnection) -> Self {
+impl<'a> Repository<'a> for SpaceMappingRepository<'a> {
+    fn new(conn: &'a mut SqliteConnection) -> Self {
         Self { conn }
     }
+}
 
+impl SpaceMappingRepository<'_> {
     /// The spaces this pair syncs now, in id order.
     pub fn active(&mut self, peer_device_id: &str) -> Result<Vec<String>, String> {
         mappings::table

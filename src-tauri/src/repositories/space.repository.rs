@@ -1,22 +1,21 @@
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
-#[cfg(any(feature = "ui-plane", test))]
-use tauri::State;
 
 use crate::models::{CreateSpaceInput, Space, UpdateSpaceInput};
+use crate::repositories::Repository;
 use crate::schema::spaces;
-#[cfg(any(feature = "ui-plane", test))]
-use crate::services::db::DbPool;
 
 pub struct SpaceRepository<'a> {
     conn: &'a mut SqliteConnection,
 }
 
-impl<'a> SpaceRepository<'a> {
-    pub fn new(conn: &'a mut SqliteConnection) -> Self {
+impl<'a> Repository<'a> for SpaceRepository<'a> {
+    fn new(conn: &'a mut SqliteConnection) -> Self {
         Self { conn }
     }
+}
 
+impl SpaceRepository<'_> {
     pub fn list(&mut self) -> Result<Vec<Space>, String> {
         spaces::table
             .select(Space::as_select())
@@ -51,36 +50,4 @@ impl<'a> SpaceRepository<'a> {
             .map_err(|e| e.to_string())?;
         Ok(())
     }
-}
-
-#[cfg(any(feature = "ui-plane", test))]
-#[tauri::command]
-pub fn get_spaces(state: State<DbPool>) -> Result<Vec<Space>, String> {
-    let mut conn = state.get()?;
-    SpaceRepository::new(&mut conn).list()
-}
-
-#[cfg(any(feature = "ui-plane", test))]
-#[tauri::command]
-pub fn create_space(state: State<DbPool>, input: CreateSpaceInput) -> Result<Space, String> {
-    let mut conn = state.get()?;
-    SpaceRepository::new(&mut conn).create(input)
-}
-
-#[cfg(any(feature = "ui-plane", test))]
-#[tauri::command]
-pub fn update_space(
-    state: State<DbPool>,
-    id: String,
-    input: UpdateSpaceInput,
-) -> Result<Space, String> {
-    let mut conn = state.get()?;
-    SpaceRepository::new(&mut conn).update(&id, input)
-}
-
-#[cfg(any(feature = "ui-plane", test))]
-#[tauri::command]
-pub fn delete_space(state: State<DbPool>, id: String) -> Result<(), String> {
-    let mut conn = state.get()?;
-    SpaceRepository::new(&mut conn).delete(&id)
 }

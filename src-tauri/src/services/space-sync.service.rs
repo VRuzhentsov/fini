@@ -24,7 +24,7 @@ use tokio::sync::mpsc;
 
 use crate::models::{Event, Identity};
 use crate::repositories::{
-    ChannelRepository, DeviceRepository, OutboxRepository, SpaceMappingRepository,
+    ChannelRepository, DeviceRepository, OutboxRepository, Repository, SpaceMappingRepository,
 };
 use crate::schema::{spaces, sync_acks, sync_outbox, sync_seen, tombstones};
 use crate::services::bluetooth_channel_service::BluetoothChannelService;
@@ -1668,7 +1668,7 @@ fn start_sync_service_once() {
     }
     static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     run_until_success(&STARTED, || {
-        crate::services::android_context::call_static_context_void(
+        crate::utils::android_context::call_static_context_void(
             "com.fini.app.SyncForegroundService",
             "start",
         )

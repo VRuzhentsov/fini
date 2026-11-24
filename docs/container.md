@@ -235,7 +235,7 @@ The results:
   The release has no `SHA256SUMS` file. The CLI update checks the zipsign
   signature of the asset, and that is sufficient.
 - The CLI update looks for the musl triple
-  (`cli_asset_target_substrings` in `src-tauri/src/services/cli_update.rs`).
+  (`cli_asset_target_substrings` in `src-tauri/src/services/cli-update.service.rs`).
 - A CLI at v0.3.19 or older is a glibc build. Its `fini update` looks first
   for its own triple, `x86_64-unknown-linux-gnu`. Without it, the CLI takes
   the first asset with `linux`, `x86_64` and `cli` in its name (the fallback
@@ -281,6 +281,6 @@ It uses the android image. It does not have an image of its own.
   links (`LinkAcceptor`, `accept`, `serve`): the Network channel shares this
   path, and the CLI does not use it. A follow-up gates it with
   `#[cfg(any(feature = "ui-plane", test))]`. The other 33 were there before.
-- `cli_asset_target_substrings` in `src-tauri/src/services/cli_update.rs`
+- `cli_asset_target_substrings` in `src-tauri/src/services/cli-update.service.rs`
   still maps `cli-linux-aarch64` to `aarch64-unknown-linux-gnu`. The release
   has no such asset, so an arm64 Linux CLI finds no update.
