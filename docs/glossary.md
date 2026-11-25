@@ -304,6 +304,62 @@ fragments. Unrelated to `PeerFrame` despite the shared spelling, and the
 distance between them is not academic — one ~400-byte `SyncEvent`, a single
 `PeerFrame`, once landed on BLE as 238 fragments taking 20+ seconds.
 
+## Sync words
+
+The words of [ADR-0014](adr/0014-sync-by-state-reconciliation.md).
+
+### Reconciliation
+
+A run in which two devices find the items of a space that are different
+between them, and send only those rows.
+
+*Elsewhere:* range-based set reconciliation in negentropy (Nostr); an
+anti-entropy repair in Cassandra and Dynamo.
+
+### Item
+
+One synced key of a space in a reconciliation: a time and a 32-byte id
+computed from the row version.
+
+*Elsewhere:* an item (timestamp and id) in negentropy; a leaf of a Merkle
+tree.
+
+### Row version
+
+The `sync_version` of a synced row: the hybrid logical clock time of the
+write that made it. The higher version wins.
+
+*Elsewhere:* the `db_version` and column version in cr-sqlite; a revision in
+CouchDB.
+
+### Hybrid logical clock (HLC)
+
+A clock that gives the larger of the wall-clock time and the newest version
+that the device has seen, with a counter for the same millisecond.
+
+*Elsewhere:* the HLC of CockroachDB and of the Actual Budget sync.
+
+### Tombstone
+
+The stored row version of a delete, or of a move out of a space, that syncs
+as a row does.
+
+*Elsewhere:* a tombstone in Cassandra, CouchDB and cr-sqlite.
+
+### Signer
+
+A device key that this device accepts as the signer of row versions
+(`sync_signers`).
+
+*Elsewhere:* a trusted key in a keyring (OpenPGP, SSH `allowed_signers`).
+
+### Seal
+
+To sign the row versions that a write made, after the trigger wrote their
+version.
+
+*Elsewhere:* the commit signature of a Git commit.
+
 ## Other words
 
 ### Backend
