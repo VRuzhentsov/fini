@@ -1,0 +1,6 @@
+{
+  "name": "fini",
+  "version": "0.6.0",
+  "description": "Link Fini quests to Claude Code sessions, with commands, model tools and a quest note.",
+  "author": { "name": "Vitalii Ruzhentsov" }
+}

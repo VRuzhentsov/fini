@@ -12,5 +12,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["shared/**/*.mts", "fini-claude-plugin/**/*.mts"]
+  "include": ["fini/**/*.mts", "tests/**/*.mts"]
 }

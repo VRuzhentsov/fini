@@ -9,7 +9,7 @@ import subprocess
 import time
 
 PLUGIN_ID = "fini-hermes-plugin"
-CORE = Path(__file__).resolve().parents[1] / "shared" / "cli.mts"
+CORE = Path(__file__).resolve().parent / "shared" / "cli.mts"
 MAX_BYTES = 1024 * 1024
 
 
@@ -33,7 +33,7 @@ def _transport(payload):
         input_stream.write(payload)
         input_stream.seek(0)
         with subprocess.Popen(
-            ["node", str(CORE)], stdin=input_stream, stdout=subprocess.PIPE,
+            ["node", "--disable-warning=ExperimentalWarning", str(CORE)], stdin=input_stream, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, start_new_session=True,
         ) as process:
             try:

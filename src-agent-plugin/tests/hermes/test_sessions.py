@@ -13,7 +13,7 @@ from unittest.mock import patch
 from hermes_cli.plugin_command_dispatch import invoke_plugin_command
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
-SOURCE = Path(__file__).resolve().parents[1] / "__init__.py"
+SOURCE = Path(__file__).resolve().parents[2] / "fini" / "__init__.py"
 spec = importlib.util.spec_from_file_location("fini_test_plugin", SOURCE)
 assert spec is not None and spec.loader is not None
 plugin = importlib.util.module_from_spec(spec)
@@ -109,7 +109,7 @@ class SessionCommandsTests(unittest.TestCase):
         assert installed is not None and installed.loader is not None
         module = importlib.util.module_from_spec(installed)
         installed.loader.exec_module(module)
-        self.assertEqual(module.CORE, SOURCE.parents[1] / "shared" / "cli.mts")
+        self.assertEqual(module.CORE, SOURCE.parent / "shared" / "cli.mts")
         manager = PluginManager()
         self.addCleanup(manager.unload)
         module.register(PluginContext(

@@ -7,4 +7,3 @@ plugin-data/
 node_modules/
 coverage/
 *.tsbuildinfo
-.artifacts/

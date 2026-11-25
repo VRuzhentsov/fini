@@ -18,9 +18,9 @@ try {
     XDG_DATA_HOME: join(home, 'data'), XDG_CONFIG_HOME: join(home, 'config'),
     ANTHROPIC_API_KEY: 'isolated-fixture-not-a-real-key', ANTHROPIC_BASE_URL: 'http://127.0.0.1:1',
     DISABLE_AUTOUPDATER: '1', DISABLE_TELEMETRY: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' };
-  command(process.execPath, [join(root, 'fini-claude-plugin', 'package.mts')], env);
-  const artifact = join(root, '.artifacts', 'claude', 'fini'), zip = join(home, 'fini.zip');
-  command('python3', ['-c', 'import pathlib,sys,zipfile; p=pathlib.Path(sys.argv[1]); z=zipfile.ZipFile(sys.argv[2],"w",zipfile.ZIP_DEFLATED); [z.write(f,f.relative_to(p)) for f in p.rglob("*") if f.is_file()]; z.close()', artifact, zip], env);
+  // The plugin folder as an install copies it: its files only, no node_modules and no repository.
+  const plugin = join(root, 'fini'), zip = join(home, 'fini.zip');
+  command('python3', ['-c', 'import pathlib,sys,zipfile; p=pathlib.Path(sys.argv[1]); z=zipfile.ZipFile(sys.argv[2],"w",zipfile.ZIP_DEFLATED); [z.write(f,f.relative_to(p)) for f in p.rglob("*") if f.is_file() and "__pycache__" not in f.parts]; z.close()', plugin, zip], env);
   const quest = JSON.parse(command('fini', ['quest', 'create', '--title', 'Native plugin check', '--json'], env)).id;
   const work = join(home, 'work'); mkdirSync(work);
   const common = ['--plugin-dir', zip, '--setting-sources', '', '--strict-mcp-config',
@@ -52,6 +52,6 @@ try {
   assert.equal(native(`/fini:link ${quest} --agent hermes --session explicit-native`, sid).body.agent, 'hermes');
   assert.equal(native('/fini:relations --agent hermes --session explicit-native').body.quests.length, 1);
   assert.equal(existsSync(join(home, 'hermes', 'plugin-data')), false);
-  console.log(JSON.stringify({ verified: 'mod command.run answers for native /fini:* commands, display-only output, ZIP cache relocation with Drizzle and SQLite, runtime IDs, resume, primary, unlink, both relation directions, CLI failure and invalid options',
+  console.log(JSON.stringify({ verified: 'mod command.run answers for native /fini:* commands, display-only output, ZIP install copy with node:sqlite and no npm packages, runtime IDs, resume, primary, unlink, both relation directions, CLI failure and invalid options',
     version: command('claude', ['--version'], env, work).trim(), invocations, model_turns: 0, api_ms: 0, cost_usd: 0 }));
 } finally { rmSync(home, { recursive: true, force: true }); }

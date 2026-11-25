@@ -8,20 +8,13 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test shared/tests/*.test.mts",
-    "test:hermes": "hermes --run-module unittest discover -s fini-hermes-plugin/tests -v",
-    "package:claude": "node fini-claude-plugin/package.mts",
-    "test:claude:native": "node fini-claude-plugin/tests/native-check.mts",
-    "test:claude": "node --test fini-claude-plugin/tests/*.test.mts",
-    "check": "npm run typecheck && npm test && npm run test:claude && npm run test:hermes"
+    "test": "node --disable-warning=ExperimentalWarning --test tests/shared/*.test.mts",
+    "test:hermes": "hermes --run-module unittest discover -s tests/hermes -v",
+    "test:claude:native": "node tests/claude/native-check.mts",
+    "check": "npm run typecheck && npm test && npm run test:hermes"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "9.6.0",
     "@types/node": "24.19.2",
     "typescript": "7.0.2"
-  },
-  "dependencies": {
-    "better-sqlite3": "13.2.0",
-    "drizzle-orm": "0.45.4"
   }
 }

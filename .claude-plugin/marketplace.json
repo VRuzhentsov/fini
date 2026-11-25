@@ -1,0 +1,14 @@
+{
+  "name": "fini",
+  "description": "Fini plugins for agents.",
+  "owner": {
+    "name": "Vitalii Ruzhentsov"
+  },
+  "plugins": [
+    {
+      "name": "fini",
+      "source": "./src-agent-plugin/fini",
+      "description": "Link Fini quests to Claude Code sessions, with commands, model tools and a quest note."
+    }
+  ]
+}

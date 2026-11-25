@@ -6,11 +6,11 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
-import Database from 'better-sqlite3';
-import { Command, RelationCommand, execute } from '../core.mts';
-import { SqliteRelationsRepository } from '../store.mts';
+import { DatabaseSync } from 'node:sqlite';
+import { Command, RelationCommand, execute } from '../../fini/shared/core.mts';
+import { SqliteRelationsRepository } from '../../fini/shared/store.mts';
 
-const CLI = fileURLToPath(new URL('../cli.mts', import.meta.url));
+const CLI = fileURLToPath(new URL('../../fini/shared/cli.mts', import.meta.url));
 const uuid = '60eba7ee-1dd7-48fb-969d-e68a263ed0a0';
 function fixture(t: TestContext) {
   assert.ok(process.env.TMPDIR);
@@ -61,8 +61,8 @@ test('many-to-many relations and primary lifecycle through the real Fini CLI', t
   assert.equal(call(Command.Unlink, q).changed, false);
   assert.equal(call(Command.Relations, `--quest ${q}`).agents[1].primary, null);
   assert.equal(call(Command.Relations, '').quests.length, 1);
-  const db = new Database(path, { readonly: true });
-  assert.equal(db.prepare('PRAGMA integrity_check').pluck().get(), 'ok'); db.close();
+  const db = new DatabaseSync(path, { readOnly: true });
+  assert.deepEqual({ ...db.prepare('PRAGMA integrity_check').get() }, { integrity_check: 'ok' }); db.close();
 });
 
 test('missing quest, CLI errors and malformed arguments change no links', t => {
@@ -111,12 +111,12 @@ test('SQLite constraints preserve unique links and at most one primary per quest
   repository.link('001', { agent: 'hermes', session_id: 'a' });
   repository.link('001', { agent: 'hermes', session_id: 'b' });
   repository.close();
-  const db = new Database(path); t.after(() => db.close());
+  const db = new DatabaseSync(path); t.after(() => db.close());
   assert.throws(() => db.prepare('INSERT INTO relations VALUES (?, ?, ?, ?)').run('001', 'hermes', 'a', null), /UNIQUE/);
   assert.throws(() => db.prepare('UPDATE relations SET is_primary=1 WHERE session_id=?').run('b'), /UNIQUE/);
   assert.throws(() => db.prepare('UPDATE relations SET is_primary=0').run(), /CHECK/);
   db.prepare('INSERT INTO relations VALUES (?, ?, ?, ?)').run('001', 'claude', uuid, 1);
-  assert.equal(db.prepare('SELECT count(*) FROM relations').pluck().get(), 3);
+  assert.deepEqual({ ...db.prepare('SELECT count(*) AS n FROM relations').get() }, { n: 3 });
 });
 
 test('independent SQLite writers retain all links and one first primary', async t => {

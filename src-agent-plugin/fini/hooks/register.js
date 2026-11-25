@@ -26,7 +26,7 @@ async function core($, command, args) {
   try {
     const request = { command, [typeof args === 'string' ? 'raw_args' : 'input']: args,
       current: { agent: 'claude', session_id: await $.session.id() } };
-    const child = await $.process.run(['node', `${$.plugin.root}/shared/cli.mts`],
+    const child = await $.process.run(['node', '--disable-warning=ExperimentalWarning', `${$.plugin.root}/shared/cli.mts`],
       { stdin: JSON.stringify(request), timeoutMs: 20_000 });
     return JSON.parse(child.stdout);
   } catch (error) {
