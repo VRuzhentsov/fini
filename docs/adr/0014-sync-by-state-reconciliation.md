@@ -147,7 +147,7 @@ are Loro's own and which custom parts are deferred and optional.
 | D4 Deletes | — (a field) | — |
 | D5 History | Lost values read from Loro's history (checkout, diff) | An explicit list of the last 10 values |
 | D6 Trimming | No trimming during the migration | Shallow snapshots, and the re-apply path for an old peer |
-| D7 Tree | Loro Tree (an option for ADR-0015) | — |
+| D7 Relations | Decided in ADR-0015 | — |
 | D8 Migration | Mergeable child containers (`ensure_mergeable_map`; measured) | "The smaller id builds, the other applies its differences again" (no longer necessary) |
 | D10 Storage | Snapshot and update files, `import` | In-memory indexes (necessary), integrity checks at read |
 | D12 CLI | Import of each update file | The compaction rule for files; a pool of CLI ids with a lock file for each id |
@@ -241,11 +241,11 @@ about 2 s makes the edits of one device appear on the other almost at once.
   into a fresh document, and writes those changes again as new edits. A trim
   also removes the history that D5 reads.
 
-### D7 — The quest tree and the order (an option for ADR-0015)
+### D7 — Quest relations
 
-Loro's Tree has a deterministic cycle rule and orders the children by
-fractional index (measured: the cycle test). It can replace `parent_id` and
-the rank keys. This is an option for ADR-0015; it is not decided here.
+Quest relations are decided in ADR-0015; the engine choice does not preset
+that model. The order of the quests stays the rank keys, a field of each
+quest (D10).
 
 ### D8 — Migration
 
@@ -330,7 +330,7 @@ There is no SQLite. The data of each space is a Loro document on disk:
 - In-memory indexes are built at load (measured: 45 ms for 10 000 quests) and
   kept up to date from Loro's events. The queries run on them (measured: 2 ms
   or less).
-- Parent and child relations can use the Loro Tree (D7, ADR-0015).
+- Quest relations are decided in ADR-0015 (D7).
 
 A space document:
 
@@ -350,7 +350,7 @@ space document "<space-id>"
 │                         status, closed_at, title?, description? (Text),
 │                         energy?, priority?, due_time?, created_at,
 │                         updated_at
-└─ tree: Tree             (an option for ADR-0015: each node holds a quest_id)
+└─ (quest relations: decided in ADR-0015)
 
 Not in the document: reminders, snoozes and notifications, which are local
 to each device (D17).
@@ -481,7 +481,7 @@ mark (ADR-0012 D6). History shows the closed marks.
 | | `checklist_base` | | | | ✓ (#128) |
 | `reminders` | `id`, `quest_id`, `type`, `mm_offset`, `due_at_utc`, `created_at`, `scheduled_notification_id` | | the reminder of a dated quest, from `due`, `due_time` and the rule | ✓ custom rows (D17) | |
 | `notification_snoozes` | `reminder_id`, `fire_at_utc`, `created_at` | | | ✓ (D17) | |
-| `focus_history` | `id`, `quest_id`, `space_id`, `trigger`, `created_at` | open (sync scope) | | | |
+| `focus_history` | `id`, `quest_id`, `space_id`, `trigger`, `created_at` | | | ✓ (each device has its own focus) | |
 | `checklist_activity` | all | | | | ✓ (D14) |
 
 Derived, never stored: the dates of the rule, the open occurrences, the
@@ -663,8 +663,8 @@ reads it. The criterion is the fit with what Fini needs from its store:
 
 - **Persistence**: writes that survive a crash.
 - **Queries**: the sorted lists, overdue quests, the Focus pick, the
-  occurrences of a day, the reminders that are due, and the recursive parent
-  tree (ADR-0015).
+  occurrences of a day, the reminders that are due, and the quest relations
+  (ADR-0015).
 - **Schema evolution**: new and renamed fields, with old and new app versions
   on the paired devices at the same time.
 - **Backup and import** (`backup.service.rs`).
@@ -749,7 +749,7 @@ Values marked "estimate" were not measured.
 | A quest | A map for each quest, in a root map keyed by quest id; one key for each field | The same, with Y.Map |
 | Checklist items | A MovableList of maps: adds merge as a union, moves are native | An Array of maps: a move is a delete and an insert |
 | Order | The rank key as a field (as today), or a MovableList of quest ids | The rank key as a field |
-| Parent tree (ADR-0015) | Tree: a movable tree with a deterministic cycle rule, siblings ordered by fractional index | A `parent_id` field; the app needs its own cycle rule |
+| Parent tree (a comparison only; relations are decided in ADR-0015) | Tree: a movable tree with a deterministic cycle rule, siblings ordered by fractional index | A `parent_id` field; the app needs its own cycle rule |
 | Occurrence marks | A map for each quest, keyed by `period_key` | The same |
 | Reminders | A map in the quest | The same |
 | Spaces | One document for each space (the sync unit is a mapped space); a move to another space is a delete in one document and a create in the other | The same |
@@ -913,7 +913,7 @@ it is Fini's own protocol on top of yrs.
 
 - **Loro for everything** is the strongest CRDT candidate. It merges field by
   field, keeps a history that a shallow snapshot bounds, has a counter and a
-  movable tree with a cycle rule (ADR-0015), and its updates are small on slow
+  movable tree with a cycle rule, and its updates are small on slow
   links (98 B for one edit). The costs: storage and queries written again (the
   measured query times are small), 3.8 MB in the APK, random writer ids that
   show that a third writer exists (R5 in part), logical time instead of the
@@ -1009,7 +1009,7 @@ Candidate (not decided):
 | Devices on different sync versions | Chosen | A notice on the Device page |
 | The old outbox tables | Chosen | Kept, not used, for one release; then dropped |
 | Unpair | Chosen | Local to this device; the data that the unpaired device wrote stays |
-| What syncs | Open | Candidates: space names, focus history and imported backups sync; settings stay on each device |
+| What syncs | Open, except focus history | Focus history stays on each device (chosen: each device has its own focus, because the spaces differ for each device). Candidates: space names and imported backups sync; settings stay on each device |
 
 ## Discussion log
 
@@ -1044,7 +1044,9 @@ Candidate (not decided):
 | Occurrences | Chosen: in the Loro document (D16) | Mergeable maps keyed `<quest_id>/<date>`; measured: no duplicates, both edits of one day kept, 73 B a mark |
 | Reminders, snoozes, notifications | Chosen: local to each device (D17) | Derived from the synced quest, rule and marks after each import; this fixes the alarm that still fires on B after A completes or deletes the quest |
 | The repeat rule | Chosen by measurement: one value of the quest map (D16) | A mergeable map mixes two concurrent rule edits into a rule that no device wrote, and a mergeable list duplicated the weekdays |
-| Sync scope | Open | Candidates: space names, focus history and imported backups sync; settings stay on each device |
+| Sync scope | Open, except focus history | Candidates: space names and imported backups sync; settings stay on each device |
+| Focus history | Chosen: local to each device | Each device has its own focus, because the spaces differ for each device |
+| Quest relations | Decided in ADR-0015 | The engine choice does not preset the model (ADR-0015 can choose parent and child, a graph of blocks, or both) |
 | Unpair | Chosen: local to this device | The data that the unpaired device wrote stays |
 | Live push | Rejected | Comparison only: after each local edit (about 2 s of wait), and every 30 s while connected |
 | Version mismatch | Chosen | A notice on the Device page |
@@ -1070,6 +1072,6 @@ Candidate (not decided):
 ## Open questions
 
 1. The size of the CLI id pool (D12): 4, or another number?
-2. Sync scope: do space names, focus history and imported backups sync, and
-   do settings stay on each device (the candidates)?
-3. ADR-0015: the Loro Tree in place of `parent_id` and the rank keys (D7)?
+2. Sync scope: do space names and imported backups sync, and do settings stay
+   on each device (the candidates)? Focus history stays on each device
+   (chosen).
