@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "fini",
-      "source": "./src-agent-plugin/fini",
+      "source": "./plugins/agent",
       "description": "Link Fini quests to Claude Code sessions, with commands, model tools and a quest note."
     }
   ]

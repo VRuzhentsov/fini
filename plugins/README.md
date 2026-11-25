@@ -1,13 +1,13 @@
-# Fini agent plugin: development
+# Fini plugins: development
 
-The plugin is the [`fini/`](fini/README.md) folder. That guide gives installation, commands,
+The agent plugin is the [`agent/`](agent/README.md) folder. That guide gives installation, commands,
 tools and rules. This file is for changes to the plugin.
 
 ## Layout
 
 ```text
-src-agent-plugin/
-  fini/                  # the plugin: an install copies only this folder
+plugins/
+  agent/                 # the agent plugin: an install copies only this folder
     .claude-plugin/      # Claude Code manifest
     commands/            # /fini:* command files for Claude Code
     hooks/               # Claude Code mod: hooks.json and register.js
@@ -22,14 +22,14 @@ src-agent-plugin/
   package.json           # development tools only
 ```
 
-The plugin has one version for both agents. Change it in `fini/.claude-plugin/plugin.json`,
-`fini/plugin.yaml` and `package.json` together; `tests/shared/version.test.mts` checks that they agree.
+The plugin has one version for both agents. Change it in `agent/.claude-plugin/plugin.json`,
+`agent/plugin.yaml` and `package.json` together; `tests/shared/version.test.mts` checks that they agree.
 Claude Code updates an installed copy when this version changes.
 
-The repository root has `.claude-plugin/marketplace.json`, which lists `./src-agent-plugin/fini`
+The repository root has `.claude-plugin/marketplace.json`, which lists `./plugins/agent`
 for Claude Code installs. Hermes installs the same folder from its subfolder path.
 
-Keep `fini/` self-contained. Do not add a `package.json` or npm packages to it: Hermes runs
+Keep `agent/` self-contained. Do not add a `package.json` or npm packages to it: Hermes runs
 `npm ci` for a plugin folder that has one, and Claude Code does not install npm packages.
 The plugin needs only Node and the `fini` CLI at runtime. Node runs the `.mts` files directly,
 with no build step. Both adapters start Node with `--disable-warning=ExperimentalWarning`,
@@ -53,7 +53,7 @@ all rules and storage.
 
 ## Transport
 
-`node fini/shared/cli.mts` reads one JSON request:
+`node agent/shared/cli.mts` reads one JSON request:
 
 ```json
 {"command":"fini:relations","raw_args":"","current":{"agent":"hermes","session_id":"runtime-owned-id"},"db_path":"/absolute/disposable/agent-sessions.db"}
@@ -75,18 +75,18 @@ session queries return `quests`. Each result has `db_path`. A handled failure re
 
 ## Checks
 
-From `src-agent-plugin/`, with `TMPDIR` set to a scratch directory:
+From `plugins/`, with `TMPDIR` set to a scratch directory:
 
 ```bash
 npm ci
 npm run check               # typecheck, shared core tests, Hermes tests
 npm run test:claude:native  # real Claude Code with a dead model endpoint
-claude plugin validate fini
+claude plugin validate agent
 ```
 
 - Tests use real Fini CLI records in disposable homes and isolated plugin databases.
 - The Hermes tests use the installed Hermes `PluginContext`, `PluginManager` and tool registry.
-- The native Claude check loads the `fini/` folder as a ZIP copy, as an install does. It runs the
+- The native Claude check loads the `agent/` folder as a ZIP copy, as an install does. It runs the
   commands with real command discovery and mod dispatch, with no model turns and no cost.
 - No hosted CI runs these checks.
 

@@ -12,5 +12,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["fini/**/*.mts", "tests/**/*.mts"]
+  "include": ["agent/**/*.mts", "tests/**/*.mts"]
 }

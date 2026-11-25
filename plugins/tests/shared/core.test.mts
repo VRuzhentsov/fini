@@ -7,10 +7,10 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
-import { Command, RelationCommand, execute } from '../../fini/shared/core.mts';
-import { SqliteRelationsRepository } from '../../fini/shared/store.mts';
+import { Command, RelationCommand, execute } from '../../agent/shared/core.mts';
+import { SqliteRelationsRepository } from '../../agent/shared/store.mts';
 
-const CLI = fileURLToPath(new URL('../../fini/shared/cli.mts', import.meta.url));
+const CLI = fileURLToPath(new URL('../../agent/shared/cli.mts', import.meta.url));
 const uuid = '60eba7ee-1dd7-48fb-969d-e68a263ed0a0';
 function fixture(t: TestContext) {
   assert.ok(process.env.TMPDIR);

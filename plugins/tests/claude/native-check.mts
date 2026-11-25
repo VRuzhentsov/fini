@@ -19,7 +19,7 @@ try {
     ANTHROPIC_API_KEY: 'isolated-fixture-not-a-real-key', ANTHROPIC_BASE_URL: 'http://127.0.0.1:1',
     DISABLE_AUTOUPDATER: '1', DISABLE_TELEMETRY: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' };
   // The plugin folder as an install copies it: its files only, no node_modules and no repository.
-  const plugin = join(root, 'fini'), zip = join(home, 'fini.zip');
+  const plugin = join(root, 'agent'), zip = join(home, 'fini.zip');
   command('python3', ['-c', 'import pathlib,sys,zipfile; p=pathlib.Path(sys.argv[1]); z=zipfile.ZipFile(sys.argv[2],"w",zipfile.ZIP_DEFLATED); [z.write(f,f.relative_to(p)) for f in p.rglob("*") if f.is_file() and "__pycache__" not in f.parts]; z.close()', plugin, zip], env);
   const quest = JSON.parse(command('fini', ['quest', 'create', '--title', 'Native plugin check', '--json'], env)).id;
   const work = join(home, 'work'); mkdirSync(work);

@@ -5,7 +5,7 @@ description: "Use when the user searches for, finds, or asks to look up a Fini q
 
 # Fini Sessions — Quest and Agent Session Links
 
-The Fini agent plugin (`src-agent-plugin/` in the Fini repository) links Fini quests to agent sessions of Claude Code and Hermes. This skill gives the rules for the model. The `fini` skill and the `fini` CLI own all quest content.
+The Fini agent plugin (`plugins/agent/` in the Fini repository) links Fini quests to agent sessions of Claude Code and Hermes. This skill gives the rules for the model. The `fini` skill and the `fini` CLI own all quest content.
 
 ## Availability
 

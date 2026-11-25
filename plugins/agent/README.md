@@ -22,7 +22,7 @@ Claude Code, at the prompt of a terminal session:
 Hermes:
 
 ```bash
-hermes plugins install VRuzhentsov/fini/src-agent-plugin/fini --enable
+hermes plugins install VRuzhentsov/fini/plugins/agent --enable
 ```
 
 Then start a new session. In Hermes, a running gateway gets the plugin only after it restarts.
