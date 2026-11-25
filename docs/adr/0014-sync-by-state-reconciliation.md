@@ -241,18 +241,29 @@ the rank keys. This is an option for ADR-0015; it is not decided here.
 ### D8 — Migration
 
 - Each device makes, for each mapped space, a Loro document from its SQLite
-  rows: one map for each quest, the checklist as a MovableList, the
-  occurrence marks as a map, the rank key as a field.
-- Two devices that make the same document on their own create the same keys
-  at the same time, and Loro keeps only one child container for a key (Loro
-  docs). Loro's own answer is a "mergeable" child container, which is shared
-  by its key; the Loro docs show it for the JavaScript interface, so the Rust
-  interface must be checked. With it, each device makes its document, and the
-  two merge.
-- Deferred, optional (if the Rust interface has no mergeable containers): the
-  device with the smaller device id makes the document, and the other device
-  imports it at the first `fini/sync/7` comparison, then writes its own
-  differences again as new edits.
+  rows. Two devices with the same rows each make a document, and the two
+  documents then merge at the first `fini/sync/7` comparison.
+- Loro's Rust interface has `ensure_mergeable_map`, `_list`,
+  `_movable_list`, `_text`, `_tree` and `_counter`: two peers that call the
+  same method with the same parent map and key get the same child container
+  id, and their edits merge in it.
+- Measured (1 000 quests from the same rows on two devices; then each device
+  edits a different quest; then the merge):
+
+  | How the documents are made | Quests | Edits of both devices | Checklist items (5 on each device) | A counter (25 on each device) | Snapshot, one device → after the merge |
+  |---|---|---|---|---|---|
+  | `insert_container` (a new child each time) | 1 000 | Lost on one device: for each key, the child of one device wins, with the edits in it | 5 | 25 | 208 KB → 403 KB (both copies stay) |
+  | `ensure_mergeable_map` for each quest, a mergeable MovableList for the checklist | 1 000 | Both kept | 10: duplicated, because both lists get 5 inserts | 50: doubled | 250 KB → 344 KB |
+  | `ensure_mergeable_map` for each quest, the checklist as a mergeable map of items keyed by item id | 1 000 | Both kept | 5 | 50: doubled | 571 KB → 768 KB |
+
+- So the migration uses `ensure_mergeable_map` for each quest (and each
+  occurrence mark). The plain fields merge, because both devices write the
+  same values. The checklist stays in the description text, as today (one
+  text field, no list). A counter is not made in the migration: the migrated
+  focus minutes are a plain field, and the counter counts only new minutes.
+- Deferred, optional (no longer necessary): the device with the smaller
+  device id makes the document, and the other device writes its differences
+  again.
 - The SQLite file (with the old outbox tables) stays, not used, for one
   release; then the app removes it.
 - Devices on `fini/sync/6` and `fini/sync/7` do not connect; the Device page
@@ -328,13 +339,24 @@ in the other.
   rename), then removes the complete update files whose operations the new
   snapshot holds. It never removes a temporary file, so it cannot remove a
   file that a writer still writes.
-- The peer id of a CLI run (to be measured):
+- The peer id of a CLI run. Measured: 2 000 CLI runs on a space of 1 000
+  quests; each run loads the snapshot and the update files, makes one edit and
+  writes its own file; the app compacts after each 100 runs:
 
-  | Option | Cost |
-  |---|---|
-  | A new random id for each run | The version vector grows by one entry for each run. Measured: 500 sessions gave a 28.4 KB snapshot against 2.7 KB with one id, and a 5.3 KB version vector against 23 B |
-  | A small pool of CLI ids; a run claims one with a lock file for that id (not a lock of the store), and loads the operations of that id before it writes | A fixed number of entries |
-  | Trimming: does a shallow snapshot remove the entries of old peers? | Measured: the 500-session document was 10.6 KB after a shallow snapshot, so it removes part of the cost. To measure in detail |
+  | Option | Version vector | Full snapshot | Shallow snapshot | Sync to a paired device that synced before the runs | CLI load (average) |
+  |---|---|---|---|---|---|
+  | A new random id for each run | 2 001 entries, 8.0 KB, also after a shallow snapshot | 499 KB | 340 KB | 195 KB, and the device sends 8.0 KB in each later comparison | 10 ms |
+  | A pool of 4 CLI ids, each claimed with a lock file for that id | 5 entries, 17 B | 435 KB | 323 KB | 46 KB | 7.5 ms |
+  | One CLI id with a lock file | 2 entries, 9 B | 431 KB | 321 KB | 42 KB | 6.7 ms |
+
+  All three converge. A shallow snapshot does not remove the entries of old
+  peers from the version vector.
+- Chosen by the measurement: a pool of CLI ids (for example 4). A CLI run
+  claims a free id with a lock file for that id, loads the store (which holds
+  the earlier operations of that id), and writes with it. The lock is on the
+  id, not on the store: up to 4 CLI runs and the app write at the same time.
+  A new id for each run is rejected: each run adds a version-vector entry for
+  good, and each later comparison carries it.
 
 ### D13 — Concurrent writes of one field
 
@@ -806,7 +828,8 @@ Candidate (not decided):
 | Storage (follow-up b) | Chosen: Loro is the only store | Snapshot and update files for each space; relations by id; indexes in memory |
 | Document size (follow-up c) | Chosen: one document for each space | A space is the unit of a mapping |
 | The CLI (follow-up d) | Chosen: a Loro peer with no lock | Its own update file for each writer; only the app compacts |
-| The CLI peer id | Open: to be measured | A new id for each run, a pool of ids with a lock file for each id, or trimming |
+| The CLI peer id | Chosen by measurement: a pool of CLI ids, each claimed with a lock file | A new id for each run gave a version vector of 2 001 entries (8.0 KB) after 2 000 runs, and a shallow snapshot does not remove them; a pool of 4 gave 17 B |
+| Migration of two devices with the same data | Chosen by measurement: `ensure_mergeable_map` for each quest | Plain containers lose the edits of one device; mergeable lists duplicate items and counters double, so the checklist stays text and the counter counts only new minutes |
 | The explicit 10-value history list | Deferred, optional | Loro's own history gives the values while the document is not trimmed |
 | Trimming (shallow snapshots) | Deferred, optional | No trimming during the migration |
 | Trust model | Chosen: authenticated iroh links only | No signature for each row and no device identity in the data; signatures can come later for a relay that is not trusted |
@@ -839,10 +862,10 @@ Candidate (not decided):
 
 ## Open questions
 
-1. The CLI peer id (D12): a new id for each run, a pool of ids with a lock
-   file for each id, or trimming? To be measured.
-2. Does Loro's Rust interface have mergeable child containers (D8)? If not,
-   the deferred migration path applies.
+1. The size of the CLI id pool (D12): 4, or another number?
+2. A structured checklist (a list of items) later: it must not use a list
+   that two devices fill in the migration (measured: duplicates); a map of
+   items keyed by id merges, but is larger (D8).
 3. Sync scope: do space names, focus history and imported backups sync, and
    do settings stay on each device (the candidates)?
 4. ADR-0015: the Loro Tree in place of `parent_id` and the rank keys (D7)?
