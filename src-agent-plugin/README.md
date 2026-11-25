@@ -11,9 +11,6 @@ Both agents use these exact commands:
 ```text
 /fini:link <quest-id> [--primary] [--agent NAME --session ID]
 /fini:unlink <quest-id> [--agent NAME --session ID]
-/fini:primary <quest-id> [--agent NAME --session ID]
-/fini:primary <quest-id> --clear
-/fini:primary <quest-id> --agent NAME --clear
 /fini:relations
 /fini:relations --quest ID
 /fini:relations --agent NAME --session ID
@@ -21,7 +18,6 @@ Both agents use these exact commands:
 
 - The default target is the actual calling runtime's agent and session ID.
 - Explicit targets require both `--agent` and `--session`. Their IDs are not proof that a session exists.
-- `primary --clear` needs only the current agent. An explicit `--agent` selects another agent.
 - `relations` without arguments shows quests for the current session. Each quest has its Fini title
   (null when Fini cannot get the quest) and the sessions of all agents. It does not expand those sessions again.
 - `relations --quest ID` shows sessions grouped by agent, with a nullable `primary` and a `related` list.
@@ -34,9 +30,8 @@ Both agents use these exact commands:
 - Each quest can have many sessions and at most one primary for each agent.
 - The first link in an empty quest-agent group becomes primary. Later links are related.
 - A repeated link changes nothing, including the primary selection.
-- Promotion requires an existing link. The old primary stays related.
+- `link --primary` makes the target session primary. The old primary stays related.
 - Unlink removes only the selected link. Removing the primary leaves no primary; no replacement or confirmation follows.
-- Clear removes only primary selection. It retains every link.
 - Link first runs `fini quest get --id <ID> --json`. CLI failure or a different returned ID changes no links.
 
 ## Model tools

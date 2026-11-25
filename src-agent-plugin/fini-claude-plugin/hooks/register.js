@@ -1,5 +1,5 @@
 // Claude mod adapter: runtime identity and display only. Shared core owns everything else.
-const COMMANDS = ['fini:link', 'fini:unlink', 'fini:primary', 'fini:relations'];
+const COMMANDS = ['fini:link', 'fini:unlink', 'fini:relations'];
 
 // Model tools. The model calls each one as mcp__fini__<name>. The mod adds the
 // current session ID from the runtime; the model can only give an explicit target.

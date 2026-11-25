@@ -1,7 +1,7 @@
 # Fini native Claude Code plugin
 
-Native `commands/*.md` descriptors register `/fini:link`, `/fini:unlink`,
-`/fini:primary` and `/fini:relations`. They are commands, not skills.
+Native `commands/*.md` descriptors register `/fini:link`, `/fini:unlink`
+and `/fini:relations`. They are commands, not skills.
 The [shared guide](../README.md) owns syntax, rules, storage and local checks.
 
 `hooks/register.js` is a Claude Code mod module (`hooks.json` names it under

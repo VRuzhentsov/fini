@@ -6,7 +6,7 @@ import type { RelationsRepository, Session } from './store.mts';
 
 export const MAX_BYTES = 1024 * 1024;
 export const Command = {
-  Link: 'fini:link', Unlink: 'fini:unlink', Primary: 'fini:primary', Relations: 'fini:relations',
+  Link: 'fini:link', Unlink: 'fini:unlink', Relations: 'fini:relations',
   // Not a user command: the plugins request it to give the model its quest context.
   Context: 'fini:context',
 } as const;
@@ -27,8 +27,6 @@ export class RelationCommand {
   command: CommandName;
   quest?: string;
   session?: Session;
-  agent?: string;
-  clear: boolean;
   primary: boolean;
 
   static identifier(value: unknown): string {
@@ -95,36 +93,29 @@ export class RelationCommand {
     for (let i = 0; i < tokens.length; i++) {
       const token = tokens[i]!;
       if (!token.startsWith('-')) { positional.push(token); continue; }
-      if (!['--agent', '--session', '--quest', '--clear', '--primary'].includes(token) || options.has(token)) {
+      if (!['--agent', '--session', '--quest', '--primary'].includes(token) || options.has(token)) {
         throw new Error('Unknown or repeated option.');
       }
-      if (token === '--clear' || token === '--primary') { options.set(token, true); continue; }
+      if (token === '--primary') { options.set(token, true); continue; }
       const value = tokens[++i];
       if (value === undefined || value.startsWith('-')) throw new Error('Each option needs one value.');
       options.set(token, value);
     }
-    this.clear = options.has('--clear');
     this.primary = options.has('--primary');
     if (this.primary && this.command !== Command.Link) throw new Error('Only link accepts --primary.');
     const agent = options.get('--agent'), session = options.get('--session'), quest = options.get('--quest');
     if (this.command === Command.Context) {
       if (tokens.length) throw new Error('Context takes no arguments.');
     } else if (this.command === Command.Relations) {
-      if (positional.length || this.clear || (quest !== undefined && options.size !== 1)) {
+      if (positional.length || this.primary || (quest !== undefined && options.size !== 1)) {
         throw new Error('Use relations with no arguments, --quest ID, or --agent NAME --session ID.');
       }
       if (quest !== undefined) { this.quest = RelationCommand.identifier(quest); return; }
     } else {
-      if (positional.length !== 1 || quest !== undefined || (this.clear && this.command !== Command.Primary)) {
+      if (positional.length !== 1 || quest !== undefined) {
         throw new Error('Supply one quest ID and only the supported target options.');
       }
       this.quest = RelationCommand.identifier(positional[0]);
-      if (this.clear) {
-        if (session !== undefined) throw new Error('--clear does not accept --session.');
-        // Clearing needs the current agent, not a current session ID.
-        this.agent = RelationCommand.agentName(agent ?? (object(current) ? current.agent : undefined));
-        return;
-      }
     }
     if ((agent !== undefined) !== (session !== undefined)) throw new Error('Supply --agent and --session together.');
     this.session = RelationCommand.session(agent === undefined ? current : { agent, session_id: session });
@@ -149,9 +140,6 @@ export class RelationCommand {
       }
     }
     if (this.command === Command.Unlink) changed = repository.unlink(quest, this.session!);
-    if (this.command === Command.Primary) {
-      if (this.clear) repository.clear(quest, this.agent!); else repository.promote(quest, this.session!);
-    }
     return { quest_id: quest, ...(this.session ?? {}), ...(changed === undefined ? {} : { changed }),
       agents: RelationCommand.agents(repository, quest) };
   }

@@ -50,7 +50,7 @@ class SessionCommandsTests(unittest.TestCase):
         ))
 
     def test_native_commands_and_runtime_identity(self):
-        self.assertEqual(set(self.commands), {"fini:link", "fini:unlink", "fini:primary", "fini:relations"})
+        self.assertEqual(set(self.commands), {"fini:link", "fini:unlink", "fini:relations"})
         from tools.registry import registry
         self.assertIsNone(registry.get_entry("fini_link_current_session"))
         self.assertFalse(self.path.exists())
@@ -60,7 +60,7 @@ class SessionCommandsTests(unittest.TestCase):
                 self.assertNotIn("error", result)
                 self.assertEqual(result["session_id"], sid)
         self.assertEqual(self.call("relations")["quests"][0]["quest_id"], self.quest)
-        self.assertEqual(self.call("primary", self.quest, "resumed")["agents"][0]["primary"], "resumed")
+        self.assertEqual(self.call("link", f"{self.quest} --primary", "resumed")["agents"][0]["primary"], "resumed")
         self.call("unlink", self.quest, "resumed")
         group = self.call("relations", f"--quest {self.quest}")["agents"][0]
         self.assertIsNone(group["primary"])
@@ -69,7 +69,6 @@ class SessionCommandsTests(unittest.TestCase):
             self.assertEqual(len(self.call("relations")["quests"]), 1)
         self.assertEqual(self.call("link", f"{self.quest} --agent other --session ' Exact 001 '", None)["session_id"], " Exact 001 ")
         self.assertEqual(len(self.call("relations", "--agent other --session ' Exact 001 '", None)["quests"]), 1)
-        self.call("primary", f"{self.quest} --agent other --clear", None)
 
     def test_model_tools_use_runtime_session(self):
         from tools.registry import registry

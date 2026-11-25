@@ -1,7 +1,7 @@
 # Fini native Hermes plugin
 
-`register(ctx)` registers four native commands: `/fini:link`, `/fini:unlink`,
-`/fini:primary` and `/fini:relations`, three model tools and one hook.
+`register(ctx)` registers three native commands: `/fini:link`, `/fini:unlink`
+and `/fini:relations`, three model tools and one hook.
 The [shared guide](../README.md) owns command syntax, rules, storage and local checks.
 
 The handler accepts the invocation's `session_id`. Hermes supplies the current

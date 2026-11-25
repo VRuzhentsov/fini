@@ -134,7 +134,7 @@ def register(ctx):
                 "type": "object", "properties": properties, "additionalProperties": False,
                 **({"required": ["quest_id"]} if target else {})}},
         )
-    for name in ("link", "unlink", "primary", "relations"):
+    for name in ("link", "unlink", "relations"):
         ctx.register_command(
             f"fini:{name}", partial(_command, f"fini:{name}"),
             description=f"Fini quest-session {name} (local only).",

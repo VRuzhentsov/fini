@@ -25,7 +25,7 @@ test('assembled native commands and production dependencies work after relocatio
     assert.deepEqual(readFileSync(join(cache, name)), readFileSync(join(root, name)));
     assert.equal(createHash('sha256').update(readFileSync(join(cache, name))).digest('hex'), hash);
   }
-  for (const command of ['link', 'unlink', 'primary', 'relations']) assert.ok(existsSync(join(cache, 'commands', `${command}.md`)));
+  for (const command of ['link', 'unlink', 'relations']) assert.ok(existsSync(join(cache, 'commands', `${command}.md`)));
   assert.ok(existsSync(join(cache, 'hooks', 'register.js')));
   assert.equal(existsSync(join(cache, 'skills')), false);
   assert.ok(existsSync(join(cache, 'node_modules', 'drizzle-orm')));

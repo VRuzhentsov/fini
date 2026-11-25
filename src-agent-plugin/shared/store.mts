@@ -12,7 +12,6 @@ export interface RelationsRepository {
   link(quest: string, session: Session): boolean;
   unlink(quest: string, session: Session): boolean;
   promote(quest: string, session: Session): void;
-  clear(quest: string, agent: string): void;
   sessions(quest: string): Relation[];
   quests(session: Session): Relation[];
   close(): void;
@@ -71,11 +70,6 @@ export class SqliteRelationsRepository implements RelationsRepository {
       tx.update(relations).set({ is_primary: null }).where(group).run();
       tx.update(relations).set({ is_primary: true }).where(target).run();
     }, { behavior: 'immediate' });
-  }
-
-  clear(quest: string, agent: string): void {
-    this.db.update(relations).set({ is_primary: null })
-      .where(and(eq(relations.quest_id, quest), eq(relations.agent, agent))).run();
   }
 
   sessions(quest: string): Relation[] {

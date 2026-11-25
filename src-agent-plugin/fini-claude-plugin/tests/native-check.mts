@@ -45,8 +45,7 @@ try {
   const listed = native(`/fini:relations --quest ${quest}`).body;
   assert.deepEqual(listed.agents, [{ agent: 'claude', primary: sid, related: [other] }]);
   assert.equal(native('/fini:relations', sid).body.quests.length, 1);
-  assert.equal(native(`/fini:primary ${quest}`, other).body.agents[0].primary, other);
-  assert.equal(native(`/fini:primary ${quest} --clear`, sid).body.agents[0].primary, null);
+  assert.equal(native(`/fini:link ${quest} --primary`, other).body.agents[0].primary, other);
   assert.equal(native(`/fini:unlink ${quest}`, other).body.changed, true);
   native('/fini:link missing-quest', sid, true);
   native(`/fini:link ${quest} --agent hermes`, sid, true);

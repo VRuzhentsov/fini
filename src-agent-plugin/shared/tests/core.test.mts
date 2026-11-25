@@ -47,23 +47,19 @@ test('many-to-many relations and primary lifecycle through the real Fini CLI', t
   ]);
   assert.equal(call(Command.Relations, '').quests.length, 2);
   assert.equal(call(Command.Relations, `--agent claude --session ${uuid}`).quests.length, 1);
-  call(Command.Primary, `${q} --agent hermes --session runtime-b`);
+  call(Command.Link, `${q} --agent hermes --session runtime-b --primary`);
   assert.equal(call(Command.Link, q).changed, false);
   assert.equal(call(Command.Relations, `--quest ${q}`).agents[1].primary, 'runtime-b');
-  assert.ok(call(Command.Primary, `${q} --agent hermes --session absent`).error);
-  assert.equal(call(Command.Relations, `--quest ${q}`).agents[1].primary, 'runtime-b');
-  call(Command.Primary, `${q} --clear`);
-  assert.deepEqual(call(Command.Relations, `--quest ${q}`).agents[1], {
-    agent: 'hermes', primary: null, related: ['runtime-a', 'runtime-b'],
-  });
+  // An unlink of the primary leaves no primary; a later link does not take it.
+  call(Command.Unlink, `${q} --agent hermes --session runtime-b`);
   call(Command.Link, `${q} --agent hermes --session runtime-c`);
-  assert.equal(call(Command.Relations, `--quest ${q}`).agents[1].primary, null);
-  call(Command.Primary, q);
+  assert.deepEqual(call(Command.Relations, `--quest ${q}`).agents[1], {
+    agent: 'hermes', primary: null, related: ['runtime-a', 'runtime-c'],
+  });
+  call(Command.Link, `${q} --primary`);
   call(Command.Unlink, q);
   assert.equal(call(Command.Unlink, q).changed, false);
   assert.equal(call(Command.Relations, `--quest ${q}`).agents[1].primary, null);
-  call(Command.Primary, `${q} --agent claude --clear`, null);
-  assert.equal(call(Command.Relations, `--quest ${q}`).agents[0].primary, null);
   assert.equal(call(Command.Relations, '').quests.length, 1);
   const db = new Database(path, { readonly: true });
   assert.equal(db.prepare('PRAGMA integrity_check').pluck().get(), 'ok'); db.close();
@@ -79,7 +75,7 @@ test('missing quest, CLI errors and malformed arguments change no links', t => {
     [Command.Link, `${q} --session s`], [Command.Link, `${q} --agent hermes --agent claude --session s`],
     [Command.Link, `${q} --clear`], [Command.Link, `${q} --agent claude --session bad`],
     [Command.Link, `${q} --unknown x`], [Command.Link, `${q} --session=a`], [Command.Link, '"open'],
-    [Command.Primary, `${q} --clear --session s`], [Command.Relations, q],
+    [Command.Unlink, `${q} --primary`], [Command.Relations, q], [Command.Relations, '--primary'],
     [Command.Relations, `--quest ${q} --agent hermes --session s`], [Command.Relations, '--clear'],
   ]) assert.ok(call(command!, args!, null).error, `${command} ${args}`);
   assert.equal(existsSync(path), false);
@@ -101,7 +97,7 @@ test('parsed IDs remain exact; runtime and explicit identities stay separate', (
   assert.equal(c.quest, ' 001 / 漢字 "quest" ');
   assert.deepEqual(c.session, { agent: 'other', session_id: ' 00ABC ' });
   assert.deepEqual(new RelationCommand(Command.Link, '001', current).session, current);
-  assert.equal(new RelationCommand(Command.Primary, '001 --clear', { agent: 'hermes' }).agent, 'hermes');
+  assert.equal(new RelationCommand(Command.Link, '001 --primary', current).primary, true);
   for (const session_id of [null, '', ' ', 'a\n', 'a\0']) {
     assert.throws(() => new RelationCommand(Command.Link, '001', { agent: 'hermes', session_id }));
   }
