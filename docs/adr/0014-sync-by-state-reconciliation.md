@@ -392,11 +392,21 @@ in the other.
   peers from the version vector.
 - Chosen: one CLI id for each installation (D2), as the measured "one CLI id"
   row (about 9 B of version-vector data). Two writers must never write with
-  the same peer id at the same time, so CLI runs on one installation take
-  turns: a run takes a short exclusive lock on the CLI id, loads the store
-  (which holds the earlier operations of that id), writes, and releases the
-  lock. A CLI load is about 7.5 ms (measured), so a wait is short. The lock is
-  on the CLI id only: the app has its own id and never waits for the CLI.
+  the same peer id at the same time, so only a CLI write takes the lock:
+  - A read (load the document, run a query) takes no lock: the update files
+    are only appended and renamed into place, so a reader never sees a
+    partial file.
+  - A write takes an exclusive lock on the CLI id, loads the store again
+    (which then holds the earlier operations of that id), writes its update
+    file, and releases the lock.
+  - A CLI command that must write while another one holds the lock waits until
+    the lock is free, with no error, then writes. A CLI load is about 7.5 ms
+    (measured), so a wait is short. A long timeout with a clear message is
+    only a safety net.
+  - The lock is a file lock of the operating system, not a file with a
+    process id: when a process stops, the system releases its lock.
+  - The lock is on the CLI id only: the app has its own id and never waits
+    for the CLI.
 - Rejected: a new id for each run (each run adds a version-vector entry for
   good, and each later comparison carries it), and a pool of CLI ids (not
   necessary with one id and a short lock).
@@ -1015,7 +1025,7 @@ Candidate (not decided):
 | Devices on different sync versions | Chosen | A notice on the Device page |
 | The old outbox tables | Chosen | Kept, not used, for one release; then dropped |
 | Unpair | Chosen | Local to this device; the data that the unpaired device wrote stays |
-| What syncs | Open, except focus history | Focus history stays on each device (chosen: each device has its own focus, because the spaces differ for each device). Candidates: space names and imported backups sync; settings stay on each device |
+| What syncs | Chosen | The space names and imported backups sync. The settings stay on each device, and the focus history is local to each device (each device has its own focus, because the spaces differ for each device) |
 
 ## Discussion log
 
@@ -1051,7 +1061,8 @@ Candidate (not decided):
 | Occurrences | Chosen: in the Loro document (D16) | Mergeable maps keyed `<quest_id>/<date>`; measured: no duplicates, both edits of one day kept, 73 B a mark |
 | Reminders, snoozes, notifications | Chosen: local to each device (D17) | Derived from the synced quest, rule and marks after each import; this fixes the alarm that still fires on B after A completes or deletes the quest |
 | The repeat rule | Chosen by measurement: one value of the quest map (D16) | A mergeable map mixes two concurrent rule edits into a rule that no device wrote, and a mergeable list duplicated the weekdays |
-| Sync scope | Open, except focus history | Candidates: space names and imported backups sync; settings stay on each device |
+| Sync scope | Chosen | Space names and imported backups sync; settings stay on each device; focus history is local to each device |
+| The CLI write lock | Chosen | Only CLI writes take the exclusive lock on the CLI id; reads take none; a write waits for the lock with no error; a long timeout as a safety net; an operating-system file lock, released when a process stops |
 | Focus history | Chosen: local to each device | Each device has its own focus, because the spaces differ for each device |
 | Quest relations | Decided in ADR-0015 | The engine choice does not preset the model (ADR-0015 can choose parent and child, a graph of blocks, or both) |
 | Unpair | Chosen: local to this device | The data that the unpaired device wrote stays |
@@ -1078,6 +1089,5 @@ Candidate (not decided):
 
 ## Open questions
 
-1. Sync scope: do space names and imported backups sync, and do settings stay
-   on each device (the candidates)? Focus history stays on each device
-   (chosen).
+None at this time. The items that are deferred and optional are listed in
+the table of the guiding principle ("Decision").
