@@ -312,53 +312,53 @@ The words of [ADR-0014](adr/0014-sync-by-state-reconciliation.md).
 
 The Loro document that holds the synced data of one space.
 
-*Elsewhere:* a `LoroDoc` in Loro.
+*Elsewhere:* a Yjs `Y.Doc`; an Automerge document.
 
 ### Peer id
 
 The 64-bit id that one writer (an app or CLI installation) puts on its edits.
 
-*Elsewhere:* the peer id in Loro; an actor id in Automerge.
+*Elsewhere:* a Yjs client id; an Automerge actor id.
 
 ### Version vector
 
 The count of edits a device has from each peer id. Devices compare them to
 find what the other is missing.
 
-*Elsewhere:* `VersionVector` in Loro; a state vector in Yjs.
+*Elsewhere:* a Yjs state vector; the vector clocks of Dynamo and Riak.
 
 ### Update file
 
 An append-only file with one writer's edits to a space doc.
 
-*Elsewhere:* an exported update (`ExportMode::updates`) in Loro.
+*Elsewhere:* the append-only file (AOF) of Redis; a SQLite WAL file.
 
 ### Snapshot
 
 A file with the full state of a space doc.
 
-*Elsewhere:* `ExportMode::Snapshot` in Loro.
+*Elsewhere:* a Redis RDB snapshot; a saved Automerge document.
 
 ### Shallow snapshot
 
 A snapshot without the history before a given point.
 
-*Elsewhere:* `ExportMode::ShallowSnapshot` in Loro; a shallow clone in Git.
+*Elsewhere:* a Git shallow clone; Kafka log compaction.
 
 ### Mergeable container
 
 A part of a space doc that two devices created on their own but that Loro
 merges into one.
 
-*Elsewhere:* the `ensure_mergeable_*` child containers in Loro.
+*Elsewhere:* a Yjs shared type fetched by name (`doc.getMap("quests")`),
+which every client resolves to the same object.
 
 ### Soft delete
 
 Marking a quest as deleted with `deleted_at` instead of removing it, so it can
 be restored.
 
-*Elsewhere:* a soft delete (a `deleted_at` column) in many databases; the
-trash in a file manager.
+*Elsewhere:* Laravel's `SoftDeletes`; the trash of a file manager.
 
 ## Other words
 
