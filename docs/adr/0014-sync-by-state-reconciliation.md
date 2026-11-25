@@ -89,14 +89,14 @@ where the rows of the space are about 300 KB.
 | R4 | Remove the outbox | No `sync_outbox`, `sync_acks`, `sync_seen`, and no `OutboxRepository`. |
 | R5 | A must not learn that B synced with C | The data that A gets from B has no id, key or signature of C. |
 | R6 | Relay A-B-C works | C gets A's changes through B with no direct pair. |
-| R7 | Bluetooth and offline | A few round trips of about one fragment when nothing changed; works after a long time offline. |
+| R7 | Works offline; the sync cost stays small on slow links | Few bytes and round trips for each sync, and a small first sync, because Bluetooth is slow. Fini's own Bluetooth drivers carry any reliable byte stream (iroh QUIC too), so the transport is not a filter. |
 
 ## Sync approaches
 
 One row for each option. Rows (h) to (m) are the NoSQL options; see
 "NoSQL options" below for their facts.
 
-| Option | How | Storage growth | Finding differences | Deletes | Edits of different fields at the same time | Relay A-B-C | Privacy (device ids in the data) | Bluetooth cost | Fit with SQLite and Diesel | Complexity | Status |
+| Option | How | Storage growth | Finding differences | Deletes | Edits of different fields at the same time | Relay A-B-C | Privacy (device ids in the data) | Sync cost (bytes, round trips, first sync) | Fit with SQLite and Diesel | Complexity | Status |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | (a) Outbox + acks, pruning | Today's events; remove an event that all peers acknowledged; drop the queue of a peer away for N days, then a full sync | Bounded by the pruning; acks for each event and peer until then | The queue is the difference | Delete event in the queue | One wins (whole row) | No (defect) | Origin id in each event | 2 fragments + ack for each change | Already there | Low | Not chosen: keeps the outbox (R4) |
 | (b) Hash-range state reconciliation, LWW for each row | One set of (version, id) items for each space; negentropy range fingerprints find the different items; send those rows | Rows + deletion markers (time limit) | O(d · log n); 1 round trip when equal | Markers with LWW; a time limit for silent peers | One wins; checklists merge as today | Yes: B's set has A's rows | None needed: the tie rule can use a content hash | Equal: 1 round trip, ~110 B each way; 1 change: 3–4 round trips, ~3 KB | Good: SQL tables, a crate for the protocol | Medium | Liked: "hashes of hashes", outbox removed |
@@ -106,11 +106,11 @@ One row for each option. Rows (h) to (m) are the NoSQL options; see
 | (e) cr-sqlite | SQLite extension; CRR tables; `crsql_changes WHERE db_version > N` | Rows + a clock for each column + markers | 1 round trip; numbers | Markers in its clock tables | Both stay (each column) | Yes | Site id of each writer | Small | Poor: a loadable extension that rewrites the tables; little activity since 2024 | High (packaging) | Not chosen |
 | (f) Git-style | A Merkle tree of the state; commits; for each peer the last common commit; 3-way merge | Rows + one merge base for each peer + short history | Compare tree hashes from the top: O(d · log n) | No markers: in the base and missing on one side is a delete | Both stay (3-way) | Yes: B's commits hold the merge with C | Author in commits if stored; merge commits show C's hashes unless squashed | Like (b), plus commit data | Medium: base snapshots, commits, a merge step | High | Liked, under discussion |
 | (g) Blockchain | A chain of signed blocks with consensus | Grows forever; cannot be pruned | Compare chains | Transactions | — | Yes | Keys of all signers | Large | Poor | Very high | Rejected |
-| (h) iroh-docs | Signed entries in a namespace, keyed by (author, key); LWW for each (author, key) by wall-clock time; range-based set reconciliation | Entries for each author and key; deletion markers are never removed | O(d · log n) | Prefix delete: an empty entry for each (author, prefix); it stays | One wins (whole value) | Yes | Author key in each entry; one shared author key for all devices would hide C | Runs on the iroh custom transport (QUIC streams), so on Bluetooth too; content goes over iroh-blobs | Poor: a second store (redb), content as blobs | Medium-high | Under discussion |
-| (i) Willow / Earthstar | Entries at (subspace, path, time); 3D range-based reconciliation; Meadowcap capabilities | Bounded: a newer entry at a prefix removes older entries below it, with no marker | O(d · log n) in 3D ranges | Destructive prefix edits | One wins (each path) | Yes | Subspace (author) ids in entries; private overlap detection hides what is not shared | Needs a reliable ordered byte channel (a QUIC stream is one) | Poor: its own store; Rust implementation in alpha, sync protocol design paused | High | Under discussion |
-| (j) CouchDB-style | Revision tree for each document; `_changes` since a checkpoint for each peer; `_revs_diff` | Revision tree for each document up to `_revs_limit`; tombstones stay; purge does not replicate | Checkpoint + `_revs_diff` | `_deleted` revision (tombstone) | Losing revisions kept as conflicts; app merges | Yes | Revision ids; no device id needed | Many round trips for each batch; JSON over HTTP | Poor: no SQLite-backed Rust implementation | High | Under discussion |
-| (k) Couchbase Lite | CouchDB-style replication in a C library | As (j) | As (j) | As (j) | As (j) | Yes | As (j) | WebSocket over IP only; no Bluetooth | Poor: its own SQLite file; peer-to-peer only in the Enterprise Edition; Rust binding unofficial | High; licence cost | Under discussion |
-| (l) Ditto | Closed-source CRDT document store with a mesh over Bluetooth, LAN and Wi-Fi | CRDT metadata in its store | Its own protocol | CRDT deletes | Both stay (CRDT) | Yes (mesh) | Peer ids in its mesh | Its own Bluetooth stack beside Fini's | Poor: a second, closed store | Low to integrate, high to depend on | Under discussion |
+| (h) iroh-docs | Signed entries in a namespace, keyed by (author, key); LWW for each (author, key) by wall-clock time; range-based set reconciliation | Entries for each author and key; deletion markers are never removed | O(d · log n) | Prefix delete: an empty entry for each (author, prefix); it stays | One wins (whole value) | Yes | Author key in each entry; one shared author key for all devices would hide C | Like (b) for the entries; each entry carries two signatures and the ids; the content is a second transfer (iroh-blobs) | Poor: a second store (redb), content as blobs | Medium-high | Under discussion |
+| (i) Willow / Earthstar | Entries at (subspace, path, time); 3D range-based reconciliation; Meadowcap capabilities | Bounded: a newer entry at a prefix removes older entries below it, with no marker | O(d · log n) in 3D ranges | Destructive prefix edits | One wins (each path) | Yes | Subspace (author) ids in entries; private overlap detection hides what is not shared | Like (b), in 3D ranges; capabilities add bytes at the start of a session | Poor: its own store; Rust implementation in alpha, sync protocol design paused | High | Under discussion |
+| (j) CouchDB-style | Revision tree for each document; `_changes` since a checkpoint for each peer; `_revs_diff` | Revision tree for each document up to `_revs_limit`; tombstones stay; purge does not replicate | Checkpoint + `_revs_diff` | `_deleted` revision (tombstone) | Losing revisions kept as conflicts; app merges | Yes | Revision ids; no device id needed | JSON revisions with their history; several round trips for each batch; the first sync sends the revision trees | Poor: no SQLite-backed Rust implementation | High | Under discussion |
+| (k) Couchbase Lite | CouchDB-style replication in a C library | As (j) | As (j) | As (j) | As (j) | Yes | As (j) | As (j) | Poor: its own SQLite file; peer-to-peer only in the Enterprise Edition; Rust binding unofficial | High; licence cost | Under discussion |
+| (l) Ditto | Closed-source CRDT document store with a mesh over Bluetooth, LAN and Wi-Fi | CRDT metadata in its store | Its own protocol | CRDT deletes | Both stay (CRDT) | Yes (mesh) | Peer ids in its mesh | Not public | Poor: a second, closed store | Low to integrate, high to depend on | Under discussion |
 | (m) Generic embedded KV (redb, sled, SurrealDB embedded, RocksDB) | A store only | — | None; only a prolly tree on top gives a diff | — | — | — | — | — | Poor: replaces SQL | — | Under discussion |
 
 Notes on the table:
@@ -163,7 +163,7 @@ this record was written.
 | **Deletes and GC** | `del(author, prefix)` writes an empty entry that clears that author's entries below the prefix. The empty entry stays; no GC of markers is documented | A newer entry at a prefix removes the older entries below it. No marker grows | `_deleted` revisions stay; compaction removes old bodies, not the tree; purge is local and does not replicate | As CouchDB | Not public |
 | **Growth for each author** | One entry for each key that each author wrote: N authors writing a key keep N entries | One entry for each (subspace, path) | One tree for each document | As CouchDB | Not public |
 | **Privacy (R5)** | The author id is in each entry. If each device has its own author, A sees C's author. One author key shared by all devices of the person hides C, but then entries do not show which device wrote | Subspace ids in entries; private interest overlap detection hides the namespaces and areas that only one peer has | Revision ids only | As CouchDB | Peer ids in its mesh |
-| **Bluetooth path** | Its own ALPN over iroh QUIC streams. Fini's Bluetooth channel carries iroh QUIC on the custom transport, so it can carry it. The content needs iroh-blobs as a second protocol | Needs a reliable ordered byte channel; a QUIC stream is one | HTTP; no Bluetooth | WebSocket over IP; no Bluetooth | Its own Bluetooth, LAN and Wi-Fi stack |
+| **Sync cost** | Range fingerprints, then entries of about 250 B plus the key (two signatures and the ids, estimate); the content is a second transfer through iroh-blobs | 3D range fingerprints; capabilities add bytes at the start of a session | JSON revisions with their history; several round trips for each batch | As CouchDB | Not public |
 | **Licence** | MIT / Apache-2.0 | MIT / Apache-2.0 (the Rust crates) | Apache-2.0 | Source Apache-2.0; peer-to-peer sync and encryption only in the Enterprise Edition (commercial) | Proprietary; a free tier and paid tiers; it does not fit the AGPL licence of Fini (ADR-0009) without an exception |
 | **Rust** | Native | Native (alpha) | No SQLite-backed Rust implementation; a young pure-Rust one uses redb | Unofficial community binding | Official SDK, closed source |
 
@@ -191,6 +191,55 @@ items, spaces, rank keys, and soon a parent tree with recursive queries
 Option (iii) is the KV sync model without a second store, and it gives the
 same design as (b). iroh-docs and Willow are useful as references for (iii):
 range-based reconciliation, signed entries, prefix deletes.
+
+## Wider survey
+
+Other databases and sync libraries for local-first, offline or peer-to-peer
+sync. Fini has no server, so an engine that needs one is rejected or only a
+source of ideas. The transport is not a filter (R7). The R column scores
+R1–R7: ✓ meets, ~ in part, ✗ does not.
+
+### Viable for Fini
+
+| Name | Kind | Language, embeddable | Server | Sync and diff | Deletes, growth | Conflicts | Privacy (R5) | Sync cost | Maturity | R1–R7 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Loro | CRDT library: map, list, text, movable tree | Rust; embeddable, also on Android | No | Updates since a version vector; any byte stream | CRDT history; shallow snapshots trim it, as a Git shallow clone does | CRDT merge for each field; list and tree moves | Random peer ids in operations; one id for each device shows C as an id | 1 round trip for the delta; the first sync is a snapshot | Active | 1~ 2✓ 3✓ 4✓ 5~ 6✓ 7✓ |
+| yrs (y-crdt) | CRDT library, the Rust port of Yjs | Rust; embeddable | No | State vector, then the missing updates | Deleted content is removed; small metadata stays | CRDT merge for text, lists and maps | Random client ids in items | 1 round trip | Mature (Yjs) | 1~ 2✓ 3✓ 4✓ 5~ 6✓ 7✓ |
+| p2panda | Peer-to-peer toolkit on iroh: signed append-only logs for each author, log sync | Rust; embeddable | No | Log sync for each author | Logs for each author | Left to the app (any CRDT) | Author keys in operations | Depends on the log length | APIs not stable yet | 1~ 2~ 3~ 4✓ 5✗ 6✓ 7~ |
+| negentropy | Range-based set reconciliation (the engine of (b)) | Rust crate; embeddable | No | Range fingerprints | Left to the app | Left to the app | No ids | See the estimates of (b) | Used by Nostr relays | 1✓ 2✓ 3✓ 4✓ 5✓ 6✓ 7✓ (with (b)) |
+| iroh-docs | See (h) | | | | | | | | | 1✗ 2✓ 3✓ 4✓ 5~ 6✓ 7~ |
+
+### Ideas worth borrowing
+
+| Name | The idea | For which option |
+|---|---|---|
+| TinyBase `MergeableStore` | An HLC and a hash for each value; hashes go up through rows and tables, so a diff walks down only where hashes differ; pluggable synchronizers | (b′): a version for each field with a three-level hash tree |
+| Rateless IBLT (Yang, Gilad, Alizadeh) | The sender streams coded symbols; the receiver decodes the difference after about 1.35 × d symbols, with no round trip for each level | (b): one message for a small difference on Bluetooth, negentropy as the fallback |
+| Merkle Search Tree (Auvolat, Taïani) | A stored Merkle tree whose shape depends only on the keys; equal subtrees have equal hashes | (b) or (f): a stored "hash of hashes" |
+| Prolly trees (Dolt, noms) | A content-defined Merkle tree; Dolt merges cell by cell, 3-way | (f) |
+| Evolu | Range-based reconciliation with end-to-end encryption; the relay sees only owner ids, timestamps and encrypted data | R5: one owner id for each person, no device ids in the synced data |
+| Actual Budget | An HLC and a Merkle trie over the change timestamps | The HLC; not its message log, which grows |
+| Corrosion (Fly.io) | cr-sqlite rows, SWIM membership, and a periodic sync with a few peers | A periodic check as a safety net |
+| Syncthing (BEP) | An index exchange with a version vector for each file | (f); but the vectors hold device ids (R5) |
+| Fossil | The sync exchanges the ids of the artifacts that each side has ("igot", "gimme") | (f) |
+| SQLite session extension | Changesets: compact row diffs with a conflict handler | A row diff encoding; it needs a base |
+| sqlite-sync (SQLite AI) | A CRDT kind for each table: causal-length set, delete-wins, add-wins, grow-only | The delete rule for each table |
+| diamond-types | A fast text CRDT | Descriptions and checklist text |
+| Hypercore | Signed Merkle-tree logs | Proofs of who wrote a row |
+
+### Rejected
+
+| Name | Reason |
+|---|---|
+| ElectricSQL, PowerSync, Zero, Replicache, InstantDB, Triplit, Convex | Server-centric: a server is the source of truth (Replicache is also archived) |
+| WatermelonDB, LiveStore, Jazz | Sync through a server (pull and push, or a sync backend) |
+| Turso / libSQL embedded replicas and offline sync, sqlite-sync | Sync to a cloud primary or a server backend (sqlite-sync stays an idea) |
+| Litestream, LiteFS, rqlite, mvsqlite, Marmot | Server replication: one primary, Raft, FoundationDB or NATS; not for offline peers |
+| Yjs (JavaScript) | Use yrs in Rust |
+| OrbitDB, Gun, Hypercore / Autobase / Hyperbee, Earthstar, DXOS, RxDB, TinyBase, Evolu | JavaScript or TypeScript only; operation logs grow (OrbitDB, Hypercore), or a relay or master is needed (Evolu, RxDB); TinyBase and Evolu stay ideas |
+| any-sync (Anytype) | Go; needs sync nodes |
+| Dolt, TerminusDB, Irmin, Fossil | Servers or apps in Go, Prolog or OCaml, not a library for Rust; Dolt and Fossil stay ideas |
+| SurrealDB, redb, sled, RocksDB | Stores with no peer-to-peer sync (see (m)) |
 
 ## Trust and integrity
 
@@ -263,8 +312,15 @@ Candidate (not decided):
 | iroh-docs (h) | Under discussion | Same stack as Fini, and the same reconciliation; but author ids in entries (R5), markers that stay, and a second store |
 | Willow / Earthstar (i) | Under discussion | Prefix deletes with no marker growth and private overlap detection; the Rust code is alpha and its sync design is paused |
 | CouchDB-style (j) | Under discussion | Mature model; revision trees and tombstones grow; no SQLite-backed Rust implementation |
-| Couchbase Lite (k) | Under discussion | Peer-to-peer only in the commercial edition; no Bluetooth; unofficial Rust binding |
-| Ditto (l) | Under discussion | Bluetooth mesh included; closed source, paid tiers, conflicts with AGPL |
+| Couchbase Lite (k) | Under discussion | Peer-to-peer only in the commercial edition; unofficial Rust binding |
+| Ditto (l) | Under discussion | A finished mesh product; closed source, paid tiers, conflicts with AGPL |
+| Loro | Under discussion | Rust CRDT with a movable tree (the parent tree of ADR-0015) and text; history grows unless trimmed by shallow snapshots |
+| yrs | Under discussion | Rust CRDT for text fields such as descriptions and checklists; not for relational rows |
+| p2panda | Under discussion | Rust, on iroh; but its APIs are not stable, and author keys are in the data (R5) |
+| Rateless IBLT | Under discussion | One message for a small difference, which suits a slow link |
+| A stored Merkle tree (Merkle Search Tree, prolly tree) | Under discussion | The "hashes of hashes" in a stored form |
+| A version and a hash for each value (TinyBase) | Under discussion | A model for (b′) |
+| Server-centric engines | Rejected | Fini has no server |
 | Generic KV (m) and the fit analysis | Under discussion | No sync by itself; a NoSQL source of truth (i) or a second store (ii) costs all queries; (iii) is (b) |
 
 ## Open questions
