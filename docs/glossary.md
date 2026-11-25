@@ -308,50 +308,57 @@ distance between them is not academic — one ~400-byte `SyncEvent`, a single
 
 The words of [ADR-0014](adr/0014-sync-by-state-reconciliation.md).
 
-### Reconciliation
+### Space doc
 
-A run in which two devices find the items of a space that are different
-between them, and send only those rows.
+The Loro document that holds the synced data of one space.
 
-*Elsewhere:* range-based set reconciliation in negentropy (Nostr); an
-anti-entropy repair in Cassandra and Dynamo.
+*Elsewhere:* a `LoroDoc` in Loro.
 
-### Item
+### Peer id
 
-One synced key of a space in a reconciliation: a time and a 32-byte id
-computed from the row version.
+The 64-bit id that one writer (an app or CLI installation) puts on its edits.
 
-*Elsewhere:* an item (timestamp and id) in negentropy; a leaf of a Merkle
-tree.
+*Elsewhere:* the peer id in Loro; an actor id in Automerge.
 
-### Row version
+### Version vector
 
-The version of a synced row: the clock time of the write that made it. With
-LWW, the higher version wins.
+The count of edits a device has from each peer id. Devices compare them to
+find what the other is missing.
 
-*Elsewhere:* the `db_version` and column version in cr-sqlite; a revision in
-CouchDB.
+*Elsewhere:* `VersionVector` in Loro; a state vector in Yjs.
 
-### Merge base
+### Update file
 
-The last state of the data that two devices had in common. A 3-way merge
-compares each side with it.
+An append-only file with one writer's edits to a space doc.
 
-*Elsewhere:* the merge base in Git; the base of `merge_3way` for a checklist.
+*Elsewhere:* an exported update (`ExportMode::updates`) in Loro.
 
-### Hybrid logical clock (HLC)
+### Snapshot
 
-A clock that gives the larger of the wall-clock time and the newest version
-that the device has seen, with a counter for the same millisecond.
+A file with the full state of a space doc.
 
-*Elsewhere:* the HLC of CockroachDB and of the Actual Budget sync.
+*Elsewhere:* `ExportMode::Snapshot` in Loro.
 
-### Tombstone
+### Shallow snapshot
 
-A stored marker of a delete, or of a move out of a space, that syncs as a
-row does.
+A snapshot without the history before a given point.
 
-*Elsewhere:* a tombstone in Cassandra, CouchDB and cr-sqlite.
+*Elsewhere:* `ExportMode::ShallowSnapshot` in Loro; a shallow clone in Git.
+
+### Mergeable container
+
+A part of a space doc that two devices created on their own but that Loro
+merges into one.
+
+*Elsewhere:* the `ensure_mergeable_*` child containers in Loro.
+
+### Soft delete
+
+Marking a quest as deleted with `deleted_at` instead of removing it, so it can
+be restored.
+
+*Elsewhere:* a soft delete (a `deleted_at` column) in many databases; the
+trash in a file manager.
 
 ## Other words
 

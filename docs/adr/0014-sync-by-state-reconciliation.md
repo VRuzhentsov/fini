@@ -2,12 +2,11 @@
 
 ## Status
 
-Proposed. The project owner chose Loro as the sync engine and the only store
-(see "Decision"), and answered the follow-ups. The record stays Proposed until
-the project owner accepts it.
+Accepted. The project owner chose Loro as the sync engine and the only store
+(see "Decision"), answered all open questions, and approved the decisions.
 It was written during the design discussion of 2026-11-24, and it records
-what the project owner liked, rejected and left open. It answers the research
-part of issue #196.
+what the project owner liked and rejected. It answers the research part of
+issue #196. Nothing in it is implemented yet.
 
 Paths are relative to the repository root. A line number points at the code
 of the main branch on the day this record was written.
@@ -148,48 +147,48 @@ are Loro's own and which custom parts are deferred and optional.
 | D5 History | Lost values read from Loro's history (checkout, diff) | An explicit list of the last 10 values |
 | D6 Trimming | No trimming during the migration | Shallow snapshots, and the re-apply path for an old peer |
 | D7 Relations | Decided in ADR-0015 | — |
-| D8 Migration | Mergeable child containers (`ensure_mergeable_map`; measured) | "The smaller id builds, the other applies its differences again" (no longer necessary) |
+| D8 Migration | Mergeable containers (`ensure_mergeable_map`; measured) | "The smaller id builds, the other applies its differences again" (no longer necessary) |
 | D10 Storage | Snapshot and update files, `import` | In-memory indexes (necessary), integrity checks at read |
 | D12 CLI | Import of each update file | The compaction rule for files; a short lock on the one CLI id |
 | Concurrent writes | Loro's own order | The HLC wrapper: dropped |
 | D14, D15 Checklists and descriptions | A plain child Loro text; progress counted from the text | The item merge of #128: removed; a merge of an edit made before the first comparison: deferred |
 | D16 Repeating quests | The rule as one value; marks as mergeable maps keyed `<quest_id>/<date>` | Archiving old closed marks: deferred |
-| D17 Reminders | Not in the document | A recompute after each import (necessary) |
+| D17 Reminders | Not in the space doc | A recompute after each import (necessary) |
 
 ### D1 — Loro is the sync engine
 
-SpaceSync syncs Loro documents. The outbox goes (R4). The sections after
+SpaceSync syncs space docs. The outbox goes (R4). The sections after
 "Decision" record the options that were compared.
 
 Considered, not chosen:
 
 | Option | Reason |
 |---|---|
-| (b′) Fini's own field versions, history and hash-range reconciliation | No writer ids in the data, but Fini writes the reconciliation, the field versions, the tree rule and the counters itself |
+| (b′) Fini's own field versions, history and hash-range reconciliation | No peer ids in the data, but Fini writes the reconciliation, the field versions, the tree rule and the counters itself |
 | yrs | It needs Fini's own delete-set protocol to keep the payload small, and it has no history, no tree and no counter; its interface is 0.x |
 | The other options | See "Sync approaches", "NoSQL options" and "Wider survey" |
 
-### D2 — The accepted trade-off: random writer ids
+### D2 — The accepted trade-off: peer ids in the data
 
-Loro puts a random writer (peer) id in each operation. So a device can see
+Loro puts the peer id of the writer in each edit. So a device can see
 that another writer exists, but not who it is. This relaxes "no device
 identity in the data" (see "Trust and integrity"). The mitigation:
 
 - On its first start, each installation makes two ids once and stores them:
   one for the app and one for the CLI (D12). Each is unique (a UUID), and a
-  random 64-bit Loro peer id is stored with it (Loro peer ids are 64-bit).
-  The ids have no relation to the iroh device key or the Fini device id.
+  random 64-bit peer id is stored with it (Loro peer ids are 64-bit). The
+  ids have no relation to the iroh device key or the Fini device id.
 - The UI never shows a peer id.
-- A writer loads its own earlier operations before it writes with its peer
-  id again (Loro's rule). A store that is restored or copied to another
-  device makes both ids again, so two writers never share one id.
+- A writer loads its own earlier edits before it writes with its peer id
+  again (Loro's rule). A store that is restored or copied to another device
+  makes both ids again, so two writers never share one peer id.
 - `checklist_activity.origin_device_id` leaves the synced data.
 
 ### D3 — Sync
 
 ```
-for each mapped space (one document for each space, D11):
-  device 1 ──▶ its version vector (about 10 B for each writer)
+for each mapped space (one space doc for each space, D11):
+  device 1 ──▶ its version vector (about 10 B for each peer id)
   device 2 ──▶ its version vector
   each side ──▶ export(updates since the other's vector)  ──▶ import
 ```
@@ -198,19 +197,19 @@ for each mapped space (one document for each space, D11):
   and sends the difference (measured: 98 B for one edit, 1.6 KB for 100).
 - A comparison runs after each local edit, after about 2 s with no more
   edits, and every 30 s while connected. There is no other push.
-- Relay A-B-C works, because B's document has A's operations.
+- Relay A-B-C works, because B's space doc has A's edits.
 
 **How this works: collaborative editing that does not need a connection.**
 Loro is the same kind of tool as the live co-editing of a shared document,
 but it works asynchronously. Each device commits its edits locally, at once.
 There are no transactions across devices and no locks. A sync at any time,
-after seconds or after days, merges the two documents, and the result is the
+after seconds or after days, merges the two space docs, and the result is the
 same on all devices. While two devices are connected, the comparison after
 about 2 s makes the edits of one device appear on the other almost at once.
 
 ### D4 — Soft deletes
 
-- A delete sets the field `deleted_at` of the quest; it does not remove the
+- A delete is a soft delete: it sets the field `deleted_at` of the quest; it does not remove the
   map key. A delete and an edit are then two fields, and both stay.
 - "Recently deleted" lists the quests with `deleted_at`. A restore clears it.
 - With Loro's order (D13), a delete and a concurrent edit both stay: the
@@ -218,30 +217,31 @@ about 2 s makes the edits of one device appear on the other almost at once.
 
 ### D5 — The conflict history comes from Loro's history
 
-- Loro keeps each operation, so the values that lost are in its history. The
+- Loro keeps each edit, so the values that lost are in its history. The
   app reads them with Loro's own functions (a checkout of an earlier version,
   or the diff between versions), and shows up to the last 10 values of a
   field. A restore writes the chosen value as a new edit.
-- The history goes back only to the trim point. With no trimming during the
-  migration (D6), it is complete.
+- The history goes back only to the point of a shallow snapshot. With no
+  shallow snapshots during the migration (D6), it is complete.
 - Deferred, optional: an explicit list of the last 10 values of each field in
   the quest, appended at each write. It is necessary only if the history must
-  survive a trim.
+  survive a shallow snapshot.
 
-### D6 — Trimming the history of the document
+### D6 — Shallow snapshots
 
-- During the migration, the documents are not trimmed. The cost is the full
-  history in the file (measured: 528 KB against 234 KB for 1 000 quests after
-  10 000 edits). Then no peer is ever older than a trim point.
+- During the migration, the app writes no shallow snapshot. The cost is the
+  full history in the snapshot (measured: 528 KB against 234 KB for 1 000
+  quests after 10 000 edits). Then no peer is ever older than the point of a
+  shallow snapshot.
 - Deferred, optional: shallow snapshots. Then each device records the version
-  vector that each active peer sent last (one vector for each peer), trims
-  only at a point that all active peers have passed, and a peer that is silent
-  for more than 90 days does not stop the trim. When such a peer comes back,
-  its old updates are rejected (measured:
+  vector that each active peer sent last (one vector for each peer), makes a
+  shallow snapshot only at a point that all active peers have passed, and a
+  peer that is silent for more than 90 days does not stop it. When such a peer
+  comes back, its old edits are rejected (measured:
   `ImportUpdatesThatDependsOnOutdatedVersion`). It then computes its local
   changes since its last common version (Loro's diff), imports the new state
-  into a fresh document, and writes those changes again as new edits. A trim
-  also removes the history that D5 reads.
+  into a fresh space doc, and writes those changes again as new edits. A
+  shallow snapshot also removes the history that D5 reads.
 
 ### D7 — Quest relations
 
@@ -251,17 +251,17 @@ quest (D10).
 
 ### D8 — Migration
 
-- Each device makes, for each mapped space, a Loro document from its SQLite
-  rows. Two devices with the same rows each make a document, and the two
-  documents then merge at the first `fini/sync/7` comparison.
-- Loro's Rust interface has `ensure_mergeable_map`, `_list`,
-  `_movable_list`, `_text`, `_tree` and `_counter`: two peers that call the
-  same method with the same parent map and key get the same child container
-  id, and their edits merge in it.
+- Each device makes, for each mapped space, a space doc from its SQLite
+  rows. Two devices with the same rows each make a space doc, and the two
+  then merge at the first `fini/sync/7` comparison.
+- Mergeable containers: Loro's Rust interface has `ensure_mergeable_map`,
+  `_list`, `_movable_list`, `_text`, `_tree` and `_counter`. Two peers that
+  call the same method with the same parent map and key get the same
+  container, and their edits merge in it.
 - Measured (1 000 quests from the same rows on two devices; then each device
   edits a different quest; then the merge):
 
-  | How the documents are made | Quests | Edits of both devices | Checklist items (5 on each device) | A counter (25 on each device) | Snapshot, one device → after the merge |
+  | How the space docs are made | Quests | Edits of both devices | Checklist items (5 on each device) | A counter (25 on each device) | Snapshot, one device → after the merge |
   |---|---|---|---|---|---|
   | `insert_container` (a new child each time) | 1 000 | Lost on one device: for each key, the child of one device wins, with the edits in it | 5 | 25 | 208 KB → 403 KB (both copies stay) |
   | `ensure_mergeable_map` for each quest, a mergeable MovableList for the checklist | 1 000 | Both kept | 10: duplicated, because both lists get 5 inserts | 50: doubled | 250 KB → 344 KB |
@@ -295,7 +295,7 @@ quest (D10).
   it into the winning text by itself (a 3-way merge with the migrated text as
   the base).
 - Deferred, optional (no longer necessary): the device with the smaller
-  device id makes the document, and the other device writes its differences
+  device id makes the space doc, and the other device writes its differences
   again.
 - The SQLite file (with the old outbox tables) stays, not used, for one
   release; then the app removes it.
@@ -309,35 +309,36 @@ change is needed.
 
 ### D10 — Loro is the only store
 
-There is no SQLite. The data of each space is a Loro document on disk:
+There is no SQLite. The data of each space is a space doc on disk: a snapshot
+and update files.
 
 ```
 <data dir>/spaces/<space-id>/
-├─ snapshot.bin              the last compacted state (only the app writes it)
+├─ snapshot.bin              the snapshot (only the app writes it)
 └─ updates/
-   ├─ <peer-id>-<n>.bin      the updates of one writer process, one file each
+   ├─ <peer-id>-<n>.bin      an update file of one writer
    └─ ...
 <data dir>/local/            data of this device only (settings, pairs,
                              channels, mappings, scheduled notifications);
                              it never syncs
 ```
 
-- The data is a tree of containers, as JSON: maps, lists, a Tree and
-  counters. Relations are by id, as in a NoSQL store: a quest map holds
-  `space_id`, a reminder holds `quest_id`. There are no foreign keys and no
-  joins.
+- The data is a tree of containers, as JSON: maps, texts and counters.
+  Relations are by id, as in a NoSQL store: a quest map holds `space_id`, and
+  the key of an occurrence mark holds `quest_id`. There are no foreign keys
+  and no joins.
 - The app code checks integrity. A dangling reference is handled when it is
-  read: a reminder whose quest is missing or deleted is ignored, and an
-  occurrence mark of a deleted quest is not shown.
+  read: a local reminder whose quest is missing or has a soft delete is
+  ignored, and an occurrence mark of such a quest is not shown.
 - In-memory indexes are built at load (measured: 45 ms for 10 000 quests) and
   kept up to date from Loro's events. The queries run on them (measured: 2 ms
   or less).
 - Quest relations are decided in ADR-0015 (D7).
 
-A space document:
+A space doc:
 
 ```
-space document "<space-id>"
+space doc "<space-id>"
 ├─ meta: Map              name, created_at
 ├─ quests: Map            quest_id → Map (mergeable)
 │   ├─ title, status, energy, priority, due, due_time, completed_at,
@@ -354,7 +355,7 @@ space document "<space-id>"
 │                         updated_at
 └─ (quest relations: decided in ADR-0015)
 
-Not in the document: reminders, snoozes and notifications, which are local
+Not in the space doc: reminders, snoozes and notifications, which are local
 to each device (D17).
 ```
 
@@ -364,18 +365,18 @@ A space is the unit that a pair maps, so a document is one space. A move of a
 quest to another space is a delete (`deleted_at`) in one document and a create
 in the other.
 
-### D12 — The CLI is a Loro peer, with no lock
+### D12 — The CLI is a Loro peer, with no lock on the store
 
-- Each writer process (the app, each CLI run) writes its updates to a file of
+- Each writer (the app, each CLI write) writes its edits to an update file of
   its own, so no other process writes that file. A writer writes the file
   under a temporary name, and renames it to `<peer-id>-<n>.bin` when it is
   complete.
 - A reader imports all complete update files. Loro's import does not depend
-  on the order, and an import of the same operations again changes nothing.
-- The app watches the `updates` folder and imports a new file from the CLI in
-  milliseconds.
+  on the order, and an import of the same edits again changes nothing.
+- The app watches the `updates` folder and imports a new update file from the
+  CLI in milliseconds.
 - Only the app compacts: it writes a new snapshot (a temporary file, then a
-  rename), then removes the complete update files whose operations the new
+  rename), then removes the complete update files whose edits the new
   snapshot holds. It never removes a temporary file, so it cannot remove a
   file that a writer still writes.
 - The peer id of a CLI run. Measured: 2 000 CLI runs on a space of 1 000
@@ -393,11 +394,11 @@ in the other.
 - Chosen: one CLI id for each installation (D2), as the measured "one CLI id"
   row (about 9 B of version-vector data). Two writers must never write with
   the same peer id at the same time, so only a CLI write takes the lock:
-  - A read (load the document, run a query) takes no lock: the update files
+  - A read (load the space doc, run a query) takes no lock: the update files
     are only appended and renamed into place, so a reader never sees a
     partial file.
   - A write takes an exclusive lock on the CLI id, loads the store again
-    (which then holds the earlier operations of that id), writes its update
+    (which then holds the earlier edits of that peer id), writes its update
     file, and releases the lock.
   - A CLI command that must write while another one holds the lock waits until
     the lock is free, with no error, then writes. A CLI load is about 7.5 ms
@@ -447,7 +448,7 @@ dropped.
 ### D16 — Repeating quests: the repeat rule and the occurrence marks
 
 The repeat rule and the occurrence marks are an important part of the data,
-and both are in the Loro document. A repeating quest is one quest with a rule
+and both are in the space doc. A repeating quest is one quest with a rule
 (ADR-0012 D1); its occurrences are computed from the rule (D2), and a mark is
 stored only for a day that a person closed or changed (D3).
 
@@ -505,7 +506,7 @@ oldest open one, the day as the person sees it (`RepeatingQuest::on_day`,
 `quest.rs:647-681`: each field with no override takes the quest's value, and
 `due` is the date), the remaining count of `after_n`, and the History list.
 
-**The rule in the document: one value.** `repeat_rule` is one value of the
+**The rule in the space doc: one value.** `repeat_rule` is one value of the
 quest map, with the same fields as today. Measured (50 repeating quests with
 30 marks each; the same data on two devices; then A changes the interval and B
 the weekdays at the same time):
@@ -524,7 +525,7 @@ and a date change on another at the same time can pair the rule of one device
 with the start date of the other. The project owner judged this not
 important.
 
-**The marks in the document.** A top-level map `occurrences`, keyed
+**The marks in the space doc.** A top-level map `occurrences`, keyed
 `"<quest_id>/<YYYY-MM-DD>"`. Each mark is a mergeable map
 (`ensure_mergeable_map`), so two devices that complete the same day write the
 same entry (idempotent). A list is not used (lists duplicated in the spike).
@@ -564,7 +565,7 @@ daily quest closed every day adds about 27 KB a year; 20 daily quests add
 about 530 KB a year (estimate from the measured size). A rule is one value of
 about 100 B, plus about 100 B of history for each change. This needs no trim
 for years. Deferred, optional: archive the closed marks older than a limit
-(for example two years) to a file outside the document.
+(for example two years) to a file outside the space doc.
 
 ### D17 — Reminders, snoozes and notifications are local to each device
 
