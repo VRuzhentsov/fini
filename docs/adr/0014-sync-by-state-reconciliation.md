@@ -93,7 +93,7 @@ where the rows of the space are about 300 KB.
 
 ## Conflict handling
 
-Status: chosen by the project owner, except the items marked open.
+Status: chosen by the project owner.
 
 Principle: **Merge automatically and deterministically, and never lose data
 silently; history replaces prompts.**
@@ -102,7 +102,7 @@ silently; history replaces prompts.**
 |---|---|---|
 | Different fields of one quest | The phone renames "Gym"; the PC moves its due date | Both are kept: a merge for each field |
 | The same simple field (status, due date, priority, energy, rank) | Both devices change the priority | The newer change by HLC wins, the same on all devices. The losing value goes into the history of the quest, so the person can restore it. No prompt |
-| The same text field | Both devices edit the description | The newer change wins, and the other goes into the history (also for titles). A text-CRDT merge for long descriptions: open |
+| The same text field | Both devices edit the description | The newer change wins, and the other goes into the history (also for titles and long descriptions). No text-CRDT merge |
 | Delete against edit | The phone deletes the quest; the PC edits it | The newer action wins. A delete that wins moves the quest to "recently deleted", where the person can restore it |
 | Complete against edit | The phone completes the quest; the PC moves its date | Both are kept: they are different fields |
 | Both add checklist items | One adds "eggs", the other adds "milk" | Union: both items stay |
@@ -111,8 +111,7 @@ silently; history replaces prompts.**
 | The same repeating day completed twice | The phone and the PC both complete Monday of "Gym" | Idempotent: one completed mark |
 | Counters | Both devices add 25 focus minutes | Sum: 50 minutes |
 
-Open: how the history of a quest is bounded (for example the last N values
-of each field, or a time limit).
+The history of a quest keeps the last 10 losing values of each field.
 
 **Consequence.** Whole-row LWW, the rule of today, is ruled out. Each
 candidate must merge field by field, and keep a bounded history of each
@@ -175,8 +174,8 @@ Notes on the table:
   | 100, recent | 3–4 | ~100–190 KB | 200–390 |
   | 10 000, one side empty | 1, then the rows | ~9 MB | ~18 000 |
 
-  A live push of a changed row while a session runs (one frame, no
-  acknowledgement) keeps one edit at two fragments. The next run confirms it.
+  There is no live push (chosen): a comparison runs after each local edit,
+  so one edit costs the 3–4 round trips of the table.
 - **(f) git-style** is how the checklist merge works today, in small: a base,
   the local text and the incoming text (`merge_3way`). With a merge base for
   each peer, a delete needs no marker, and edits of different fields merge.
@@ -448,11 +447,25 @@ order concurrent writes by logical time, not by wall-clock time.
   delete set (15.3 KB here), which is expensive on slow links. It has no
   history, no tree and no counter, and its interface is 0.x. If long
   descriptions get a text merge, Loro Text does that too.
-- The choice between Loro and (b′) with its own history table stays open.
+### The main remaining decision: Loro or (b′)
+
+(b′) is Fini's own design: a version (HLC) for each field, the history of
+each field, and hash-range reconciliation of the items.
+
+| | Loro | (b′) |
+|---|---|---|
+| **Writer ids in the data** | A random writer id in each operation. After relay A-B-C, A can see that a third writer exists (not C's key). This conflicts in part with "no device identity in the data" | None: the item is (version, hash); the tie rule uses the content hash |
+| **Storage** | The document is the store (or a store with an SQLite view); measured +28 MB and a 3.3 MB file for 10 000 quests | SQLite stays; a version for each field and a history table (10 values for each field) |
+| **History and old peers** | The history is in the operation log; a shallow snapshot trims it, and a peer older than the trim point must apply its offline edits again | The history table is separate from the sync, so nothing blocks an old peer; deletion markers have the 90-day rule |
+| **Concurrent writes to one field** | Logical time; an HLC must be stored with the value for "the newer by HLC wins" | The HLC directly |
+| **Tree, counters, list moves** | Built in (movable tree, Counter, MovableList) | Written by Fini (a cycle rule, a value for each device, rank keys) |
+| **Build effort** | Storage, queries, persistence and the CLI access written again; the sync comes with the library; +3.8 MB in the APK | The reconciliation, the field versions, the history and the tree rule written by Fini; storage and queries stay |
 
 ## Trust and integrity
 
-Status: undecided. The project owner is unsure about re-signing.
+Status: chosen. Authenticated iroh links only: no signature for each row and
+no device identity in the data. Signatures can come later if a relay that is
+not trusted appears.
 
 | | Authenticated iroh links only (no signature for each row) | Signed rows, original signer | Signed rows, signed again at each hop |
 |---|---|---|---|
@@ -463,10 +476,8 @@ Status: undecided. The project owner is unsure about re-signing.
 | **Relay and digests** | No effect. | The signature is the same on all devices, so it can be in the item id or out of it. | The signature changes at each hop, so it must stay out of the item id and the digests. If not, each hop looks like a difference. |
 | **Revocation at unpair** | Stop the link (today). | The revoked key's rows must be kept or signed again by another device. | Stop the link. Stored signatures of the revoked device stay as history only. |
 
-Candidate from the earlier draft (not decided): sign with the iroh key and a
-domain tag, keep the original signer through relay, and sign again the rows
-of a device when it is unpaired. It meets "proves who wrote the row", but it
-fails R5.
+An unpair is local to this device: the link to that device stops, and the
+data that the unpaired device wrote stays.
 
 ## Version clock
 
@@ -477,9 +488,9 @@ fails R5.
 | **Two writes in the same millisecond** | Same version | Different versions |
 | **A device with a clock far ahead** | Its edits win until the time catches up | It pulls the other clocks forward; the order stays correct |
 | **Reads as a time** | Yes | Yes, for devices whose clocks agree |
-| **Status** | — | Favored |
+| **Status** | — | Chosen |
 
-Chosen so far: a row whose version is more than 24 hours ahead of the
+Chosen: a hybrid logical clock. Also chosen: a row whose version is more than 24 hours ahead of the
 receiver's clock is rejected, and the Device page shows a warning about the
 clock. The tie rule for two equal versions must not need a device id (R5):
 for example the content hash.
@@ -502,6 +513,20 @@ Candidate (not decided):
   in place of inserting the row.
 - Other rows follow the LWW. In two edge cases, both after more than 90 days
   away, a deleted row can come back. Data is never deleted.
+- With no device identity in the data (chosen), the rule cannot ask who wrote
+  a row. It then applies only to rows that are not newer than the last sync of
+  the two devices, and a row from a third device with a slow clock can be
+  treated as deleted. This needs a fix before it is chosen.
+
+## Sync behavior
+
+| Topic | Status | Rule |
+|---|---|---|
+| When a comparison runs | Chosen | After each local edit (with about 2 s of wait for more edits), and every 30 s while connected. No live push: only comparisons |
+| Devices on different sync versions | Chosen | A notice on the Device page |
+| The old outbox tables | Chosen | Kept, not used, for one release; then dropped |
+| Unpair | Chosen | Local to this device; the data that the unpaired device wrote stays |
+| What syncs | Open | Candidates: space names, focus history and imported backups sync; settings stay on each device |
 
 ## Discussion log
 
@@ -514,13 +539,19 @@ Candidate (not decided):
 | Automerge (d) | Discussed, not chosen | For: merges field by field, merges lists and text. Against: the history grows, a second data store beside SQLite, actor (device) ids in each operation (R5) |
 | 90-day limit for silent peers | Chosen so far | Only if deletion markers are used (R1) |
 | Versions more than 24 h in the future | Chosen so far | Reject the row, and show a warning on the Device page |
-| HLC | Favored | An edit after a received change always wins |
-| Trust model | Open | Signatures against privacy (R5) |
-| Relay signed again at each hop | Open | The project owner is unsure; it proves no more than the link does |
+| HLC | Chosen | An edit after a received change always wins |
+| Trust model | Chosen: authenticated iroh links only | No signature for each row and no device identity in the data; signatures can come later for a relay that is not trusted |
+| Relay signed again at each hop | Rejected | No signatures for each row |
 | Merge unit: row, field, or 3-way with a base | Chosen: a merge for each field | Whole-row LWW is ruled out (see "Conflict handling") |
 | Conflict handling policy | Chosen | Merge automatically and deterministically; never lose data silently; history replaces prompts |
-| History bound of a quest | Open | The last N values, or a time limit |
-| Text-CRDT merge for long descriptions | Open | Newer wins with history is the default |
+| History bound of a quest | Chosen: the last 10 losing values of each field | A fixed bound |
+| Long descriptions | Chosen: newer wins, with history | No text-CRDT merge |
+| Sync scope | Open | Candidates: space names, focus history and imported backups sync; settings stay on each device |
+| Unpair | Chosen: local to this device | The data that the unpaired device wrote stays |
+| Live push | Rejected | Comparison only: after each local edit (about 2 s of wait), and every 30 s while connected |
+| Version mismatch | Chosen | A notice on the Device page |
+| Old outbox tables | Chosen | Kept, not used, for one release; then dropped |
+| Loro or (b′) | Open: the main remaining decision | Loro's writer ids conflict in part with "no device identity in the data"; see "The main remaining decision" |
 | iroh-docs (h) | Under discussion | Same stack as Fini, and the same reconciliation; but author ids in entries (R5), markers that stay, and a second store |
 | Willow / Earthstar (i) | Under discussion | Prefix deletes with no marker growth and private overlap detection; the Rust code is alpha and its sync design is paused |
 | CouchDB-style (j) | Under discussion | Mature model; revision trees and tombstones grow; no SQLite-backed Rust implementation |
@@ -538,33 +569,16 @@ Candidate (not decided):
 
 ## Open questions
 
-1. Which sync approach: (b), (b′) or (f)? Or (b) now and (f) later?
-2. The history of a quest (see "Conflict handling"): keep the last N values
-   of each field, or keep values for a time? And should long descriptions
-   merge as text (a text CRDT)?
-3. Which trust model: links only, signed rows with the original signer, or
-   signed at each hop? Is "proves who wrote the row" a requirement, given R5?
-4. For (f): how much history to keep, and where to keep the merge base of
-   each peer (a full snapshot, or shared parts once)?
-5. Should the data keep device ids at all (for example
-   `checklist_activity.origin_device_id`), given R5?
-6. With markers: is the candidate removal rule and its two edge cases
-   acceptable?
-7. Should `focus_history` and the space names sync?
-8. Should a backup import sync at once, or stay local until the person edits
-   the imported quests?
-9. The protocol: `fini/sync/7` with a notice on the Device page when the peer
-   runs another version. Keep the old sync tables for one release so that a
-   rollback is possible?
-10. NoSQL: keep SQLite and use the KV sync model over rows (iii), or test a
-    NoSQL store (iroh-docs or Willow) as the sync store in a spike first?
-11. If iroh-docs is a candidate: one author key for all devices of the person
-    (hides C, R5), or one author for each device (shows who wrote)?
-12. Loro or (b′) with its own history table? If Loro: as the only store, or
-    with an SQLite view?
-13. If Loro: one writer id for each device, or a new id for each session
-    (hides more, costs about 10 B for each session in the version vector)?
-14. If Loro: store an HLC with each value so that "the newer wins" follows the
-    HLC, or accept Loro's logical order for concurrent writes?
-15. Desktop app and CLI on one store: one owner process, or a file lock with
-    a writer id for each process?
+1. The main remaining decision: Loro or (b′) (see "The main remaining
+   decision")? Is the random writer id of Loro acceptable, given "no device
+   identity in the data"?
+2. If Loro: as the only store, or with an SQLite view? One writer id for each
+   device, or a new id for each session? An HLC stored with each value?
+3. Sync scope: do space names, focus history and imported backups sync, and
+   do settings stay on each device (the candidates)?
+4. With markers: how does the rejoin rule work with no device identity in the
+   data (see "Deletion markers and silent peers")?
+5. Desktop app and CLI on one store: one owner process, or a file lock with
+   a writer id for each process?
+6. `checklist_activity.origin_device_id` holds a device id: remove it from the
+   synced data, as "no device identity in the data" asks?
