@@ -148,9 +148,9 @@ are Loro's own and which custom parts are deferred and optional.
 | D5 History | Lost values read from Loro's history (checkout, diff) | An explicit list of the last 10 values |
 | D6 Trimming | No trimming during the migration | Shallow snapshots, and the re-apply path for an old peer |
 | D7 Tree | Loro Tree (an option for ADR-0015) | — |
-| D8 Migration | Mergeable child containers, if the Rust interface has them | "The smaller id builds, the other applies its differences again" |
+| D8 Migration | Mergeable child containers (`ensure_mergeable_map`; measured) | "The smaller id builds, the other applies its differences again" (no longer necessary) |
 | D10 Storage | Snapshot and update files, `import` | In-memory indexes (necessary), integrity checks at read |
-| D12 CLI | Import of each update file | The compaction rule for files |
+| D12 CLI | Import of each update file | The compaction rule for files; a pool of CLI ids with a lock file for each id |
 | Concurrent writes | Loro's own order | The HLC wrapper: dropped |
 
 ### D1 — Loro is the sync engine
