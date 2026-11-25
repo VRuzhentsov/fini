@@ -29,7 +29,9 @@ the model gets it as a reminder from the plugin, and the person does not see it 
 An earlier version added the note in a `prompt.compose` hook. A higher-tier plugin
 (the built-in `cc-plugin-sec-default`) sent that event past the hook, so the model
 did not get the note. A call on `$` reaches the session at each tier.
-Each new note is a new row; the older notes stay in the conversation.
+The plugin store keeps the last note of each session (key `note:<session ID>`).
+A note that is the same as that one is not added again, so a resume or a reload
+does not repeat it. The store keeps the notes of the last 200 sessions.
 
 The mod API cannot register `fini:*` names: `$.command.register` accepts only
 letters, digits, `_` and `-`. The markdown descriptors keep the names, and the

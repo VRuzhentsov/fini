@@ -29,6 +29,7 @@ export class RelationCommand {
   session?: Session;
   agent?: string;
   clear: boolean;
+  primary: boolean;
 
   static identifier(value: unknown): string {
     if (typeof value !== 'string' || !value.trim() || value.startsWith('-')
@@ -75,14 +76,15 @@ export class RelationCommand {
 
   // Model tools give fields, not text. The fields become the same tokens as the command text.
   static inputTokens(command: CommandName, input: unknown): string[] {
-    if (!object(input) || Object.keys(input).some(key => !['quest_id', 'agent', 'session_id'].includes(key))
-        || Object.values(input).some(value => typeof value !== 'string')) {
-      throw new Error('Supply only the text fields quest_id, agent and session_id.');
+    if (!object(input) || Object.keys(input).some(key => !['quest_id', 'agent', 'session_id', 'primary'].includes(key))
+        || Object.entries(input).some(([key, value]) => typeof value !== (key === 'primary' ? 'boolean' : 'string'))) {
+      throw new Error('Supply only the text fields quest_id, agent and session_id, and the true/false field primary.');
     }
-    const { quest_id: quest, agent, session_id: session } = input as Record<string, string | undefined>;
-    if (quest !== undefined) this.identifier(quest);
-    return [...(quest === undefined ? [] : command === Command.Relations ? ['--quest', quest] : [quest]),
-      ...(agent === undefined ? [] : ['--agent', agent]), ...(session === undefined ? [] : ['--session', session])];
+    const { quest_id: quest, agent, session_id: session, primary } = input as Record<string, string | boolean | undefined>;
+    if (typeof quest === 'string') this.identifier(quest);
+    return [...(typeof quest !== 'string' ? [] : command === Command.Relations ? ['--quest', quest] : [quest]),
+      ...(typeof agent === 'string' ? ['--agent', agent] : []), ...(typeof session === 'string' ? ['--session', session] : []),
+      ...(primary === true ? ['--primary'] : [])];
   }
 
   constructor(command: unknown, raw: unknown, current: unknown, input?: unknown) {
@@ -93,15 +95,17 @@ export class RelationCommand {
     for (let i = 0; i < tokens.length; i++) {
       const token = tokens[i]!;
       if (!token.startsWith('-')) { positional.push(token); continue; }
-      if (!['--agent', '--session', '--quest', '--clear'].includes(token) || options.has(token)) {
+      if (!['--agent', '--session', '--quest', '--clear', '--primary'].includes(token) || options.has(token)) {
         throw new Error('Unknown or repeated option.');
       }
-      if (token === '--clear') { options.set(token, true); continue; }
+      if (token === '--clear' || token === '--primary') { options.set(token, true); continue; }
       const value = tokens[++i];
       if (value === undefined || value.startsWith('-')) throw new Error('Each option needs one value.');
       options.set(token, value);
     }
     this.clear = options.has('--clear');
+    this.primary = options.has('--primary');
+    if (this.primary && this.command !== Command.Link) throw new Error('Only link accepts --primary.');
     const agent = options.get('--agent'), session = options.get('--session'), quest = options.get('--quest');
     if (this.command === Command.Context) {
       if (tokens.length) throw new Error('Context takes no arguments.');
@@ -135,7 +139,15 @@ export class RelationCommand {
     }
     const quest = this.quest!;
     let changed: boolean | undefined;
-    if (this.command === Command.Link) changed = repository.link(quest, this.session!);
+    if (this.command === Command.Link) {
+      changed = repository.link(quest, this.session!);
+      if (this.primary) {
+        // The former primary stays linked as related.
+        const before = repository.sessions(quest).find(row => row.agent === this.session!.agent && row.is_primary);
+        repository.promote(quest, this.session!);
+        changed ||= before?.session_id !== this.session!.session_id;
+      }
+    }
     if (this.command === Command.Unlink) changed = repository.unlink(quest, this.session!);
     if (this.command === Command.Primary) {
       if (this.clear) repository.clear(quest, this.agent!); else repository.promote(quest, this.session!);

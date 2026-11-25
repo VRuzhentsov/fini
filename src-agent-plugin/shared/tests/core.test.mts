@@ -172,3 +172,19 @@ test('session relations expand each quest one level and stop', t => {
   assert.equal(after.title, null);
   assert.equal(after.agents.length, 2);
 });
+
+test('link --primary takes the primary and keeps the former one related', t => {
+  const { call, env, quests: [q] } = fixture(t);
+  assert.ok(q);
+  call(Command.Link, q);
+  call(Command.Link, `${q} --agent hermes --session runtime-b`);
+  const promoted = call(Command.Link, `${q} --agent hermes --session runtime-b --primary`);
+  assert.equal(promoted.changed, true);
+  assert.deepEqual(promoted.agents, [{ agent: 'hermes', primary: 'runtime-b', related: ['runtime-a'] }]);
+  assert.equal(call(Command.Link, `${q} --agent hermes --session runtime-b --primary`).changed, false);
+  assert.ok(call(Command.Unlink, `${q} --primary`).error);
+  // The model tools send the same option as the true/false field primary.
+  const p = spawnSync(process.execPath, [CLI], { env, encoding: 'utf8', input: JSON.stringify({ command: Command.Link,
+    input: { quest_id: q, primary: true }, current: { agent: 'hermes', session_id: 'runtime-a' } }) });
+  assert.equal(JSON.parse(p.stdout).agents[0].primary, 'runtime-a');
+});

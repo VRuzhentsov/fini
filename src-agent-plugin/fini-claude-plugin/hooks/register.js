@@ -11,7 +11,8 @@ const QUEST = { type: 'string', description: 'Fini quest ID.' };
 const TOOLS = [
   { name: 'fini_link', command: 'fini:link',
     description: 'Link a Fini quest to the current agent session, or to an explicit agent session. Only link when the user asks or agrees. Quest content changes stay with the fini CLI.',
-    inputSchema: { type: 'object', properties: { quest_id: QUEST, ...TARGET }, required: ['quest_id'], additionalProperties: false } },
+    inputSchema: { type: 'object', required: ['quest_id'], additionalProperties: false, properties: { quest_id: QUEST, ...TARGET,
+      primary: { type: 'boolean', description: 'Also make this session the primary session of its agent for the quest. Use only when the user asks. The former primary stays linked.' } } } },
   { name: 'fini_unlink', command: 'fini:unlink',
     description: 'Remove one link between a Fini quest and the current agent session, or an explicit agent session.',
     inputSchema: { type: 'object', properties: { quest_id: QUEST, ...TARGET }, required: ['quest_id'], additionalProperties: false } },
@@ -33,19 +34,34 @@ async function core($, command, args) {
   }
 }
 
+// The last note of each session, kept in the plugin store so that a resume or
+// a reload does not add the same note again. Old sessions are removed first.
+const NOTES_KEPT = 200;
+
 // Give the model the quest note as a plugin note in the conversation. A higher-tier
 // plugin can skip a prompt.compose hook, but a call on $ reaches the session.
+// The note is added only when it is different from the last note of this session.
 async function tell($) {
   try {
     const { text } = await core($, 'fini:context', '');
-    if (text) await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } });
+    if (!text) return;
+    const key = `note:${await $.session.id()}`;
+    if (await $.store.get(key) === text) return;
+    await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } });
+    await $.store.delete(key);
+    await $.store.set(key, text);
+    const keys = (await $.store.keys()).filter(name => name.startsWith('note:'));
+    for (const old of keys.slice(0, Math.max(0, keys.length - NOTES_KEPT))) await $.store.delete(old);
   } catch { /* The note is help only; a failure must not stop the session or the command. */ }
 }
 
 async function start($) {
-  for (const { name, description, inputSchema } of TOOLS) {
-    await $.tool.register({ name, description, inputSchema, isDeferred: false });
-  }
+  // A session without tools (for example `--tools ''`) refuses the registration; the note still comes.
+  try {
+    for (const { name, description, inputSchema } of TOOLS) {
+      await $.tool.register({ name, description, inputSchema, isDeferred: false });
+    }
+  } catch { /* The commands and the note work without the tools. */ }
   await tell($);
 }
 
@@ -64,7 +80,7 @@ export function register(on) {
   for (const { name, command } of TOOLS) {
     on('tool.run', { tool: `mcp__fini__${name}` }, async ($, e) => {
       // Only the schema fields go to the core; the session ID comes from the runtime.
-      const input = Object.fromEntries(['quest_id', 'agent', 'session_id'].filter(key => key in e).map(key => [key, e[key]]));
+      const input = Object.fromEntries(['quest_id', 'agent', 'session_id', 'primary'].filter(key => key in e).map(key => [key, e[key]]));
       const result = await core($, command, input);
       if (command !== 'fini:relations') await tell($);
       return { result: JSON.stringify(result, null, 2) };

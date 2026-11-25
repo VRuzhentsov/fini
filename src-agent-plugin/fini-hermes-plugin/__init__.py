@@ -100,6 +100,8 @@ _TARGET = {
     "session_id": {"type": "string", "description": "ID of an explicit target session. Leave out agent and session_id for the current session."},
 }
 _QUEST = {"type": "string", "description": "Fini quest ID."}
+_PRIMARY = {"type": "boolean", "description": "Also make this session the primary session of its agent for the quest. "
+            "Use only when the user asks. The former primary stays linked."}
 _TOOLS = (
     ("fini_link", "fini:link", "Link a Fini quest to the current agent session, or to an explicit agent session. "
      "Only link when the user asks or agrees. Quest content changes stay with the fini CLI.", True),
@@ -113,7 +115,7 @@ _TOOLS = (
 def _tool(command, args, session_id=None, **_):
     # Only the schema fields go to the core; the session ID comes from Hermes.
     fields = args if isinstance(args, dict) else {}
-    result = _call(command, {key: fields[key] for key in ("quest_id", "agent", "session_id") if key in fields}, session_id)
+    result = _call(command, {key: fields[key] for key in ("quest_id", "agent", "session_id", "primary") if key in fields}, session_id)
     if command != "fini:relations":
         _notes.clear()
     return result
@@ -124,7 +126,8 @@ def register(ctx):
 
     ctx.register_hook("pre_llm_call", _context)
     for name, command, description, target in _TOOLS:
-        properties = {"quest_id": _QUEST, **(_TARGET if target else {})}
+        properties = {"quest_id": _QUEST, **(_TARGET if target else {}),
+                      **({"primary": _PRIMARY} if name == "fini_link" else {})}
         ctx.register_tool(
             name=name, toolset="fini", handler=partial(_tool, command), description=description,
             schema={"name": name, "description": description, "parameters": {
@@ -135,5 +138,5 @@ def register(ctx):
         ctx.register_command(
             f"fini:{name}", partial(_command, f"fini:{name}"),
             description=f"Fini quest-session {name} (local only).",
-            args_hint="[quest-id] [--agent NAME --session ID]", argument_mode="text",
+            args_hint="[quest-id] [--primary] [--agent NAME --session ID]", argument_mode="text",
         )

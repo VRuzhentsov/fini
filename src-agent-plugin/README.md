@@ -9,7 +9,7 @@ Linking does not change or complete a quest.
 Both agents use these exact commands:
 
 ```text
-/fini:link <quest-id> [--agent NAME --session ID]
+/fini:link <quest-id> [--primary] [--agent NAME --session ID]
 /fini:unlink <quest-id> [--agent NAME --session ID]
 /fini:primary <quest-id> [--agent NAME --session ID]
 /fini:primary <quest-id> --clear
@@ -44,7 +44,7 @@ Both agents use these exact commands:
 Both agents also give the model three tools. They use the same shared core and rules as the commands.
 
 ```text
-fini_link       quest_id (required), agent + session_id (both or neither)
+fini_link       quest_id (required), agent + session_id (both or neither), primary (true/false)
 fini_unlink     quest_id (required), agent + session_id (both or neither)
 fini_relations  quest_id (optional)
 ```
@@ -52,6 +52,9 @@ fini_relations  quest_id (optional)
 - The default target is the current session. The runtime supplies its session ID to the
   adapter; the model cannot give it. `agent` and `session_id` select an explicit target.
 - `fini_relations` without `quest_id` shows the quests of the current session.
+- `--primary` on link (`primary: true` on the tool) also makes the target session the
+  primary of its agent. The former primary stays linked as related. Other links do not
+  change the primary, and an unlink of the primary does not promote another session.
 - After a link or unlink, the plugin reads the quest note again.
 - The tools only change links. Quest content updates stay with the `fini` CLI.
 - Results are the same JSON as the commands.
