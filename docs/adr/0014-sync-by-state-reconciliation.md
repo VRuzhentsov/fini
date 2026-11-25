@@ -150,7 +150,7 @@ are Loro's own and which custom parts are deferred and optional.
 | D7 Relations | Decided in ADR-0015 | — |
 | D8 Migration | Mergeable child containers (`ensure_mergeable_map`; measured) | "The smaller id builds, the other applies its differences again" (no longer necessary) |
 | D10 Storage | Snapshot and update files, `import` | In-memory indexes (necessary), integrity checks at read |
-| D12 CLI | Import of each update file | The compaction rule for files; a pool of CLI ids with a lock file for each id |
+| D12 CLI | Import of each update file | The compaction rule for files; a short lock on the one CLI id |
 | Concurrent writes | Loro's own order | The HLC wrapper: dropped |
 | D14, D15 Checklists and descriptions | A plain child Loro text; progress counted from the text | The item merge of #128: removed; a merge of an edit made before the first comparison: deferred |
 | D16 Repeating quests | The rule as one value; marks as mergeable maps keyed `<quest_id>/<date>` | Archiving old closed marks: deferred |
@@ -175,12 +175,14 @@ Loro puts a random writer (peer) id in each operation. So a device can see
 that another writer exists, but not who it is. This relaxes "no device
 identity in the data" (see "Trust and integrity"). The mitigation:
 
-- Each device makes its own random 64-bit peer id. It has no relation to the
-  iroh device key or the Fini device id.
+- On its first start, each installation makes two ids once and stores them:
+  one for the app and one for the CLI (D12). Each is unique (a UUID), and a
+  random 64-bit Loro peer id is stored with it (Loro peer ids are 64-bit).
+  The ids have no relation to the iroh device key or the Fini device id.
 - The UI never shows a peer id.
-- A device loads its own earlier operations before it writes with its peer
-  id again (Loro's rule). A store that is restored on another device gets a
-  new peer id, so two writers never share one id.
+- A writer loads its own earlier operations before it writes with its peer
+  id again (Loro's rule). A store that is restored or copied to another
+  device makes both ids again, so two writers never share one id.
 - `checklist_activity.origin_device_id` leaves the synced data.
 
 ### D3 — Sync
@@ -388,12 +390,16 @@ in the other.
 
   All three converge. A shallow snapshot does not remove the entries of old
   peers from the version vector.
-- Chosen by the measurement: a pool of CLI ids (for example 4). A CLI run
-  claims a free id with a lock file for that id, loads the store (which holds
-  the earlier operations of that id), and writes with it. The lock is on the
-  id, not on the store: up to 4 CLI runs and the app write at the same time.
-  A new id for each run is rejected: each run adds a version-vector entry for
-  good, and each later comparison carries it.
+- Chosen: one CLI id for each installation (D2), as the measured "one CLI id"
+  row (about 9 B of version-vector data). Two writers must never write with
+  the same peer id at the same time, so CLI runs on one installation take
+  turns: a run takes a short exclusive lock on the CLI id, loads the store
+  (which holds the earlier operations of that id), writes, and releases the
+  lock. A CLI load is about 7.5 ms (measured), so a wait is short. The lock is
+  on the CLI id only: the app has its own id and never waits for the CLI.
+- Rejected: a new id for each run (each run adds a version-vector entry for
+  good, and each later comparison carries it), and a pool of CLI ids (not
+  necessary with one id and a short lock).
 
 ### D13 — Concurrent writes of one field
 
@@ -1028,7 +1034,8 @@ Candidate (not decided):
 | Storage (follow-up b) | Chosen: Loro is the only store | Snapshot and update files for each space; relations by id; indexes in memory |
 | Document size (follow-up c) | Chosen: one document for each space | A space is the unit of a mapping |
 | The CLI (follow-up d) | Chosen: a Loro peer with no lock | Its own update file for each writer; only the app compacts |
-| The CLI peer id | Chosen by measurement: a pool of CLI ids, each claimed with a lock file | A new id for each run gave a version vector of 2 001 entries (8.0 KB) after 2 000 runs, and a shallow snapshot does not remove them; a pool of 4 gave 17 B |
+| The CLI peer id | Chosen: one id for each installation, made at the first start; CLI runs take turns with a short lock on that id (replaces the pool of 4) | Measured: one fixed id adds about 9 B of version-vector data; a new id for each run gave 2 001 entries (8.0 KB) after 2 000 runs, which a shallow snapshot does not remove |
+| The app peer id | Chosen: one id for each installation, made at the first start | The app never waits for the CLI; a restored or copied store makes both ids again |
 | Migration of two devices with the same data | Chosen by measurement: `ensure_mergeable_map` for each quest | Plain containers lose the edits of one device; mergeable lists duplicate items and counters double, so the checklist stays text and the counter counts only new focus enters |
 | The explicit 10-value history list | Deferred, optional | Loro's own history gives the values while the document is not trimmed |
 | Trimming (shallow snapshots) | Deferred, optional | No trimming during the migration |
@@ -1071,7 +1078,6 @@ Candidate (not decided):
 
 ## Open questions
 
-1. The size of the CLI id pool (D12): 4, or another number?
-2. Sync scope: do space names and imported backups sync, and do settings stay
+1. Sync scope: do space names and imported backups sync, and do settings stay
    on each device (the candidates)? Focus history stays on each device
    (chosen).
