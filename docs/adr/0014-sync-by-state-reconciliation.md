@@ -501,9 +501,12 @@ the weekdays at the same time):
 | One value (chosen) | correct | the whole rule of one device (Loro's order); the other rule is in the history |
 
 The fields of a rule depend on each other (the preset decides which fields
-count), so one value keeps a rule that a person wrote. The rule and `due` are
-two fields: a rule change on one device and a date change on another can
-both stay, in Loro's order for each field.
+count), so one value keeps a rule that a person wrote. The rule and `due` stay
+two separate fields of the quest map, each in Loro's own order, with no custom
+grouping. Accepted edge case (the thin principle): a rule change on one device
+and a date change on another at the same time can pair the rule of one device
+with the start date of the other. The project owner judged this not
+important.
 
 **The marks in the document.** A top-level map `occurrences`, keyed
 `"<quest_id>/<YYYY-MM-DD>"`. Each mark is a mergeable map
@@ -1061,15 +1064,12 @@ Candidate (not decided):
 | A stored Merkle tree (Merkle Search Tree, prolly tree) | Under discussion | The "hashes of hashes" in a stored form |
 | A version and a hash for each value (TinyBase) | Under discussion | A model for (b′) |
 | Server-centric engines | Rejected | Fini has no server |
+| A concurrent rule change and `due` change | Accepted edge case: Loro's defaults (D16) | `repeat_rule` and `due` stay separate fields in Loro's own order; the project owner judged the pairing not important |
 | Generic KV (m) and the fit analysis | Under discussion | No sync by itself; a NoSQL source of truth (i) or a second store (ii) costs all queries; (iii) is (b) |
 
 ## Open questions
 
 1. The size of the CLI id pool (D12): 4, or another number?
-2. A concurrent change of the rule on one device and of `due` on another can
-   pair one device's rule with the other device's start date (D16). Is
-   Loro's order for each field acceptable there, or should `due` of a
-   repeating quest go into the rule value?
-3. Sync scope: do space names, focus history and imported backups sync, and
+2. Sync scope: do space names, focus history and imported backups sync, and
    do settings stay on each device (the candidates)?
-4. ADR-0015: the Loro Tree in place of `parent_id` and the rank keys (D7)?
+3. ADR-0015: the Loro Tree in place of `parent_id` and the rank keys (D7)?
