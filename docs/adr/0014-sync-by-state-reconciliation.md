@@ -104,10 +104,10 @@ silently; history replaces prompts.**
 |---|---|---|
 | Different fields of one quest | The phone renames "Gym"; the PC moves its due date | Both are kept: a merge for each field |
 | The same simple field (status, due date, priority, energy, rank) | Both devices change the priority | One change wins, the same on all devices: an edit made after the device saw the other wins; for concurrent edits, Loro's order decides (D13). The losing value goes into the history of the quest, so the person can restore it. No prompt |
-| The same text field | Both devices edit the description | The newer change wins, and the other goes into the history (also for titles and long descriptions). No text-CRDT merge |
+| The same text field | Both devices edit the description | The description is a Loro text (D15): edits on different lines both stay, online or after days offline. A title is a short field: one change wins (Loro's order), and the other goes into the history |
 | Delete against edit | The phone deletes the quest; the PC edits it | The newer action wins. A delete that wins moves the quest to "recently deleted", where the person can restore it |
 | Complete against edit | The phone completes the quest; the PC moves its date | Both are kept: they are different fields |
-| Both add checklist items | One adds "eggs", the other adds "milk" | Union: both items stay |
+| Both add checklist items | One adds "eggs", the other adds "milk" | Both lines stay: a checklist is lines of the description (D14), and the text merges (D15) |
 | Both reorder | Both devices move the same quest in the list | The rank of each quest: the newer change wins |
 | Tree moves that make a cycle | One device moves A under B; the other moves B under A | A deterministic rule removes the cycle, the same on all devices |
 | The same repeating day completed twice | The phone and the PC both complete Monday of "Gym" | Idempotent: one completed mark |
@@ -152,6 +152,7 @@ are Loro's own and which custom parts are deferred and optional.
 | D10 Storage | Snapshot and update files, `import` | In-memory indexes (necessary), integrity checks at read |
 | D12 CLI | Import of each update file | The compaction rule for files; a pool of CLI ids with a lock file for each id |
 | Concurrent writes | Loro's own order | The HLC wrapper: dropped |
+| D14, D15 Checklists and descriptions | A mergeable Loro text; progress counted from the text | The item merge of #128: removed |
 
 ### D1 — Loro is the sync engine
 
@@ -195,6 +196,14 @@ for each mapped space (one document for each space, D11):
   edits, and every 30 s while connected. There is no other push.
 - Relay A-B-C works, because B's document has A's operations.
 
+**How this works: collaborative editing that does not need a connection.**
+Loro is the same kind of tool as the live co-editing of a shared document,
+but it works asynchronously. Each device commits its edits locally, at once.
+There are no transactions across devices and no locks. A sync at any time,
+after seconds or after days, merges the two documents, and the result is the
+same on all devices. While two devices are connected, the comparison after
+about 2 s makes the edits of one device appear on the other almost at once.
+
 ### D4 — Soft deletes
 
 - A delete sets the field `deleted_at` of the quest; it does not remove the
@@ -202,8 +211,6 @@ for each mapped space (one document for each space, D11):
 - "Recently deleted" lists the quests with `deleted_at`. A restore clears it.
 - With Loro's order (D13), a delete and a concurrent edit both stay: the
   quest is deleted, with the edit in it, and a restore shows the edit.
-- A checklist item is removed from its MovableList. Loro keeps no growing
-  delete set for that (measured), so a soft delete is not necessary there.
 
 ### D5 — The conflict history comes from Loro's history
 
@@ -258,9 +265,16 @@ the rank keys. This is an option for ADR-0015; it is not decided here.
 
 - So the migration uses `ensure_mergeable_map` for each quest (and each
   occurrence mark). The plain fields merge, because both devices write the
-  same values. The checklist stays in the description text, as today (one
-  text field, no list). A counter is not made in the migration: the migrated
-  focus minutes are a plain field, and the counter counts only new minutes.
+  same values. A counter is not made in the migration: the migrated focus
+  minutes are a plain field, and the counter counts only new minutes.
+- The checklist items of today become `- [ ]` and `- [x]` lines of the
+  description, with no item ids (D14).
+- The description becomes a Loro text (D15). Two devices that each insert the
+  same migrated text into the same mergeable text get the text two times, as
+  the measured list got its items two times (expected; to measure). Options:
+  the migration writes the description as a plain field (equal values merge)
+  and the first edit makes the Loro text from it; or one device (the smaller
+  device id) makes the texts. Open.
 - Deferred, optional (no longer necessary): the device with the smaller
   device id makes the document, and the other device writes its differences
   again.
@@ -307,12 +321,13 @@ A space document:
 space document "<space-id>"
 ├─ meta: Map              name, created_at
 ├─ quests: Map            quest_id → Map
-│   ├─ title, description, status, energy, priority, due, due_time,
-│   │  repeat_rule, completed_at, order_rank, is_checklist,
-│   │  created_at, updated_at, deleted_at, space_id
-│   ├─ checklist: MovableList of Map   id, text, done
+│   ├─ title, status, energy, priority, due, due_time, repeat_rule,
+│   │  completed_at, order_rank, created_at, updated_at, deleted_at,
+│   │  space_id
+│   ├─ description: Text  (mergeable; checklist lines are in it, D14)
 │   ├─ occurrences: Map   period_key → Map   status, closed_at, and the
-│   │                     fields that the day overrides
+│   │                     fields that the day overrides (a day copy of the
+│   │                     description is a Text too)
 │   └─ focus_minutes: Counter
 ├─ reminders: Map         reminder_id → Map   quest_id, kind, mm_offset,
 │                         due_at_utc, created_at
@@ -364,6 +379,29 @@ Loro's own order: the higher Lamport time wins, then the higher peer id. An
 edit made after a device saw another edit wins over it; for two concurrent
 edits, the order is deterministic. All devices converge. The HLC wrapper is
 dropped.
+
+### D14 — A checklist is lines of the description
+
+- There is no checklist entity. A checklist is Markdown task lines in the
+  description: `- [ ] item` and `- [x] item`. The person edits them only in
+  the editor; the list view has no tick.
+- The progress (for example 3/5) is counted from the text.
+- An item has no identity, so there are no reminders or links for one item.
+- The migration turns the checklist items of today into `- [ ]` and `- [x]`
+  lines of the description (D8).
+- The item-by-item merge of #128 (`checklist_base`, `merge_3way`) and the
+  checklist tables (`checklist_activity`) go away. The text merge of D15
+  takes their place.
+
+### D15 — The description is a Loro text
+
+- The description of a quest is a mergeable Loro text
+  (`ensure_mergeable_text`). Edits and ticks on different lines from two
+  devices both stay, when the devices are online and after days offline.
+- This replaces the earlier choice "newer wins, with history" for long
+  descriptions (see the discussion log).
+- A title stays a short field of the quest map: one change wins, in Loro's
+  own order (D13).
 
 ### Follow-ups (answered)
 
@@ -837,7 +875,9 @@ Candidate (not decided):
 | Merge unit: row, field, or 3-way with a base | Chosen: a merge for each field | Whole-row LWW is ruled out (see "Conflict handling") |
 | Conflict handling policy | Chosen | Merge automatically and deterministically; never lose data silently; history replaces prompts |
 | History bound of a quest | Chosen: the last 10 losing values of each field | A fixed bound |
-| Long descriptions | Chosen: newer wins, with history | No text-CRDT merge |
+| Long descriptions | Replaced: the description is a Loro text (D15) | Earlier choice "newer wins, with history"; now edits on different lines from two devices both stay |
+| Checklists | Chosen: lines of the description (D14) | No checklist entity; progress from the text; no per-item reminders or links; #128's item merge goes away |
+| Titles | Chosen: one change wins (Loro's order) | A short field; the other value goes into the history |
 | Sync scope | Open | Candidates: space names, focus history and imported backups sync; settings stay on each device |
 | Unpair | Chosen: local to this device | The data that the unpaired device wrote stays |
 | Live push | Rejected | Comparison only: after each local edit (about 2 s of wait), and every 30 s while connected |
@@ -863,9 +903,9 @@ Candidate (not decided):
 ## Open questions
 
 1. The size of the CLI id pool (D12): 4, or another number?
-2. A structured checklist (a list of items) later: it must not use a list
-   that two devices fill in the migration (measured: duplicates); a map of
-   items keyed by id merges, but is larger (D8).
+2. The migration of the description into a Loro text (D8): a plain field
+   that the first edit turns into a text, or one device that makes the texts?
+   And measure that two devices that insert the same text get it two times.
 3. Sync scope: do space names, focus history and imported backups sync, and
    do settings stay on each device (the candidates)?
 4. ADR-0015: the Loro Tree in place of `parent_id` and the rank keys (D7)?
