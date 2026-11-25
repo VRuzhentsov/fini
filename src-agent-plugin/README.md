@@ -22,6 +22,10 @@ src-agent-plugin/
   package.json           # development tools only
 ```
 
+The plugin has one version for both agents. Change it in `fini/.claude-plugin/plugin.json`,
+`fini/plugin.yaml` and `package.json` together; `tests/shared/version.test.mts` checks that they agree.
+Claude Code updates an installed copy when this version changes.
+
 The repository root has `.claude-plugin/marketplace.json`, which lists `./src-agent-plugin/fini`
 for Claude Code installs. Hermes installs the same folder from its subfolder path.
 

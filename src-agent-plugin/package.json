@@ -1,6 +1,6 @@
 {
-  "name": "fini-plugins",
-  "version": "0.3.0",
+  "name": "fini-agent-plugin",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "engines": {
