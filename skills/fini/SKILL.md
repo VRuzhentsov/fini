@@ -54,7 +54,7 @@ If the fetched quest's title or description contains one or more links:
 
 ## Agent Session Links
 
-The Fini agent plugin links quests to agent sessions. Load the `fini-sessions` skill only when the plugin is available in the current session: the `fini_link`, `fini_unlink` and `fini_relations` tools are in your tool list (in Claude Code as `mcp__fini__fini_*`), or the conversation has a note that starts with "Fini quest context from the Fini plugin". If neither is true, do not load it and do not mention session links.
+For links between quests and agent sessions, load the `fini-sessions` skill when the Fini agent plugin is available. That skill says how to check it.
 
 ## Rules
 
