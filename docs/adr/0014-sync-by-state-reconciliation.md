@@ -1,11 +1,12 @@
-# 0014 — Sync by state: the options
+# 0014 — Sync by state, with Loro
 
 ## Status
 
-Proposed. This record compares options; it gives no decision yet. It was
-written during the design discussion of 2026-11-24, and it records what the
-project owner liked, rejected and left open. It answers the research part of
-issue #196.
+Proposed. The project owner chose Loro as the sync engine (see "Decision").
+The record stays Proposed until the follow-ups in "Decision" are answered.
+It was written during the design discussion of 2026-11-24, and it records
+what the project owner liked, rejected and left open. It answers the research
+part of issue #196.
 
 Paths are relative to the repository root. A line number points at the code
 of the main branch on the day this record was written.
@@ -130,6 +131,129 @@ quest. The scores of the main candidates:
 | (l) Ditto | ✓ | ✗ (not public) | ✓ counter type | ✗ |
 | Loro | ✓ (each map key) | ✓ in its operation history, bounded by shallow snapshots | ✓ counter type | ✓ movable tree, deterministic |
 | yrs | ✓ (each map key) | ✗ deleted content is removed (garbage collection) | ✗ | ✗ no tree type |
+
+## Decision
+
+### D1 — Loro is the sync engine
+
+SpaceSync syncs Loro documents. The outbox goes (R4). The sections after
+"Decision" record the options that were compared.
+
+Considered, not chosen:
+
+| Option | Reason |
+|---|---|
+| (b′) Fini's own field versions, history and hash-range reconciliation | No writer ids in the data, but Fini writes the reconciliation, the field versions, the tree rule and the counters itself |
+| yrs | It needs Fini's own delete-set protocol to keep the payload small, and it has no history, no tree and no counter; its interface is 0.x |
+| The other options | See "Sync approaches", "NoSQL options" and "Wider survey" |
+
+### D2 — The accepted trade-off: random writer ids
+
+Loro puts a random writer (peer) id in each operation. So a device can see
+that another writer exists, but not who it is. This relaxes "no device
+identity in the data" (see "Trust and integrity"). The mitigation:
+
+- Each device makes its own random 64-bit peer id. It has no relation to the
+  iroh device key or the Fini device id.
+- The UI never shows a peer id.
+- A device loads its own earlier operations before it writes with its peer
+  id again (Loro's rule). A store that is restored on another device gets a
+  new peer id, so two writers never share one id.
+- `checklist_activity.origin_device_id` leaves the synced data.
+
+### D3 — Sync
+
+```
+for each mapped space (one document, see follow-up c):
+  device 1 ──▶ its version vector (about 10 B for each writer)
+  device 2 ──▶ its version vector
+  each side ──▶ export(updates since the other's vector)  ──▶ import
+```
+
+- The frames go over the iroh session (`fini/sync/7`). One round trip finds
+  and sends the difference (measured: 98 B for one edit, 1.6 KB for 100).
+- A comparison runs after each local edit, after about 2 s with no more
+  edits, and every 30 s while connected. There is no other push.
+- Relay A-B-C works, because B's document has A's operations.
+
+### D4 — Soft deletes
+
+- A delete sets the field `deleted_at` of the quest; it does not remove the
+  map key. A delete and an edit are then two fields, and both stay.
+- "Recently deleted" lists the quests with `deleted_at`. A restore clears it.
+- With Loro's order (follow-up a), a delete and a concurrent edit both stay:
+  the quest is deleted, with the edit in it, and a restore shows the edit.
+  With an HLC (follow-up a), the newer action wins: an edit that is newer
+  than the delete clears `deleted_at`.
+- A checklist item is removed from its MovableList. Loro keeps no growing
+  delete set for that (measured), so a soft delete is not necessary there.
+
+### D5 — The conflict history is explicit
+
+A shallow snapshot trims Loro's history (D6), so the history of the last 10
+losing values (see "Conflict handling") is data of its own:
+
+- Each quest has a map `history`: for each field, a list of the values that
+  were written, each with its time.
+- Each local write of a field also appends the new value to the list of that
+  field. Then the value that loses a concurrent write is in the list too,
+  because the device that wrote it appended it.
+- The device that appends trims the list to the last 10 entries by time. Two
+  devices that trim at the same time can remove one entry more; never less.
+- The UI shows the entries that are not the current value, and a restore
+  writes the chosen value as a new edit.
+- Size: at most 10 entries for each field that was edited (estimate: under
+  1 KB for a typical quest; to measure in the implementation).
+
+### D6 — Trimming the history of the document
+
+- Each device records the version vector that each active peer sent in its
+  last comparison (one vector for each peer: a fixed size).
+- A device makes a shallow snapshot only at a point that all active peers
+  have passed. A peer that is silent for more than 90 days does not stop the
+  trim.
+- When such a peer comes back, its old updates are rejected (measured:
+  `ImportUpdatesThatDependsOnOutdatedVersion`). Then:
+  1. it computes its local changes since its last common version (Loro's
+     diff between the two versions);
+  2. it imports the new state into a fresh document;
+  3. it writes those changes again, as new edits with its peer id.
+  The changes then merge as any new edit does (follow-up a).
+
+### D7 — The quest tree and the order (an option for ADR-0015)
+
+Loro's Tree has a deterministic cycle rule and orders the children by
+fractional index (measured: the cycle test). It can replace `parent_id` and
+the rank keys. This is an option for ADR-0015; it is not decided here.
+
+### D8 — Migration
+
+- Each device makes, for each mapped space, a Loro document from its SQLite
+  rows: one map for each quest, the checklist as a MovableList, the
+  occurrence marks as a map, the rank key as a field.
+- Two devices that make the same document on their own create the same keys
+  at the same time, and Loro keeps only one child container for a key (Loro
+  docs). So the device with the smaller device id makes the document, and the
+  other device imports it at the first `fini/sync/7` comparison, then writes
+  its own differences again as new edits (the path of D6).
+- The old outbox tables stay, not used, for one release; then a migration
+  drops them.
+- Devices on `fini/sync/6` and `fini/sync/7` do not connect; the Device page
+  shows a notice.
+
+### D9 — Rust
+
+Loro builds with the Rust of Fini's build images (measured). No toolchain
+change is needed.
+
+### Follow-ups (open)
+
+| | Question | Options |
+|---|---|---|
+| a | "Newer wins" | Accept Loro's order (logical, Lamport time) for concurrent writes of one field, or store an HLC with each value and let the newer HLC win |
+| b | Storage | Loro as the only store (a snapshot and an update log, an in-memory index, one owner process or a lock for the CLI), or Loro with an SQLite view |
+| c | Document size | One document for each space, or one document for all data |
+| d | The CLI | It writes through the app process, or it opens the store itself |
 
 ## Sync approaches
 
@@ -466,7 +590,7 @@ with zstd only above a size limit. Measured result: 10 B with no change, 29 B
 for one edit, 1.4 KB for 100 edits. This is close to Loro (98 B, 1.6 KB), but
 it is Fini's own protocol on top of yrs.
 
-### Verdict (a candidate, not a decision)
+### Verdict (before the decision; Loro was chosen, D1)
 
 - **Loro for everything** is the strongest CRDT candidate. It merges field by
   field, keeps a history that a shallow snapshot bounds, has a counter and a
@@ -482,7 +606,7 @@ it is Fini's own protocol on top of yrs.
   history, no tree and no counter, and its interface is 0.x. Long descriptions
   get no text merge (chosen), so yrs has no special use left for text.
 
-### The main remaining decision: Loro or (b′)
+### Loro or (b′): the trade-off (Loro chosen, D1)
 
 (b′) is Fini's own design: a version (HLC) for each field, the history of
 each field, and hash-range reconciliation of the items.
@@ -503,7 +627,8 @@ yrs is in the table for comparison, with the payload combination above.
 
 Status: chosen. Authenticated iroh links only: no signature for each row and
 no device identity in the data. Signatures can come later if a relay that is
-not trusted appears.
+not trusted appears. With Loro, the data holds random writer ids, which
+relaxes "no device identity" (D2).
 
 | | Authenticated iroh links only (no signature for each row) | Signed rows, original signer | Signed rows, signed again at each hop |
 |---|---|---|---|
@@ -536,7 +661,8 @@ for example the content hash.
 ## Deletion markers and silent peers
 
 These apply to (b), (b′), (c) and (e). Option (f) needs no markers while a
-merge base exists.
+merge base exists. With Loro (chosen), quests use soft deletes (D4), and the
+90-day rule applies to the trim point of the history (D6).
 
 Chosen so far: if deletion markers are used, a peer that is silent for more
 than 90 days stops blocking the removal of the markers.
@@ -589,14 +715,14 @@ Candidate (not decided):
 | Live push | Rejected | Comparison only: after each local edit (about 2 s of wait), and every 30 s while connected |
 | Version mismatch | Chosen | A notice on the Device page |
 | Old outbox tables | Chosen | Kept, not used, for one release; then dropped |
-| Loro or (b′) | Open: the main remaining decision | Loro's writer ids conflict in part with "no device identity in the data"; see "The main remaining decision" |
+| Loro or (b′) | Chosen: Loro (D1) | The project owner accepts the random writer ids (D2); (b′) and yrs are considered, not chosen |
 | iroh-docs (h) | Under discussion | Same stack as Fini, and the same reconciliation; but author ids in entries (R5), markers that stay, and a second store |
 | Willow / Earthstar (i) | Under discussion | Prefix deletes with no marker growth and private overlap detection; the Rust code is alpha and its sync design is paused |
 | CouchDB-style (j) | Under discussion | Mature model; revision trees and tombstones grow; no SQLite-backed Rust implementation |
 | Couchbase Lite (k) | Under discussion | Peer-to-peer only in the commercial edition; unofficial Rust binding |
 | Ditto (l) | Under discussion | A finished mesh product; closed source, paid tiers, conflicts with AGPL |
-| Loro | Under discussion: the strongest CRDT candidate | Measured: 98 B for one edit, +28 MB and 62 ms for 10 000 quests; history, counter and movable tree; history bounded by shallow snapshots |
-| yrs | Not recommended as it is | Measured: each update carries the whole delete set (15.3 KB); with blocks only, a delete-set hash and soft deletes: 10–29 B, but Fini then owns that protocol; no history, tree or counter; 0.x interface |
+| Loro | Chosen: the sync engine (D1) | Measured: 98 B for one edit, +28 MB and 62 ms for 10 000 quests; history, counter and movable tree; history bounded by shallow snapshots |
+| yrs | Considered, not chosen | Measured: each update carries the whole delete set (15.3 KB); with blocks only, a delete-set hash and soft deletes: 10–29 B, but Fini then owns that protocol; no history, tree or counter; 0.x interface |
 | A newer Rust | A small cost | The build images, `docs/container.md` and ble-gatt's `msrv`; CI uses stable already |
 | Fini tied to SQLite | Rejected | The criterion is the fit with Fini's storage and queries; a sync store can be the only store |
 | p2panda | Under discussion | Rust, on iroh; but its APIs are not stable, and author keys are in the data (R5) |
@@ -608,16 +734,12 @@ Candidate (not decided):
 
 ## Open questions
 
-1. The main remaining decision: Loro or (b′) (see "The main remaining
-   decision")? Is the random writer id of Loro acceptable, given "no device
-   identity in the data"?
-2. If Loro: as the only store, or with an SQLite view? One writer id for each
-   device, or a new id for each session? An HLC stored with each value?
-3. Sync scope: do space names, focus history and imported backups sync, and
+1. Follow-up (a): accept Loro's logical order for concurrent writes of one
+   field, or store an HLC with each value?
+2. Follow-up (b): Loro as the only store, or Loro with an SQLite view?
+3. Follow-up (c): one document for each space, or one for all data?
+4. Follow-up (d): does the CLI write through the app process, or open the
+   store itself?
+5. Sync scope: do space names, focus history and imported backups sync, and
    do settings stay on each device (the candidates)?
-4. With markers: how does the rejoin rule work with no device identity in the
-   data (see "Deletion markers and silent peers")?
-5. Desktop app and CLI on one store: one owner process, or a file lock with
-   a writer id for each process?
-6. `checklist_activity.origin_device_id` holds a device id: remove it from the
-   synced data, as "no device identity in the data" asks?
+6. ADR-0015: the Loro Tree in place of `parent_id` and the rank keys (D7)?
