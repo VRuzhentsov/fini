@@ -1,6 +1,6 @@
 ---
 name: fini
-description: "TRIGGER when the user asks to create, update, list, or manage Fini quests, spaces, reminders, or Focus state, or when the user names or quotes a Fini quest as the source for another request. Use the `fini-cli` foundation skill for binary preflight, CLI/app mode selection, JSON output decisions, and safe command sequencing before any action."
+description: "TRIGGER when the user asks to search for, find, create, update, list, or manage Fini quests, spaces, reminders, or Focus state, or when the user names or quotes a Fini quest as the source for another request. Use the `fini-cli` foundation skill for binary preflight, CLI/app mode selection, JSON output decisions, and safe command sequencing before any action."
 ---
 
 # Fini — Quest & Space CLI Workflow
@@ -54,7 +54,7 @@ If the fetched quest's title or description contains one or more links:
 
 ## Agent Session Links
 
-For links between quests and agent sessions, load the `fini-sessions` skill when the Fini agent plugin is available. That skill says how to check it.
+When the Fini agent plugin is available, load `fini-sessions` for quest searches and named quest retrieval, not only explicit session-link requests. That skill owns the availability check and the searching user session's first-link procedure after exact quest retrieval.
 
 ## Rules
 
