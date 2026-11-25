@@ -91,6 +91,47 @@ where the rows of the space are about 300 KB.
 | R6 | Relay A-B-C works | C gets A's changes through B with no direct pair. |
 | R7 | Works offline; the sync cost stays small on slow links | Few bytes and round trips for each sync, and a small first sync, because Bluetooth is slow. Fini's own Bluetooth drivers carry any reliable byte stream (iroh QUIC too), so the transport is not a filter. |
 
+## Conflict handling
+
+Status: chosen by the project owner, except the items marked open.
+
+Principle: **Merge automatically and deterministically, and never lose data
+silently; history replaces prompts.**
+
+| Situation | Example | Handling |
+|---|---|---|
+| Different fields of one quest | The phone renames "Gym"; the PC moves its due date | Both are kept: a merge for each field |
+| The same simple field (status, due date, priority, energy, rank) | Both devices change the priority | The newer change by HLC wins, the same on all devices. The losing value goes into the history of the quest, so the person can restore it. No prompt |
+| The same text field | Both devices edit the description | The newer change wins, and the other goes into the history (also for titles). A text-CRDT merge for long descriptions: open |
+| Delete against edit | The phone deletes the quest; the PC edits it | The newer action wins. A delete that wins moves the quest to "recently deleted", where the person can restore it |
+| Complete against edit | The phone completes the quest; the PC moves its date | Both are kept: they are different fields |
+| Both add checklist items | One adds "eggs", the other adds "milk" | Union: both items stay |
+| Both reorder | Both devices move the same quest in the list | The rank of each quest: the newer change wins |
+| Tree moves that make a cycle | One device moves A under B; the other moves B under A | A deterministic rule removes the cycle, the same on all devices |
+| The same repeating day completed twice | The phone and the PC both complete Monday of "Gym" | Idempotent: one completed mark |
+| Counters | Both devices add 25 focus minutes | Sum: 50 minutes |
+
+Open: how the history of a quest is bounded (for example the last N values
+of each field, or a time limit).
+
+**Consequence.** Whole-row LWW, the rule of today, is ruled out. Each
+candidate must merge field by field, and keep a bounded history of each
+quest. The scores of the main candidates:
+
+| Candidate | Merge for each field | History of a quest | Counter as a sum | Tree cycles |
+|---|---|---|---|---|
+| (a) Outbox, (b) and (c) as written (whole row) | ✗ | ✗ | ✗ | ✗ |
+| (b′) Reconciliation, a version for each field | ✓ | A history table of its own (bounded as chosen) | A value for each device, summed | Rule of its own |
+| (d) Automerge | ✓ | ✓ in its operation history, which has no bound | ✓ counter type | ✗ no tree type |
+| (e) cr-sqlite | ✓ (each column) | ✗; a table of its own | ✗ | ✗ |
+| (f) Git-style | ✓ (3-way) | ✓ the commits, bounded by the shallow history | A value for each device | Rule of its own |
+| (h) iroh-docs | ✓ with one key for each field | The last entry of each author only | A key for each author, summed | ✗ |
+| (i) Willow | ✓ with one path for each field | ✗ | A path for each author | ✗ |
+| (j) CouchDB-style, (k) Couchbase Lite | ✗ by itself (whole document); the app merges the kept conflicts | The losing revisions, until compaction | ✗ | ✗ |
+| (l) Ditto | ✓ | ✗ (not public) | ✓ counter type | ✗ |
+| Loro | ✓ (each map key) | ✓ in its operation history, bounded by shallow snapshots | ✓ counter type | ✓ movable tree, deterministic |
+| yrs | ✓ (each map key) | ✗ deleted content is removed (garbage collection) | ✗ | ✗ no tree type |
+
 ## Sync approaches
 
 One row for each option. Rows (h) to (m) are the NoSQL options; see
@@ -308,7 +349,10 @@ Candidate (not decided):
 | HLC | Favored | An edit after a received change always wins |
 | Trust model | Open | Signatures against privacy (R5) |
 | Relay signed again at each hop | Open | The project owner is unsure; it proves no more than the link does |
-| Merge unit: row, field, or 3-way with a base | Open | Row is simple; field and 3-way keep edits of different fields |
+| Merge unit: row, field, or 3-way with a base | Chosen: a merge for each field | Whole-row LWW is ruled out (see "Conflict handling") |
+| Conflict handling policy | Chosen | Merge automatically and deterministically; never lose data silently; history replaces prompts |
+| History bound of a quest | Open | The last N values, or a time limit |
+| Text-CRDT merge for long descriptions | Open | Newer wins with history is the default |
 | iroh-docs (h) | Under discussion | Same stack as Fini, and the same reconciliation; but author ids in entries (R5), markers that stay, and a second store |
 | Willow / Earthstar (i) | Under discussion | Prefix deletes with no marker growth and private overlap detection; the Rust code is alpha and its sync design is paused |
 | CouchDB-style (j) | Under discussion | Mature model; revision trees and tombstones grow; no SQLite-backed Rust implementation |
@@ -326,7 +370,9 @@ Candidate (not decided):
 ## Open questions
 
 1. Which sync approach: (b), (b′) or (f)? Or (b) now and (f) later?
-2. Which merge unit: the whole row, each field, or 3-way with a merge base?
+2. The history of a quest (see "Conflict handling"): keep the last N values
+   of each field, or keep values for a time? And should long descriptions
+   merge as text (a text CRDT)?
 3. Which trust model: links only, signed rows with the original signer, or
    signed at each hop? Is "proves who wrote the row" a requirement, given R5?
 4. For (f): how much history to keep, and where to keep the merge base of
