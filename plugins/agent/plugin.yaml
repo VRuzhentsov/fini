@@ -1,0 +1,6 @@
+name: fini-hermes-plugin
+version: 0.6.0
+description: Link Fini quests to Hermes sessions, with commands, model tools and a quest note.
+kind: standalone
+provides_tools: [fini_link, fini_unlink, fini_relations]
+provides_hooks: [pre_llm_call]

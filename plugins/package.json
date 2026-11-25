@@ -1,0 +1,20 @@
+{
+  "name": "fini-agent-plugin",
+  "version": "0.6.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.12.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --disable-warning=ExperimentalWarning --test tests/shared/*.test.mts",
+    "test:hermes": "hermes --run-module unittest discover -s tests/hermes -v",
+    "test:claude:native": "node tests/claude/native-check.mts",
+    "check": "npm run typecheck && npm test && npm run test:hermes"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2"
+  }
+}
