@@ -343,7 +343,7 @@ A file with the full state of a space doc.
 
 A snapshot without the history before a given point.
 
-*Elsewhere:* a Git shallow clone; Kafka log compaction.
+*Elsewhere:* a Git shallow clone.
 
 ### Mergeable container
 
