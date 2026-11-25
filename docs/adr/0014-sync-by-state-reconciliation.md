@@ -152,7 +152,8 @@ are Loro's own and which custom parts are deferred and optional.
 | D10 Storage | Snapshot and update files, `import` | In-memory indexes (necessary), integrity checks at read |
 | D12 CLI | Import of each update file | The compaction rule for files; a pool of CLI ids with a lock file for each id |
 | Concurrent writes | Loro's own order | The HLC wrapper: dropped |
-| D14, D15 Checklists and descriptions | A mergeable Loro text; progress counted from the text | The item merge of #128: removed |
+| D14, D15 Checklists and descriptions | A plain child Loro text; progress counted from the text | The item merge of #128: removed; a merge of an edit made before the first comparison: deferred |
+| D16 Occurrences | Mergeable maps keyed `<quest_id>/<date>` | Archiving old closed marks: deferred |
 
 ### D1 — Loro is the sync engine
 
@@ -269,12 +270,26 @@ the rank keys. This is an option for ADR-0015; it is not decided here.
   minutes are a plain field, and the counter counts only new minutes.
 - The checklist items of today become `- [ ]` and `- [x]` lines of the
   description, with no item ids (D14).
-- The description becomes a Loro text (D15). Two devices that each insert the
-  same migrated text into the same mergeable text get the text two times, as
-  the measured list got its items two times (expected; to measure). Options:
-  the migration writes the description as a plain field (equal values merge)
-  and the first edit makes the Loro text from it; or one device (the smaller
-  device id) makes the texts. Open.
+- The description becomes a Loro text (D15). Measured: two devices migrate
+  the same description, then merge:
+
+  | Way | The text after the merge | Edits before the first merge | Custom code |
+  |---|---|---|---|
+  | A mergeable text (`ensure_mergeable_text`) on both | Two times | — | None |
+  | (a) A plain field; the first edit makes a mergeable text | Once, when the first edits come one after the other. Two times, when both devices make their first edit before they merge | Both kept | A little |
+  | (b) The device with the smaller id makes the texts; the other waits | Once | Kept, when the other device does not edit before the texts arrive | A rule for who makes them, a wait state, and a merge for an edit made in the wait. With pairs A(1)-B(5)-C(2), A and C both make texts, and B gets two (reasoning, not measured) |
+  | (d) Both devices migrate with the same fixed peer id | Once, when the data is the same | Both kept | Little. But when the data is different, two operations have the same id: measured, the two devices stay different |
+  | (e) A plain child text (`insert_container`) on each device | Once: one child wins on both devices | The edits in the child that loses are not in the text. They stay in that child, which can still be read by its id | None |
+
+- Chosen by the measurement and the thin principle: (e). The description is
+  a plain child Loro text, made when the quest is made or migrated. After the
+  first merge, there is one text, and edits on different lines merge in it.
+  The risk is narrowed to one case: an edit of a description on a device
+  between its migration and its first comparison with the peer whose text
+  wins. That edit is not lost: it stays in the losing child, and the history
+  (D5) shows it so that the person can restore it. Deferred, optional: merge
+  it into the winning text by itself (a 3-way merge with the migrated text as
+  the base).
 - Deferred, optional (no longer necessary): the device with the smaller
   device id makes the document, and the other device writes its differences
   again.
@@ -320,17 +335,18 @@ A space document:
 ```
 space document "<space-id>"
 ├─ meta: Map              name, created_at
-├─ quests: Map            quest_id → Map
+├─ quests: Map            quest_id → Map (mergeable)
 │   ├─ title, status, energy, priority, due, due_time, repeat_rule,
 │   │  completed_at, order_rank, created_at, updated_at, deleted_at,
 │   │  space_id
-│   ├─ description: Text  (mergeable; checklist lines are in it, D14)
-│   ├─ occurrences: Map   period_key → Map   status, closed_at, and the
-│   │                     fields that the day overrides (a day copy of the
-│   │                     description is a Text too)
+│   ├─ description: Text  (a plain child text; checklist lines are in it,
+│   │                     D14, D15)
 │   └─ focus_minutes: Counter
-├─ reminders: Map         reminder_id → Map   quest_id, kind, mm_offset,
-│                         due_at_utc, created_at
+├─ occurrences: Map       "<quest_id>/<YYYY-MM-DD>" → Map (mergeable)   D16
+│                         status, closed_at, title?, description? (Text),
+│                         energy?, priority?, due_time?, created_at,
+│                         updated_at
+├─ reminders              pending audit: derived data or user data
 └─ tree: Tree             (an option for ADR-0015: each node holds a quest_id)
 ```
 
@@ -395,13 +411,71 @@ dropped.
 
 ### D15 — The description is a Loro text
 
-- The description of a quest is a mergeable Loro text
-  (`ensure_mergeable_text`). Edits and ticks on different lines from two
-  devices both stay, when the devices are online and after days offline.
+- The description of a quest is a Loro text: a plain child text
+  (`insert_container`), made when the quest is made or migrated (D8). Edits
+  and ticks on different lines from two devices both stay, when the devices
+  are online and after days offline.
+- A mergeable text is not used: two devices that each migrate the same
+  description into one get it two times (measured, D8).
 - This replaces the earlier choice "newer wins, with history" for long
   descriptions (see the discussion log).
 - A title stays a short field of the quest map: one change wins, in Loro's
   own order (D13).
+
+### D16 — Occurrence marks of repeating quests
+
+Occurrences are an important part of the data, and they are in the Loro
+document.
+
+**What is stored today** (`quest_occurrences`,
+`src-tauri/migrations/00000000000028_quest_occurrences/up.sql:11-24`;
+`src-tauri/src/models/quest_occurrence.rs:20-37`): `quest_id`, `period_key`
+(the date), `status` (open, `completed` or `abandoned`), `closed_at`, and the
+fields that override the quest for that day: `title`, `description`, `energy`,
+`priority`, `due_time`; then `created_at`, `updated_at`, and
+`checklist_base` (local to the device, never synced).
+
+**Stored and derived** (as today, ADR-0012 D2–D4):
+
+| Stored in a mark | Derived from the repeat rule and the quest |
+|---|---|
+| A day that a person closed (`status`, `closed_at`) or changed (an override) | The dates themselves (`RepeatingQuest::dates`), the open occurrences, the oldest open one for Focus |
+| Only the overrides that differ from the quest: `title`, `description` (a day copy, a Text), `energy`, `priority`, `due_time` | Each field with no override takes the quest's value (`RepeatingQuest::on_day`, `src-tauri/src/models/quest.rs:647-681`); `due` is the date |
+| `created_at`, `updated_at` | — |
+| `checklist_base`: removed with #128's item merge (D14) | — |
+
+**The layout.** A top-level map `occurrences` of the space document, keyed
+`"<quest_id>/<YYYY-MM-DD>"`. Each mark is a mergeable map
+(`ensure_mergeable_map`), so two devices that complete the same day write the
+same entry. A list is not used (lists duplicated in the spike).
+
+**Measured** (10 daily quests, 365 completed days each, a Priority override
+on every 10th day; the same marks on two devices; after the migration, A
+changes the Priority of a day and B its due time; then the merge):
+
+| How the marks are made | Marks after the merge | The two edits of the same day | Snapshot of one device |
+|---|---|---|---|
+| `insert_container` | 3 650 (no duplicates) | One lost: the child of one device wins | 225 KB (63 B a mark), shallow 140 KB |
+| `ensure_mergeable_map` | 3 650 (no duplicates) | Both kept (Priority from A, due time from B) | 262 KB (73 B a mark), shallow 137 KB |
+
+The same day completed on both devices at the same time gives one mark
+(idempotent); its `closed_at` follows Loro's order. The first merge after the
+migration holds the migration operations of both devices (387 KB after the
+merge); a shallow snapshot (D6, deferred) would remove them.
+
+**Conflicts.** The conflict table applies: the same field of one day follows
+Loro's order (D13); different fields of one day are both kept.
+
+**Growth.** One mark for each closed or changed day of each repeating quest:
+about 73 B a mark with its history, 37 B in a shallow snapshot (measured). A
+daily quest closed every day adds about 27 KB a year; 20 daily quests add
+about 530 KB a year (estimate from the measured size). This needs no trim for
+years. Deferred, optional: archive the closed marks older than a limit (for
+example two years) to a file outside the document.
+
+**Reminders** are pending an audit: which parts are derived (the next fire
+time, the scheduled notification of this device) and which are user data
+(the reminder rule). Until then, the schema shows no reminders map.
 
 ### Follow-ups (answered)
 
@@ -878,6 +952,9 @@ Candidate (not decided):
 | Long descriptions | Replaced: the description is a Loro text (D15) | Earlier choice "newer wins, with history"; now edits on different lines from two devices both stay |
 | Checklists | Chosen: lines of the description (D14) | No checklist entity; progress from the text; no per-item reminders or links; #128's item merge goes away |
 | Titles | Chosen: one change wins (Loro's order) | A short field; the other value goes into the history |
+| Description migration | Chosen by measurement: a plain child text on each device (D8) | A mergeable text doubles the text; a first-edit text doubles it when both devices edit first; a fixed migration peer id makes the devices different when the data differs; one child wins, and an edit before the first merge stays readable in the losing child |
+| Occurrences | Chosen: in the Loro document (D16) | Mergeable maps keyed `<quest_id>/<date>`; measured: no duplicates, both edits of one day kept, 73 B a mark |
+| Reminders | Pending an audit | Derived data or user data |
 | Sync scope | Open | Candidates: space names, focus history and imported backups sync; settings stay on each device |
 | Unpair | Chosen: local to this device | The data that the unpaired device wrote stays |
 | Live push | Rejected | Comparison only: after each local edit (about 2 s of wait), and every 30 s while connected |
@@ -903,9 +980,8 @@ Candidate (not decided):
 ## Open questions
 
 1. The size of the CLI id pool (D12): 4, or another number?
-2. The migration of the description into a Loro text (D8): a plain field
-   that the first edit turns into a text, or one device that makes the texts?
-   And measure that two devices that insert the same text get it two times.
+2. Reminders: which parts are derived and which are user data (D16, pending
+   an audit)?
 3. Sync scope: do space names, focus history and imported backups sync, and
    do settings stay on each device (the candidates)?
 4. ADR-0015: the Loro Tree in place of `parent_id` and the rank keys (D7)?
