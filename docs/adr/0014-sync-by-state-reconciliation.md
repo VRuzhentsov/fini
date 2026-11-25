@@ -2,8 +2,9 @@
 
 ## Status
 
-Proposed. The project owner chose Loro as the sync engine (see "Decision").
-The record stays Proposed until the follow-ups in "Decision" are answered.
+Proposed. The project owner chose Loro as the sync engine and the only store
+(see "Decision"), and answered the follow-ups. The record stays Proposed until
+the project owner accepts it.
 It was written during the design discussion of 2026-11-24, and it records
 what the project owner liked, rejected and left open. It answers the research
 part of issue #196.
@@ -102,7 +103,7 @@ silently; history replaces prompts.**
 | Situation | Example | Handling |
 |---|---|---|
 | Different fields of one quest | The phone renames "Gym"; the PC moves its due date | Both are kept: a merge for each field |
-| The same simple field (status, due date, priority, energy, rank) | Both devices change the priority | The newer change by HLC wins, the same on all devices. The losing value goes into the history of the quest, so the person can restore it. No prompt |
+| The same simple field (status, due date, priority, energy, rank) | Both devices change the priority | One change wins, the same on all devices: an edit made after the device saw the other wins; for concurrent edits, Loro's order decides (D13). The losing value goes into the history of the quest, so the person can restore it. No prompt |
 | The same text field | Both devices edit the description | The newer change wins, and the other goes into the history (also for titles and long descriptions). No text-CRDT merge |
 | Delete against edit | The phone deletes the quest; the PC edits it | The newer action wins. A delete that wins moves the quest to "recently deleted", where the person can restore it |
 | Complete against edit | The phone completes the quest; the PC moves its date | Both are kept: they are different fields |
@@ -134,6 +135,24 @@ quest. The scores of the main candidates:
 
 ## Decision
 
+**Guiding principle: keep the Loro integration thin.** Use what Loro does by
+itself wherever possible, so that the migration has little custom code that
+can break. A custom solution is not rejected, but it is deferred, to keep the
+surface for bugs small during the migration. Each item below says which parts
+are Loro's own and which custom parts are deferred and optional.
+
+| Item | Loro's own (now) | Custom (deferred, optional) |
+|---|---|---|
+| D3 Sync | Version vectors, `export(updates)`, `import` | — |
+| D4 Deletes | — (a field) | — |
+| D5 History | Lost values read from Loro's history (checkout, diff) | An explicit list of the last 10 values |
+| D6 Trimming | No trimming during the migration | Shallow snapshots, and the re-apply path for an old peer |
+| D7 Tree | Loro Tree (an option for ADR-0015) | — |
+| D8 Migration | Mergeable child containers, if the Rust interface has them | "The smaller id builds, the other applies its differences again" |
+| D10 Storage | Snapshot and update files, `import` | In-memory indexes (necessary), integrity checks at read |
+| D12 CLI | Import of each update file | The compaction rule for files |
+| Concurrent writes | Loro's own order | The HLC wrapper: dropped |
+
 ### D1 — Loro is the sync engine
 
 SpaceSync syncs Loro documents. The outbox goes (R4). The sections after
@@ -164,7 +183,7 @@ identity in the data" (see "Trust and integrity"). The mitigation:
 ### D3 — Sync
 
 ```
-for each mapped space (one document, see follow-up c):
+for each mapped space (one document for each space, D11):
   device 1 ──▶ its version vector (about 10 B for each writer)
   device 2 ──▶ its version vector
   each side ──▶ export(updates since the other's vector)  ──▶ import
@@ -181,44 +200,37 @@ for each mapped space (one document, see follow-up c):
 - A delete sets the field `deleted_at` of the quest; it does not remove the
   map key. A delete and an edit are then two fields, and both stay.
 - "Recently deleted" lists the quests with `deleted_at`. A restore clears it.
-- With Loro's order (follow-up a), a delete and a concurrent edit both stay:
-  the quest is deleted, with the edit in it, and a restore shows the edit.
-  With an HLC (follow-up a), the newer action wins: an edit that is newer
-  than the delete clears `deleted_at`.
+- With Loro's order (D13), a delete and a concurrent edit both stay: the
+  quest is deleted, with the edit in it, and a restore shows the edit.
 - A checklist item is removed from its MovableList. Loro keeps no growing
   delete set for that (measured), so a soft delete is not necessary there.
 
-### D5 — The conflict history is explicit
+### D5 — The conflict history comes from Loro's history
 
-A shallow snapshot trims Loro's history (D6), so the history of the last 10
-losing values (see "Conflict handling") is data of its own:
-
-- Each quest has a map `history`: for each field, a list of the values that
-  were written, each with its time.
-- Each local write of a field also appends the new value to the list of that
-  field. Then the value that loses a concurrent write is in the list too,
-  because the device that wrote it appended it.
-- The device that appends trims the list to the last 10 entries by time. Two
-  devices that trim at the same time can remove one entry more; never less.
-- The UI shows the entries that are not the current value, and a restore
-  writes the chosen value as a new edit.
-- Size: at most 10 entries for each field that was edited (estimate: under
-  1 KB for a typical quest; to measure in the implementation).
+- Loro keeps each operation, so the values that lost are in its history. The
+  app reads them with Loro's own functions (a checkout of an earlier version,
+  or the diff between versions), and shows up to the last 10 values of a
+  field. A restore writes the chosen value as a new edit.
+- The history goes back only to the trim point. With no trimming during the
+  migration (D6), it is complete.
+- Deferred, optional: an explicit list of the last 10 values of each field in
+  the quest, appended at each write. It is necessary only if the history must
+  survive a trim.
 
 ### D6 — Trimming the history of the document
 
-- Each device records the version vector that each active peer sent in its
-  last comparison (one vector for each peer: a fixed size).
-- A device makes a shallow snapshot only at a point that all active peers
-  have passed. A peer that is silent for more than 90 days does not stop the
-  trim.
-- When such a peer comes back, its old updates are rejected (measured:
-  `ImportUpdatesThatDependsOnOutdatedVersion`). Then:
-  1. it computes its local changes since its last common version (Loro's
-     diff between the two versions);
-  2. it imports the new state into a fresh document;
-  3. it writes those changes again, as new edits with its peer id.
-  The changes then merge as any new edit does (follow-up a).
+- During the migration, the documents are not trimmed. The cost is the full
+  history in the file (measured: 528 KB against 234 KB for 1 000 quests after
+  10 000 edits). Then no peer is ever older than a trim point.
+- Deferred, optional: shallow snapshots. Then each device records the version
+  vector that each active peer sent last (one vector for each peer), trims
+  only at a point that all active peers have passed, and a peer that is silent
+  for more than 90 days does not stop the trim. When such a peer comes back,
+  its old updates are rejected (measured:
+  `ImportUpdatesThatDependsOnOutdatedVersion`). It then computes its local
+  changes since its last common version (Loro's diff), imports the new state
+  into a fresh document, and writes those changes again as new edits. A trim
+  also removes the history that D5 reads.
 
 ### D7 — The quest tree and the order (an option for ADR-0015)
 
@@ -233,11 +245,16 @@ the rank keys. This is an option for ADR-0015; it is not decided here.
   occurrence marks as a map, the rank key as a field.
 - Two devices that make the same document on their own create the same keys
   at the same time, and Loro keeps only one child container for a key (Loro
-  docs). So the device with the smaller device id makes the document, and the
-  other device imports it at the first `fini/sync/7` comparison, then writes
-  its own differences again as new edits (the path of D6).
-- The old outbox tables stay, not used, for one release; then a migration
-  drops them.
+  docs). Loro's own answer is a "mergeable" child container, which is shared
+  by its key; the Loro docs show it for the JavaScript interface, so the Rust
+  interface must be checked. With it, each device makes its document, and the
+  two merge.
+- Deferred, optional (if the Rust interface has no mergeable containers): the
+  device with the smaller device id makes the document, and the other device
+  imports it at the first `fini/sync/7` comparison, then writes its own
+  differences again as new edits.
+- The SQLite file (with the old outbox tables) stays, not used, for one
+  release; then the app removes it.
 - Devices on `fini/sync/6` and `fini/sync/7` do not connect; the Device page
   shows a notice.
 
@@ -246,14 +263,94 @@ the rank keys. This is an option for ADR-0015; it is not decided here.
 Loro builds with the Rust of Fini's build images (measured). No toolchain
 change is needed.
 
-### Follow-ups (open)
+### D10 — Loro is the only store
 
-| | Question | Options |
+There is no SQLite. The data of each space is a Loro document on disk:
+
+```
+<data dir>/spaces/<space-id>/
+├─ snapshot.bin              the last compacted state (only the app writes it)
+└─ updates/
+   ├─ <peer-id>-<n>.bin      the updates of one writer process, one file each
+   └─ ...
+<data dir>/local/            data of this device only (settings, pairs,
+                             channels, mappings, scheduled notifications);
+                             it never syncs
+```
+
+- The data is a tree of containers, as JSON: maps, lists, a Tree and
+  counters. Relations are by id, as in a NoSQL store: a quest map holds
+  `space_id`, a reminder holds `quest_id`. There are no foreign keys and no
+  joins.
+- The app code checks integrity. A dangling reference is handled when it is
+  read: a reminder whose quest is missing or deleted is ignored, and an
+  occurrence mark of a deleted quest is not shown.
+- In-memory indexes are built at load (measured: 45 ms for 10 000 quests) and
+  kept up to date from Loro's events. The queries run on them (measured: 2 ms
+  or less).
+- Parent and child relations can use the Loro Tree (D7, ADR-0015).
+
+A space document:
+
+```
+space document "<space-id>"
+├─ meta: Map              name, created_at
+├─ quests: Map            quest_id → Map
+│   ├─ title, description, status, energy, priority, due, due_time,
+│   │  repeat_rule, completed_at, order_rank, is_checklist,
+│   │  created_at, updated_at, deleted_at, space_id
+│   ├─ checklist: MovableList of Map   id, text, done
+│   ├─ occurrences: Map   period_key → Map   status, closed_at, and the
+│   │                     fields that the day overrides
+│   └─ focus_minutes: Counter
+├─ reminders: Map         reminder_id → Map   quest_id, kind, mm_offset,
+│                         due_at_utc, created_at
+└─ tree: Tree             (an option for ADR-0015: each node holds a quest_id)
+```
+
+### D11 — One document for each space
+
+A space is the unit that a pair maps, so a document is one space. A move of a
+quest to another space is a delete (`deleted_at`) in one document and a create
+in the other.
+
+### D12 — The CLI is a Loro peer, with no lock
+
+- Each writer process (the app, each CLI run) writes its updates to a file of
+  its own, so no other process writes that file. A writer writes the file
+  under a temporary name, and renames it to `<peer-id>-<n>.bin` when it is
+  complete.
+- A reader imports all complete update files. Loro's import does not depend
+  on the order, and an import of the same operations again changes nothing.
+- The app watches the `updates` folder and imports a new file from the CLI in
+  milliseconds.
+- Only the app compacts: it writes a new snapshot (a temporary file, then a
+  rename), then removes the complete update files whose operations the new
+  snapshot holds. It never removes a temporary file, so it cannot remove a
+  file that a writer still writes.
+- The peer id of a CLI run (to be measured):
+
+  | Option | Cost |
+  |---|---|
+  | A new random id for each run | The version vector grows by one entry for each run. Measured: 500 sessions gave a 28.4 KB snapshot against 2.7 KB with one id, and a 5.3 KB version vector against 23 B |
+  | A small pool of CLI ids; a run claims one with a lock file for that id (not a lock of the store), and loads the operations of that id before it writes | A fixed number of entries |
+  | Trimming: does a shallow snapshot remove the entries of old peers? | Measured: the 500-session document was 10.6 KB after a shallow snapshot, so it removes part of the cost. To measure in detail |
+
+### D13 — Concurrent writes of one field
+
+Loro's own order: the higher Lamport time wins, then the higher peer id. An
+edit made after a device saw another edit wins over it; for two concurrent
+edits, the order is deterministic. All devices converge. The HLC wrapper is
+dropped.
+
+### Follow-ups (answered)
+
+| | Question | Answer |
 |---|---|---|
-| a | "Newer wins" | Accept Loro's order (logical, Lamport time) for concurrent writes of one field, or store an HLC with each value and let the newer HLC win |
-| b | Storage | Loro as the only store (a snapshot and an update log, an in-memory index, one owner process or a lock for the CLI), or Loro with an SQLite view |
-| c | Document size | One document for each space, or one document for all data |
-| d | The CLI | It writes through the app process, or it opens the store itself |
+| a | "Newer wins" | Loro's own order (D13) |
+| b | Storage | Loro is the only store (D10) |
+| c | Document size | One document for each space (D11) |
+| d | The CLI | A Loro peer with no lock (D12) |
 
 ## Sync approaches
 
@@ -651,12 +748,12 @@ data that the unpaired device wrote stays.
 | **Two writes in the same millisecond** | Same version | Different versions |
 | **A device with a clock far ahead** | Its edits win until the time catches up | It pulls the other clocks forward; the order stays correct |
 | **Reads as a time** | Yes | Yes, for devices whose clocks agree |
-| **Status** | — | Chosen |
+| **Status** | — | Chosen before Loro; dropped with Loro (D13) |
 
-Chosen: a hybrid logical clock. Also chosen: a row whose version is more than 24 hours ahead of the
-receiver's clock is rejected, and the Device page shows a warning about the
-clock. The tie rule for two equal versions must not need a device id (R5):
-for example the content hash.
+With Loro, the order of concurrent writes is Loro's Lamport time (D13), with
+no wall clock and no HLC wrapper. The earlier choices for the options that
+use a clock (an HLC; rejecting a version more than 24 hours ahead, with a
+warning on the Device page) apply only to those options.
 
 ## Deletion markers and silent peers
 
@@ -703,7 +800,15 @@ Candidate (not decided):
 | Automerge (d) | Discussed, not chosen | For: merges field by field, merges lists and text. Against: the history grows, a second data store beside SQLite, actor (device) ids in each operation (R5) |
 | 90-day limit for silent peers | Chosen so far | Only if deletion markers are used (R1) |
 | Versions more than 24 h in the future | Chosen so far | Reject the row, and show a warning on the Device page |
-| HLC | Chosen | An edit after a received change always wins |
+| HLC | Dropped with Loro (D13) | Loro's own order also lets an edit made after a received change win, and all devices converge |
+| Thin Loro integration | Chosen: the guiding principle | Little custom code during the migration; custom parts are deferred |
+| Concurrent writes (follow-up a) | Chosen: Loro's own order | No HLC wrapper |
+| Storage (follow-up b) | Chosen: Loro is the only store | Snapshot and update files for each space; relations by id; indexes in memory |
+| Document size (follow-up c) | Chosen: one document for each space | A space is the unit of a mapping |
+| The CLI (follow-up d) | Chosen: a Loro peer with no lock | Its own update file for each writer; only the app compacts |
+| The CLI peer id | Open: to be measured | A new id for each run, a pool of ids with a lock file for each id, or trimming |
+| The explicit 10-value history list | Deferred, optional | Loro's own history gives the values while the document is not trimmed |
+| Trimming (shallow snapshots) | Deferred, optional | No trimming during the migration |
 | Trust model | Chosen: authenticated iroh links only | No signature for each row and no device identity in the data; signatures can come later for a relay that is not trusted |
 | Relay signed again at each hop | Rejected | No signatures for each row |
 | Merge unit: row, field, or 3-way with a base | Chosen: a merge for each field | Whole-row LWW is ruled out (see "Conflict handling") |
@@ -734,12 +839,10 @@ Candidate (not decided):
 
 ## Open questions
 
-1. Follow-up (a): accept Loro's logical order for concurrent writes of one
-   field, or store an HLC with each value?
-2. Follow-up (b): Loro as the only store, or Loro with an SQLite view?
-3. Follow-up (c): one document for each space, or one for all data?
-4. Follow-up (d): does the CLI write through the app process, or open the
-   store itself?
-5. Sync scope: do space names, focus history and imported backups sync, and
+1. The CLI peer id (D12): a new id for each run, a pool of ids with a lock
+   file for each id, or trimming? To be measured.
+2. Does Loro's Rust interface have mergeable child containers (D8)? If not,
+   the deferred migration path applies.
+3. Sync scope: do space names, focus history and imported backups sync, and
    do settings stay on each device (the candidates)?
-6. ADR-0015: the Loro Tree in place of `parent_id` and the rank keys (D7)?
+4. ADR-0015: the Loro Tree in place of `parent_id` and the rank keys (D7)?
