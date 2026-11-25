@@ -326,11 +326,18 @@ tree.
 
 ### Row version
 
-The `sync_version` of a synced row: the hybrid logical clock time of the
-write that made it. The higher version wins.
+The version of a synced row: the clock time of the write that made it. With
+LWW, the higher version wins.
 
 *Elsewhere:* the `db_version` and column version in cr-sqlite; a revision in
 CouchDB.
+
+### Merge base
+
+The last state of the data that two devices had in common. A 3-way merge
+compares each side with it.
+
+*Elsewhere:* the merge base in Git; the base of `merge_3way` for a checklist.
 
 ### Hybrid logical clock (HLC)
 
@@ -341,24 +348,10 @@ that the device has seen, with a counter for the same millisecond.
 
 ### Tombstone
 
-The stored row version of a delete, or of a move out of a space, that syncs
-as a row does.
+A stored marker of a delete, or of a move out of a space, that syncs as a
+row does.
 
 *Elsewhere:* a tombstone in Cassandra, CouchDB and cr-sqlite.
-
-### Signer
-
-A device key that this device accepts as the signer of row versions
-(`sync_signers`).
-
-*Elsewhere:* a trusted key in a keyring (OpenPGP, SSH `allowed_signers`).
-
-### Seal
-
-To sign the row versions that a write made, after the trigger wrote their
-version.
-
-*Elsewhere:* the commit signature of a Git commit.
 
 ## Other words
 
