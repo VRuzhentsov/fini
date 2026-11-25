@@ -430,8 +430,41 @@ order concurrent writes by logical time, not by wall-clock time.
 | Licence | MIT | MIT |
 | Releases | 1.x, several each month | 0.x, a release that can break the interface every one to three months |
 | Main authors | One main author and one second | One main author |
-| Builds with the Rust of Fini's build images | Yes | The newest release needs a newer Rust |
+| Builds with the Rust of Fini's build images | Yes | The newest release needs a newer Rust. This is a small cost: the Rust version in `containers/android/Containerfile` and `containers/linux/Containerfile`, `docs/container.md`, and the `msrv` of ble-gatt's `clippy.toml`. CI uses stable Rust already |
 | Size added to the Android binary | +3.8 MB | +0.6 MB |
+
+### Smaller yrs payloads (measured)
+
+The same dataset: 1 000 quests, 10 000 edits, 300 deletes. The delete set is
+15.3 KB and has one writer.
+
+| Technique | No change | 1 edit | 100 edits | CPU | Correct (the peer converges) |
+|---|---|---|---|---|---|
+| v1 update (the default) | 15.3 KB | 15.3 KB | 16.7 KB | encode 0.1–0.3 ms | Yes |
+| v2 update | 8.7 KB | 8.7 KB | 9.7 KB | about the same | Yes |
+| v1 + zstd (level 1) | 11.7 KB | 11.7 KB | 12.7 KB | +0.03 ms | Yes |
+| v2 + zstd (level 1) | 2.4 KB | 2.5 KB | 3.3 KB | +0.03 ms | Yes |
+| v2 + lz4 | 4.5 KB | 4.5 KB | 5.3 KB | less than zstd | Yes |
+| Blocks only, plus an 8-byte hash of the delete set | 10 B | 29 B | 1.4 KB | as v1 | Yes for map overwrites: the receiver deletes the old value itself when it adds the new one, so the delete sets stay equal. No for a removed map key or a removed list item: the hashes then differ |
+| Blocks only, and on a hash difference the delete-set ranges of the buckets that differ | — | — | — | small | Yes. For 10 removed quests: 6.0–13.6 KB with buckets of 256–4 096 clocks, plus 0.1–1.4 KB of bucket hashes |
+| Blocks only, and on a hash difference only the missing ranges (set reconciliation over the ranges) | — | — | — | small | Yes. For 10 removed quests: 331 B |
+| One Y.Doc for each quest | — | 82 B for that doc | — | small | Yes. But 539 KB in all (against 414 KB), and finding the changed docs needs a digest: 19–24 KB for 1 000 docs as a list, or about 1–3 KB with range reconciliation over (doc id, hash) (estimate) |
+| Fields as registers (a Y.Array of values, not a map overwrite) | — | 23 B with all values kept; 1.2–2.6 KB when the old values are removed (1 or 10 kept) | — | small | Yes. Keeping all values grows the state with each edit; removing old values brings the delete set back |
+| Compaction (a fresh doc built from the current state) | delete set 1 B | — | — | 4 ms | Only if all devices change to the new doc at the same time. Measured: a peer with the old doc that merges it keeps both copies (396 KB), and its offline edit is lost |
+
+The yrs interface gives what these need: the delete set as an `IdSet` (with
+encode, decode, `diff` and `merge`), and a v1 update is the blocks followed by
+the delete set. A "blocks only" update is that update with an empty delete
+set, and a "delete set only" update has no blocks.
+
+**The best combination**: (1) a delete is a field (`deleted_at`, which the
+policy needs for "recently deleted" anyway), and a checklist item is removed
+the same way, so the data has almost no explicit removes; (2) sync sends the
+blocks only, with a hash of the delete set; (3) when the hashes differ, send
+the missing delete-set ranges, found by range reconciliation; (4) compress
+with zstd only above a size limit. Measured result: 10 B with no change, 29 B
+for one edit, 1.4 KB for 100 edits. This is close to Loro (98 B, 1.6 KB), but
+it is Fini's own protocol on top of yrs.
 
 ### Verdict (a candidate, not a decision)
 
@@ -443,23 +476,28 @@ order concurrent writes by logical time, not by wall-clock time.
   show that a third writer exists (R5 in part), logical time instead of the
   HLC for the same field, and offline edits from before a trim point that the
   app must apply again.
-- **yrs for text only** is not recommended. Each update carries the whole
-  delete set (15.3 KB here), which is expensive on slow links. It has no
-  history, no tree and no counter, and its interface is 0.x. If long
-  descriptions get a text merge, Loro Text does that too.
+- **yrs as it is** is not recommended: each update carries the whole delete
+  set (15.3 KB here). With the combination above it costs 10–29 B for a small
+  sync, but Fini then owns a sync protocol on top of yrs. It still has no
+  history, no tree and no counter, and its interface is 0.x. Long descriptions
+  get no text merge (chosen), so yrs has no special use left for text.
+
 ### The main remaining decision: Loro or (b′)
 
 (b′) is Fini's own design: a version (HLC) for each field, the history of
 each field, and hash-range reconciliation of the items.
 
-| | Loro | (b′) |
-|---|---|---|
-| **Writer ids in the data** | A random writer id in each operation. After relay A-B-C, A can see that a third writer exists (not C's key). This conflicts in part with "no device identity in the data" | None: the item is (version, hash); the tie rule uses the content hash |
-| **Storage** | The document is the store (or a store with an SQLite view); measured +28 MB and a 3.3 MB file for 10 000 quests | SQLite stays; a version for each field and a history table (10 values for each field) |
-| **History and old peers** | The history is in the operation log; a shallow snapshot trims it, and a peer older than the trim point must apply its offline edits again | The history table is separate from the sync, so nothing blocks an old peer; deletion markers have the 90-day rule |
-| **Concurrent writes to one field** | Logical time; an HLC must be stored with the value for "the newer by HLC wins" | The HLC directly |
-| **Tree, counters, list moves** | Built in (movable tree, Counter, MovableList) | Written by Fini (a cycle rule, a value for each device, rank keys) |
-| **Build effort** | Storage, queries, persistence and the CLI access written again; the sync comes with the library; +3.8 MB in the APK | The reconciliation, the field versions, the history and the tree rule written by Fini; storage and queries stay |
+yrs is in the table for comparison, with the payload combination above.
+
+| | Loro | (b′) | yrs, with the payload combination |
+|---|---|---|---|
+| **Writer ids in the data** | A random writer id in each operation. After relay A-B-C, A can see that a third writer exists (not C's key). This conflicts in part with "no device identity in the data" | None: the item is (version, hash); the tie rule uses the content hash | A random client id in each item, as Loro |
+| **Sync payload (measured)** | 98 B for 1 edit, 1.6 KB for 100 | 3–4 round trips and about 3 KB for 1 edit (estimate) | 10 B with no change, 29 B for 1 edit, 1.4 KB for 100 |
+| **Storage** | The document is the store (or a store with an SQLite view); measured +28 MB and a 3.3 MB file for 10 000 quests | SQLite stays; a version for each field and a history table (10 values for each field) | The document is the store; measured +122 MB and a 5.6 MB file for 10 000 quests |
+| **History and old peers** | The history is in the operation log; a shallow snapshot trims it, and a peer older than the trim point must apply its offline edits again | The history table is separate from the sync, so nothing blocks an old peer; deletion markers have the 90-day rule | No history (a table of its own); no trim point, but the delete set only grows; a compaction needs all devices at the same time |
+| **Concurrent writes to one field** | Logical time; an HLC must be stored with the value for "the newer by HLC wins" | The HLC directly | Logical order with the client id; the same need for an HLC |
+| **Tree, counters, list moves** | Built in (movable tree, Counter, MovableList) | Written by Fini (a cycle rule, a value for each device, rank keys) | Written by Fini |
+| **Build effort** | Storage, queries, persistence and the CLI access written again; the sync comes with the library; +3.8 MB in the APK | The reconciliation, the field versions, the history and the tree rule written by Fini; storage and queries stay | As Loro, plus Fini's own delete-set protocol; +0.6 MB in the APK; a newer Rust (a small cost) |
 
 ## Trust and integrity
 
@@ -558,7 +596,8 @@ Candidate (not decided):
 | Couchbase Lite (k) | Under discussion | Peer-to-peer only in the commercial edition; unofficial Rust binding |
 | Ditto (l) | Under discussion | A finished mesh product; closed source, paid tiers, conflicts with AGPL |
 | Loro | Under discussion: the strongest CRDT candidate | Measured: 98 B for one edit, +28 MB and 62 ms for 10 000 quests; history, counter and movable tree; history bounded by shallow snapshots |
-| yrs | Not recommended | Measured: each update carries the whole delete set (15.3 KB here); no history, tree or counter; 0.x interface |
+| yrs | Not recommended as it is | Measured: each update carries the whole delete set (15.3 KB); with blocks only, a delete-set hash and soft deletes: 10–29 B, but Fini then owns that protocol; no history, tree or counter; 0.x interface |
+| A newer Rust | A small cost | The build images, `docs/container.md` and ble-gatt's `msrv`; CI uses stable already |
 | Fini tied to SQLite | Rejected | The criterion is the fit with Fini's storage and queries; a sync store can be the only store |
 | p2panda | Under discussion | Rust, on iroh; but its APIs are not stable, and author keys are in the data (R5) |
 | Rateless IBLT | Under discussion | One message for a small difference, which suits a slow link |
