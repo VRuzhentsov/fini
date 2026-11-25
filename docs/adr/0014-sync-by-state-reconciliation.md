@@ -153,7 +153,8 @@ are Loro's own and which custom parts are deferred and optional.
 | D12 CLI | Import of each update file | The compaction rule for files; a pool of CLI ids with a lock file for each id |
 | Concurrent writes | Loro's own order | The HLC wrapper: dropped |
 | D14, D15 Checklists and descriptions | A plain child Loro text; progress counted from the text | The item merge of #128: removed; a merge of an edit made before the first comparison: deferred |
-| D16 Occurrences | Mergeable maps keyed `<quest_id>/<date>` | Archiving old closed marks: deferred |
+| D16 Repeating quests | The rule as one value; marks as mergeable maps keyed `<quest_id>/<date>` | Archiving old closed marks: deferred |
+| D17 Reminders | Not in the document | A recompute after each import (necessary) |
 
 ### D1 — Loro is the sync engine
 
@@ -266,8 +267,9 @@ the rank keys. This is an option for ADR-0015; it is not decided here.
 
 - So the migration uses `ensure_mergeable_map` for each quest (and each
   occurrence mark). The plain fields merge, because both devices write the
-  same values. A counter is not made in the migration: the migrated focus
-  minutes are a plain field, and the counter counts only new minutes.
+  same values. A counter is not made in the migration: the migrated
+  `focus_enter_count` is a plain field, and a counter counts only the new
+  enters.
 - The checklist items of today become `- [ ]` and `- [x]` lines of the
   description, with no item ids (D14).
 - The description becomes a Loro text (D15). Measured: two devices migrate
@@ -336,18 +338,22 @@ A space document:
 space document "<space-id>"
 ├─ meta: Map              name, created_at
 ├─ quests: Map            quest_id → Map (mergeable)
-│   ├─ title, status, energy, priority, due, due_time, repeat_rule,
-│   │  completed_at, order_rank, created_at, updated_at, deleted_at,
-│   │  space_id
+│   ├─ title, status, energy, priority, due, due_time, completed_at,
+│   │  order_rank, created_at, updated_at, deleted_at, space_id
+│   ├─ repeat_rule: one value   { preset, interval, unit, days_of_week,
+│   │                             end, end_date, end_after }   D16
 │   ├─ description: Text  (a plain child text; checklist lines are in it,
 │   │                     D14, D15)
-│   └─ focus_minutes: Counter
+│   ├─ focus_enter_count  (the migrated count, a plain field)
+│   └─ focus_enters: Counter   (new enters only, D8)
 ├─ occurrences: Map       "<quest_id>/<YYYY-MM-DD>" → Map (mergeable)   D16
 │                         status, closed_at, title?, description? (Text),
 │                         energy?, priority?, due_time?, created_at,
 │                         updated_at
-├─ reminders              pending audit: derived data or user data
 └─ tree: Tree             (an option for ADR-0015: each node holds a quest_id)
+
+Not in the document: reminders, snoozes and notifications, which are local
+to each device (D17).
 ```
 
 ### D11 — One document for each space
@@ -422,32 +428,99 @@ dropped.
 - A title stays a short field of the quest map: one change wins, in Loro's
   own order (D13).
 
-### D16 — Occurrence marks of repeating quests
+### D16 — Repeating quests: the repeat rule and the occurrence marks
 
-Occurrences are an important part of the data, and they are in the Loro
-document.
+The repeat rule and the occurrence marks are an important part of the data,
+and both are in the Loro document. A repeating quest is one quest with a rule
+(ADR-0012 D1); its occurrences are computed from the rule (D2), and a mark is
+stored only for a day that a person closed or changed (D3).
 
-**What is stored today** (`quest_occurrences`,
+**The repeat rule today** (`RepeatRule`, `src-tauri/src/models/quest.rs:372-413`):
+a JSON text in `quests.repeat_rule` with `preset` (`daily`, `weekdays`,
+`weekends`, `weekly`, `monthly`, `yearly`, `custom`, or `none`), `interval`
+and `unit` (`day`, `week`, `month`, `year`) for `custom`, `days_of_week`
+(`Mo`…`Su`; with an interval, every N weeks from the week of the start), `end`
+(`on_date` or `after_n`), `end_date` and `end_after`. The dates are computed
+from the start, which is the quest's `due` (else its creation day), by
+`compute_next_due` (`quest.rs:464-513`), for at most 10 000 steps.
+
+**The marks today** (`quest_occurrences`,
 `src-tauri/migrations/00000000000028_quest_occurrences/up.sql:11-24`;
-`src-tauri/src/models/quest_occurrence.rs:20-37`): `quest_id`, `period_key`
-(the date), `status` (open, `completed` or `abandoned`), `closed_at`, and the
-fields that override the quest for that day: `title`, `description`, `energy`,
-`priority`, `due_time`; then `created_at`, `updated_at`, and
-`checklist_base` (local to the device, never synced).
+`src-tauri/src/models/quest_occurrence.rs:20-37`): one row for each
+(`quest_id`, `period_key`); no later migration changes it.
 
-**Stored and derived** (as today, ADR-0012 D2–D4):
+**How the code uses them** (`src-tauri/src/repositories/quest.repository.rs`):
 
-| Stored in a mark | Derived from the repeat rule and the quest |
-|---|---|
-| A day that a person closed (`status`, `closed_at`) or changed (an override) | The dates themselves (`RepeatingQuest::dates`), the open occurrences, the oldest open one for Focus |
-| Only the overrides that differ from the quest: `title`, `description` (a day copy, a Text), `energy`, `priority`, `due_time` | Each field with no override takes the quest's value (`RepeatingQuest::on_day`, `src-tauri/src/models/quest.rs:647-681`); `due` is the date |
-| `created_at`, `updated_at` | — |
-| `checklist_base`: removed with #128's item merge (D14) | — |
+| Act | What it writes | Where |
+|---|---|---|
+| Complete or Abandon | Closes one day (the given date, or the oldest open): `status`, `closed_at`; for a checklist, a copy of the day's text | `close_occurrence`, `:956-985` |
+| Complete through today | Closes each open day up to today, each with its own mark (ADR-0012 D7) | `:1086-1116` |
+| Open a day again | Clears `status` and `closed_at`; the mark goes if it keeps no override | `reopen_occurrence`, `:988-1019` |
+| "This day" edit (`EditScope::Day`) | An override on the day's mark, kept only when it differs from the quest | `:845-876` |
+| "All days" edit (`EditScope::All`) | The quest itself; a rule with other days (`same_days_as`) moves `due` to today, so the open days restart from today; the old marks stay (ADR-0012 D10) | `:877-899`, `quest.rs:386-391` |
+| Stop the repeat | With no closed day: a one-time quest that keeps its open day's edits; with closed days: the rule ends at the last closed day, and the quest is completed | `stop_repeat`, `:1024-1082` |
 
-**The layout.** A top-level map `occurrences` of the space document, keyed
+Focus points at the quest and shows its oldest open occurrence; it writes no
+mark (ADR-0012 D6). History shows the closed marks.
+
+**All fields of today's tables:**
+
+| Table | Field | In Loro | Derived | Local to the device | Removed |
+|---|---|---|---|---|---|
+| `quests` | `id` | the map key | | | |
+| | `space_id`, `title`, `status`, `energy`, `priority`, `due`, `due_time`, `completed_at`, `order_rank`, `created_at`, `updated_at` | ✓ fields | | | |
+| | `description` | ✓ a Text (D15) | | | |
+| | `repeat_rule` | ✓ one value (below) | | | |
+| | `focus_enter_count` | ✓ the migrated count; new enters in a Counter | | | |
+| | `is_checklist` | | from the text (D14) | | |
+| | `checklist_base` | | | | ✓ (#128) |
+| | (new) `deleted_at` | ✓ (D4) | | | |
+| `quest_occurrences` | `quest_id`, `period_key` | the key `"<quest_id>/<YYYY-MM-DD>"` | | | |
+| | `status`, `closed_at`, `title`, `energy`, `priority`, `due_time`, `created_at`, `updated_at` | ✓ fields | | | |
+| | `description` | ✓ a Text (the day copy) | | | |
+| | `checklist_base` | | | | ✓ (#128) |
+| `reminders` | `id`, `quest_id`, `type`, `mm_offset`, `due_at_utc`, `created_at`, `scheduled_notification_id` | | the reminder of a dated quest, from `due`, `due_time` and the rule | ✓ custom rows (D17) | |
+| `notification_snoozes` | `reminder_id`, `fire_at_utc`, `created_at` | | | ✓ (D17) | |
+| `focus_history` | `id`, `quest_id`, `space_id`, `trigger`, `created_at` | open (sync scope) | | | |
+| `checklist_activity` | all | | | | ✓ (D14) |
+
+Derived, never stored: the dates of the rule, the open occurrences, the
+oldest open one, the day as the person sees it (`RepeatingQuest::on_day`,
+`quest.rs:647-681`: each field with no override takes the quest's value, and
+`due` is the date), the remaining count of `after_n`, and the History list.
+
+**The rule in the document: one value.** `repeat_rule` is one value of the
+quest map, with the same fields as today. Measured (50 repeating quests with
+30 marks each; the same data on two devices; then A changes the interval and B
+the weekdays at the same time):
+
+| Layout | After the migration | After the concurrent edit |
+|---|---|---|
+| A mergeable map, `days_of_week` as a mergeable list | `days_of_week` = Mo, We, Mo, We (duplicated) | interval from A, days from B: a rule that no device wrote |
+| A mergeable map, `days_of_week` as one value | correct | interval from A, days from B: a rule that no device wrote |
+| One value (chosen) | correct | the whole rule of one device (Loro's order); the other rule is in the history |
+
+The fields of a rule depend on each other (the preset decides which fields
+count), so one value keeps a rule that a person wrote. The rule and `due` are
+two fields: a rule change on one device and a date change on another can
+both stay, in Loro's order for each field.
+
+**The marks in the document.** A top-level map `occurrences`, keyed
 `"<quest_id>/<YYYY-MM-DD>"`. Each mark is a mergeable map
 (`ensure_mergeable_map`), so two devices that complete the same day write the
-same entry. A list is not used (lists duplicated in the spike).
+same entry (idempotent). A list is not used (lists duplicated in the spike).
+Only the overrides that differ from the quest are stored, as today. To open
+a day again, the device clears `status` and `closed_at` and keeps the key
+(a removed key with a concurrent edit in it hides that edit).
+
+**A rule change.** As today: a past day keeps its mark (and History shows it);
+the open days come again from the new rule, from today. A mark of a date that
+the new rule does not give stays as History.
+
+**The migration.** Each device writes, from its tables, the rule as one value
+and each mark with `ensure_mergeable_map` under its composite key. Measured,
+50 repeating quests with 30 marks each on two devices: 1 500 marks after the
+merge (no duplicates), and the same document on both.
 
 **Measured** (10 daily quests, 365 completed days each, a Priority override
 on every 10th day; the same marks on two devices; after the migration, A
@@ -469,13 +542,25 @@ Loro's order (D13); different fields of one day are both kept.
 **Growth.** One mark for each closed or changed day of each repeating quest:
 about 73 B a mark with its history, 37 B in a shallow snapshot (measured). A
 daily quest closed every day adds about 27 KB a year; 20 daily quests add
-about 530 KB a year (estimate from the measured size). This needs no trim for
-years. Deferred, optional: archive the closed marks older than a limit (for
-example two years) to a file outside the document.
+about 530 KB a year (estimate from the measured size). A rule is one value of
+about 100 B, plus about 100 B of history for each change. This needs no trim
+for years. Deferred, optional: archive the closed marks older than a limit
+(for example two years) to a file outside the document.
 
-**Reminders** are pending an audit: which parts are derived (the next fire
-time, the scheduled notification of this device) and which are user data
-(the reminder rule). Until then, the schema shows no reminders map.
+### D17 — Reminders, snoozes and notifications are local to each device
+
+- They do not sync. Each device derives its reminders from the synced quest,
+  its `due`, `due_time`, repeat rule and occurrence marks (ADR-0012 D9), and
+  keeps its snoozes and its own reminder rows locally (`<data dir>/local/`,
+  D10).
+- After each Loro import, the device computes its reminders again, and
+  schedules or cancels its own notifications.
+- This removes a defect of today: when A completes or deletes a quest, the
+  alarm on B still fires. Evidence: after it applies peer changes, SpaceSync
+  publishes only `Event::SpaceDataChanged`
+  (`src-tauri/src/services/space-sync.service.rs:1290-1291`), and the reminder
+  service does nothing for that event (`src-tauri/src/services/reminder.service.rs:300`,
+  `Ok(_) => {}`).
 
 ### Follow-ups (answered)
 
@@ -941,7 +1026,7 @@ Candidate (not decided):
 | Document size (follow-up c) | Chosen: one document for each space | A space is the unit of a mapping |
 | The CLI (follow-up d) | Chosen: a Loro peer with no lock | Its own update file for each writer; only the app compacts |
 | The CLI peer id | Chosen by measurement: a pool of CLI ids, each claimed with a lock file | A new id for each run gave a version vector of 2 001 entries (8.0 KB) after 2 000 runs, and a shallow snapshot does not remove them; a pool of 4 gave 17 B |
-| Migration of two devices with the same data | Chosen by measurement: `ensure_mergeable_map` for each quest | Plain containers lose the edits of one device; mergeable lists duplicate items and counters double, so the checklist stays text and the counter counts only new minutes |
+| Migration of two devices with the same data | Chosen by measurement: `ensure_mergeable_map` for each quest | Plain containers lose the edits of one device; mergeable lists duplicate items and counters double, so the checklist stays text and the counter counts only new focus enters |
 | The explicit 10-value history list | Deferred, optional | Loro's own history gives the values while the document is not trimmed |
 | Trimming (shallow snapshots) | Deferred, optional | No trimming during the migration |
 | Trust model | Chosen: authenticated iroh links only | No signature for each row and no device identity in the data; signatures can come later for a relay that is not trusted |
@@ -954,7 +1039,8 @@ Candidate (not decided):
 | Titles | Chosen: one change wins (Loro's order) | A short field; the other value goes into the history |
 | Description migration | Chosen by measurement: a plain child text on each device (D8) | A mergeable text doubles the text; a first-edit text doubles it when both devices edit first; a fixed migration peer id makes the devices different when the data differs; one child wins, and an edit before the first merge stays readable in the losing child |
 | Occurrences | Chosen: in the Loro document (D16) | Mergeable maps keyed `<quest_id>/<date>`; measured: no duplicates, both edits of one day kept, 73 B a mark |
-| Reminders | Pending an audit | Derived data or user data |
+| Reminders, snoozes, notifications | Chosen: local to each device (D17) | Derived from the synced quest, rule and marks after each import; this fixes the alarm that still fires on B after A completes or deletes the quest |
+| The repeat rule | Chosen by measurement: one value of the quest map (D16) | A mergeable map mixes two concurrent rule edits into a rule that no device wrote, and a mergeable list duplicated the weekdays |
 | Sync scope | Open | Candidates: space names, focus history and imported backups sync; settings stay on each device |
 | Unpair | Chosen: local to this device | The data that the unpaired device wrote stays |
 | Live push | Rejected | Comparison only: after each local edit (about 2 s of wait), and every 30 s while connected |
@@ -980,8 +1066,10 @@ Candidate (not decided):
 ## Open questions
 
 1. The size of the CLI id pool (D12): 4, or another number?
-2. Reminders: which parts are derived and which are user data (D16, pending
-   an audit)?
+2. A concurrent change of the rule on one device and of `due` on another can
+   pair one device's rule with the other device's start date (D16). Is
+   Loro's order for each field acceptable there, or should `due` of a
+   repeating quest go into the rule value?
 3. Sync scope: do space names, focus history and imported backups sync, and
    do settings stay on each device (the candidates)?
 4. ADR-0015: the Loro Tree in place of `parent_id` and the rank keys (D7)?
