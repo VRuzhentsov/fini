@@ -137,22 +137,22 @@ quest. The scores of the main candidates:
 One row for each option. Rows (h) to (m) are the NoSQL options; see
 "NoSQL options" below for their facts.
 
-| Option | How | Storage growth | Finding differences | Deletes | Edits of different fields at the same time | Relay A-B-C | Privacy (device ids in the data) | Sync cost (bytes, round trips, first sync) | Fit with SQLite and Diesel | Complexity | Status |
+| Option | How | Storage growth | Finding differences | Deletes | Edits of different fields at the same time | Relay A-B-C | Privacy (device ids in the data) | Sync cost (bytes, round trips, first sync) | Fit with Fini's storage and queries | Complexity | Status |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | (a) Outbox + acks, pruning | Today's events; remove an event that all peers acknowledged; drop the queue of a peer away for N days, then a full sync | Bounded by the pruning; acks for each event and peer until then | The queue is the difference | Delete event in the queue | One wins (whole row) | No (defect) | Origin id in each event | 2 fragments + ack for each change | Already there | Low | Not chosen: keeps the outbox (R4) |
-| (b) Hash-range state reconciliation, LWW for each row | One set of (version, id) items for each space; negentropy range fingerprints find the different items; send those rows | Rows + deletion markers (time limit) | O(d · log n); 1 round trip when equal | Markers with LWW; a time limit for silent peers | One wins; checklists merge as today | Yes: B's set has A's rows | None needed: the tie rule can use a content hash | Equal: 1 round trip, ~110 B each way; 1 change: 3–4 round trips, ~3 KB | Good: SQL tables, a crate for the protocol | Medium | Liked: "hashes of hashes", outbox removed |
+| (b) Hash-range state reconciliation, LWW for each row | One set of (version, id) items for each space; negentropy range fingerprints find the different items; send those rows | Rows + deletion markers (time limit) | O(d · log n); 1 round trip when equal | Markers with LWW; a time limit for silent peers | One wins; checklists merge as today | Yes: B's set has A's rows | None needed: the tie rule can use a content hash | Equal: 1 round trip, ~110 B each way; 1 change: 3–4 round trips, ~3 KB | Good: any store with a version for each row; SQL queries stay | Medium | Liked: "hashes of hashes", outbox removed |
 | (b′) As (b), a version for each field | The same set; a row merges field by field | Rows + a version for each field + markers | As (b) | Markers | Both stay | Yes | No id needed | As (b); smaller rows | Good; more columns or a side table | Medium-high | Open |
 | (c) Sequence numbers for each device | Each write gets the next local number; send "rows above N" for each peer | Rows + markers + one number for each peer | 1 round trip; exact only while the numbers are correct | Markers with numbers | One wins | Yes, if a received row gets a local number | Origin id to stop echo | Best: 1 round trip + rows | Good; triggers | Low-medium; silent drift after a restore | Not chosen alone: no self-repair (R3); a fast path later |
-| (d) Automerge | A CRDT document of operations; sync messages for each peer | Full operation history | Bloom filter of heads | Delete operations in the history | Both stay; lists and text merge | Yes | Actor id in each operation | Compact; history makes the first sync large | Poor: a second data store | High | Discussed; not chosen |
-| (e) cr-sqlite | SQLite extension; CRR tables; `crsql_changes WHERE db_version > N` | Rows + a clock for each column + markers | 1 round trip; numbers | Markers in its clock tables | Both stay (each column) | Yes | Site id of each writer | Small | Poor: a loadable extension that rewrites the tables; little activity since 2024 | High (packaging) | Not chosen |
+| (d) Automerge | A CRDT document of operations; sync messages for each peer | Full operation history | Bloom filter of heads | Delete operations in the history | Both stay; lists and text merge | Yes | Actor id in each operation | Compact; history makes the first sync large | Possible as the only store; queries in memory; history in the file | High | Discussed; not chosen |
+| (e) cr-sqlite | SQLite extension; CRR tables; `crsql_changes WHERE db_version > N` | Rows + a clock for each column + markers | 1 round trip; numbers | Markers in its clock tables | Both stay (each column) | Yes | Site id of each writer | Small | SQL queries stay; but a loadable extension to build for each platform, and little activity since 2024 | High (packaging) | Not chosen |
 | (f) Git-style | A Merkle tree of the state; commits; for each peer the last common commit; 3-way merge | Rows + one merge base for each peer + short history | Compare tree hashes from the top: O(d · log n) | No markers: in the base and missing on one side is a delete | Both stay (3-way) | Yes: B's commits hold the merge with C | Author in commits if stored; merge commits show C's hashes unless squashed | Like (b), plus commit data | Medium: base snapshots, commits, a merge step | High | Liked, under discussion |
 | (g) Blockchain | A chain of signed blocks with consensus | Grows forever; cannot be pruned | Compare chains | Transactions | — | Yes | Keys of all signers | Large | Poor | Very high | Rejected |
-| (h) iroh-docs | Signed entries in a namespace, keyed by (author, key); LWW for each (author, key) by wall-clock time; range-based set reconciliation | Entries for each author and key; deletion markers are never removed | O(d · log n) | Prefix delete: an empty entry for each (author, prefix); it stays | One wins (whole value) | Yes | Author key in each entry; one shared author key for all devices would hide C | Like (b) for the entries; each entry carries two signatures and the ids; the content is a second transfer (iroh-blobs) | Poor: a second store (redb), content as blobs | Medium-high | Under discussion |
-| (i) Willow / Earthstar | Entries at (subspace, path, time); 3D range-based reconciliation; Meadowcap capabilities | Bounded: a newer entry at a prefix removes older entries below it, with no marker | O(d · log n) in 3D ranges | Destructive prefix edits | One wins (each path) | Yes | Subspace (author) ids in entries; private overlap detection hides what is not shared | Like (b), in 3D ranges; capabilities add bytes at the start of a session | Poor: its own store; Rust implementation in alpha, sync protocol design paused | High | Under discussion |
-| (j) CouchDB-style | Revision tree for each document; `_changes` since a checkpoint for each peer; `_revs_diff` | Revision tree for each document up to `_revs_limit`; tombstones stay; purge does not replicate | Checkpoint + `_revs_diff` | `_deleted` revision (tombstone) | Losing revisions kept as conflicts; app merges | Yes | Revision ids; no device id needed | JSON revisions with their history; several round trips for each batch; the first sync sends the revision trees | Poor: no SQLite-backed Rust implementation | High | Under discussion |
-| (k) Couchbase Lite | CouchDB-style replication in a C library | As (j) | As (j) | As (j) | As (j) | Yes | As (j) | As (j) | Poor: its own SQLite file; peer-to-peer only in the Enterprise Edition; Rust binding unofficial | High; licence cost | Under discussion |
-| (l) Ditto | Closed-source CRDT document store with a mesh over Bluetooth, LAN and Wi-Fi | CRDT metadata in its store | Its own protocol | CRDT deletes | Both stay (CRDT) | Yes (mesh) | Peer ids in its mesh | Not public | Poor: a second, closed store | Low to integrate, high to depend on | Under discussion |
-| (m) Generic embedded KV (redb, sled, SurrealDB embedded, RocksDB) | A store only | — | None; only a prolly tree on top gives a diff | — | — | — | — | — | Poor: replaces SQL | — | Under discussion |
+| (h) iroh-docs | Signed entries in a namespace, keyed by (author, key); LWW for each (author, key) by wall-clock time; range-based set reconciliation | Entries for each author and key; deletion markers are never removed | O(d · log n) | Prefix delete: an empty entry for each (author, prefix); it stays | One wins (whole value) | Yes | Author key in each entry; one shared author key for all devices would hide C | Like (b) for the entries; each entry carries two signatures and the ids; the content is a second transfer (iroh-blobs) | Possible as the only store (redb); queries in memory; content as blobs | Medium-high | Under discussion |
+| (i) Willow / Earthstar | Entries at (subspace, path, time); 3D range-based reconciliation; Meadowcap capabilities | Bounded: a newer entry at a prefix removes older entries below it, with no marker | O(d · log n) in 3D ranges | Destructive prefix edits | One wins (each path) | Yes | Subspace (author) ids in entries; private overlap detection hides what is not shared | Like (b), in 3D ranges; capabilities add bytes at the start of a session | Possible as the only store; but the Rust implementation is alpha and the sync design is paused | High | Under discussion |
+| (j) CouchDB-style | Revision tree for each document; `_changes` since a checkpoint for each peer; `_revs_diff` | Revision tree for each document up to `_revs_limit`; tombstones stay; purge does not replicate | Checkpoint + `_revs_diff` | `_deleted` revision (tombstone) | Losing revisions kept as conflicts; app merges | Yes | Revision ids; no device id needed | JSON revisions with their history; several round trips for each batch; the first sync sends the revision trees | Possible as the only store (a young Rust implementation on redb); queries by views | High | Under discussion |
+| (k) Couchbase Lite | CouchDB-style replication in a C library | As (j) | As (j) | As (j) | As (j) | Yes | As (j) | As (j) | Possible as the only store, with its own queries; but peer-to-peer only in the Enterprise Edition, and the Rust binding is unofficial | High; licence cost | Under discussion |
+| (l) Ditto | Closed-source CRDT document store with a mesh over Bluetooth, LAN and Wi-Fi | CRDT metadata in its store | Its own protocol | CRDT deletes | Both stay (CRDT) | Yes (mesh) | Peer ids in its mesh | Not public | Possible as the only store, with its own queries; but closed | Low to integrate, high to depend on | Under discussion |
+| (m) Generic embedded KV (redb, sled, SurrealDB embedded, RocksDB) | A store only | — | None; only a prolly tree on top gives a diff | — | — | — | — | — | A store only: it needs a sync on top, and the queries are written again | — | Under discussion |
 
 Notes on the table:
 
@@ -214,24 +214,34 @@ a prolly tree (Dolt, noms). It gives the same tree for the same data in any
 insert order, so two trees compare from the root, and equal subtrees are
 skipped. A prolly tree is one possible form of the state tree of (f).
 
-### Fit with Fini's data
+### Fit with Fini's storage and queries
 
-Fini's data is relational: quests, occurrence marks, reminders, checklist
-items, spaces, rank keys, and soon a parent tree with recursive queries
-(ADR-0015). Diesel reads it with SQL and indexes.
+Fini is not tied to SQLite or Diesel. Today the data is in SQLite and Diesel
+reads it. The criterion is the fit with what Fini needs from its store:
 
-| | (i) A NoSQL store is the source of truth | (ii) KV replication is the truth; SQLite is a view built from it | (iii) SQLite stays; the sync uses a KV model over rows (key = table/id) |
+- **Persistence**: writes that survive a crash.
+- **Queries**: the sorted lists, overdue quests, the Focus pick, the
+  occurrences of a day, the reminders that are due, and the recursive parent
+  tree (ADR-0015).
+- **Schema evolution**: new and renamed fields, with old and new app versions
+  on the paired devices at the same time.
+- **Backup and import** (`backup.service.rs`).
+- **CLI access**: the CLI is a separate process that writes the data today.
+
+| | (i) The sync store is the only store (a NoSQL store or a CRDT document) | (ii) The sync store is the truth; SQLite is a view built from it | (iii) SQLite stays; the sync uses a KV model over rows (key = table/id) |
 |---|---|---|---|
-| **What changes** | All repositories, queries and indexes are written again on the new store | Each write goes to the KV store; a step copies it into SQLite tables for the queries | Only SpaceSync: each synced row is a (key, version, value) entry |
-| **Queries (lists, Focus, the parent tree)** | Written again by hand, with no SQL | SQL, on the view | SQL, as today |
+| **What changes** | All repositories and queries are written again on the new store | Each write goes to the sync store; a step copies it into SQLite tables | Only SpaceSync: each synced row is a (key, version, value) entry |
+| **Queries** | In memory or with derived indexes. Measured: the list sort of 10 000 quests in about 2 ms (see "Loro and yrs up close") | SQL, on the view | SQL, as today |
 | **Two stores** | No | Yes: two stores to keep the same, and a rebuild after a failure | No |
-| **Migrations** | All data moves | All data moves; SQLite migrations stay | Columns only |
-| **Sync** | The store's own (h)–(l) | The store's own | Option (b) or (b′): the same as this model |
-| **Risk** | Highest | High | Lowest |
+| **Schema evolution** | Fields in the document; no migration step, but renames need a rule | The view is built again | SQL migrations, as today |
+| **Sync** | The store's own | The store's own | Option (b) or (b′) |
+| **Risk** | Medium: all queries are written again, but they are small and quick | High: two stores | Low |
 
-Option (iii) is the KV sync model without a second store, and it gives the
-same design as (b). iroh-docs and Willow are useful as references for (iii):
-range-based reconciliation, signed entries, prefix deletes.
+Option (iii) is the KV sync model with no second store, and it gives the
+same design as (b). Option (i) is no longer penalized for a second store
+when the sync store is the only store. iroh-docs and Willow are useful as
+references for (iii): range-based reconciliation, signed entries, prefix
+deletes.
 
 ## Wider survey
 
@@ -281,6 +291,164 @@ R1–R7: ✓ meets, ~ in part, ✗ does not.
 | any-sync (Anytype) | Go; needs sync nodes |
 | Dolt, TerminusDB, Irmin, Fossil | Servers or apps in Go, Prolog or OCaml, not a library for Rust; Dolt and Fossil stay ideas |
 | SurrealDB, redb, sled, RocksDB | Stores with no peer-to-peer sync (see (m)) |
+
+## Loro and yrs up close
+
+The numbers come from a spike outside the repository: a release build in a
+Linux x86_64 container, one run each, so the times are approximate. The
+spike also compiled for `aarch64-linux-android`; it did not run on a phone.
+Values marked "estimate" were not measured.
+
+### Data model
+
+| Fini data | Loro | yrs |
+|---|---|---|
+| Containers | Map, List, MovableList, Text, Tree, Counter | Text, Array, Map, XML |
+| A quest | A map for each quest, in a root map keyed by quest id; one key for each field | The same, with Y.Map |
+| Checklist items | A MovableList of maps: adds merge as a union, moves are native | An Array of maps: a move is a delete and an insert |
+| Order | The rank key as a field (as today), or a MovableList of quest ids | The rank key as a field |
+| Parent tree (ADR-0015) | Tree: a movable tree with a deterministic cycle rule, siblings ordered by fractional index | A `parent_id` field; the app needs its own cycle rule |
+| Occurrence marks | A map for each quest, keyed by `period_key` | The same |
+| Reminders | A map in the quest | The same |
+| Spaces | One document for each space (the sync unit is a mapped space); a move to another space is a delete in one document and a create in the other | The same |
+| Counters (focus minutes) | Counter: concurrent adds are summed | A value for each device, summed by the app |
+
+### Measured: 1000 quests, then 10 000 edits, then 300 deletes
+
+Each quest has 11 fields and 5 checklist items.
+
+| Measure | Loro | yrs |
+|---|---|---|
+| Document after the build | 409 KB | 544 KB |
+| After the edits and deletes, all history kept | 528 KB (full snapshot) | 692 KB (garbage collection off) |
+| After the edits and deletes, trimmed | 234 KB (shallow snapshot) | 414 KB (garbage collection on, the default) |
+| Update for 1 edit | 98 B | 15.3 KB; 8.7 KB in the v2 encoding |
+| Update for 100 edits | 1.6 KB | 16.2 KB |
+| The delete set, sent with each update | — | 15.3 KB (it grows with each overwrite and delete) |
+| The sync request (version vector or state vector) | 5 B | 5 B |
+| 10 000 local edits | 10 ms | 9 ms |
+| Merge of 100 offline edits from a peer | 2.4 KB, 9 ms | 2.5 KB, 0.2 ms |
+| Catch-up of a peer that was silent through all the edits and deletes | 146 KB, 16 ms | 81 KB, 11 ms |
+
+### Measured: load and queries (fresh process)
+
+| Measure | Loro, 1 000 quests | Loro, 10 000 quests | yrs, 1 000 quests | yrs, 10 000 quests |
+|---|---|---|---|---|
+| File (shallow snapshot or state) | 318 KB | 3.3 MB | 544 KB | 5.6 MB |
+| Load and first full read | 5 ms | 62 ms | 12 ms | 150 ms |
+| Memory of the document and the index | +8 MB | +28 MB | +12 MB | +122 MB |
+| Build the in-memory index from the document | 3 ms | 45 ms | 3 ms | 44 ms |
+| List sort, on the index | 0.1 ms | 1.7 ms | 0.1 ms | 1.6 ms |
+| Focus pick, on the index | 0.01 ms | 0.1 ms | 0.01 ms | 0.08 ms |
+| Reminders due, on the index | < 0.01 ms | 0.05 ms | < 0.01 ms | 0.04 ms |
+| Start from a shallow snapshot and 1 000 logged updates (97 KB) | 8 ms one by one; 2 ms as a batch | — | — | — |
+| Size added to the Android binary (aarch64, stripped) | +3.8 MB | | +0.6 MB | |
+
+On a mid-range phone, the estimate is the same memory and two to four times
+the Linux times: for 10 000 quests, about 120–250 ms to start with Loro and
+300–600 ms with yrs (estimate).
+
+### Sync, relay and cost on slow links
+
+Both use one round trip: a device sends its version vector (Loro) or state
+vector (yrs), and gets the operations that it does not have. Both work A-B-C
+with no server, because B's document holds A's operations.
+
+| Changes that differ | Loro | yrs |
+|---|---|---|
+| 0 | the vector (5 B) and a near-empty update (estimate) | the vector, and an update with the whole delete set (15.3 KB here) |
+| 1 | 98 B | 15.3 KB |
+| 100 | 1.6 KB | 16.2 KB |
+| 10 000 edits and 300 deletes | 146 KB | 81 KB |
+| First sync (1 000 quests) | 234–528 KB snapshot | 414 KB |
+
+### History and old peers
+
+- **Loro** keeps every operation, so it can show and restore old values
+  (time travel). A shallow snapshot removes the history before a point.
+  Measured: a peer whose version is older than that point gets
+  `ImportUpdatesThatDependsOnOutdatedVersion` for its own updates. It can
+  still get the new state (updates or a snapshot), but its offline edits made
+  before the point are not merged; the app must apply them again as new edits.
+  So trim only when all active peers are past the point (the rule of the
+  deletion markers), and give a peer that is silent for more than 90 days the
+  new state, then its edits again.
+- **yrs** removes deleted content (garbage collection), but each deleted item
+  keeps a small record, and the delete set grows (15.3 KB after 10 000
+  overwrites) and goes with each update. It has no trim point, so an old peer
+  can always sync. It keeps no old values, so the history of a quest needs a
+  structure of its own.
+
+### Privacy (R5)
+
+Both put a random 64-bit writer id in each operation (Loro peer id, yrs client
+id). Measured: after relay A-B-C, A's version vector holds C's id. The id is
+random and not the device key, so A cannot tie it to C; but A sees that a
+third writer exists.
+
+- A new random id for each session hides even that a writer is the same
+  device. Measured cost after 500 sessions with one edit each: a Loro snapshot
+  of 28.4 KB against 2.7 KB with one id, and a version vector of 5.3 KB against
+  23 B (10.6 KB after a shallow snapshot).
+- An id must never write at the same time as another writer with the same id.
+  A device that uses an id again must first load its own earlier operations
+  with that id. If not, two different operations get the same id, and the
+  replicas become different.
+
+### Conflicts, measured or from the docs
+
+| Situation | Loro | yrs |
+|---|---|---|
+| Different fields | Both kept | Both kept |
+| The same field at the same time | The higher Lamport time, then the higher peer id: a causal order, not the newer wall-clock time. The losing value stays in the history | A logical order with the client id as the tie rule, not time. The losing value is removed |
+| Delete against edit | A deleted map key removes the quest with the concurrent edit in it (the edit stays in the history) | Measured: an edit on a deleted quest is lost; the quest stays deleted on both |
+| Concurrent moves that make a cycle | Measured: device 1 put A under B, device 2 put B under A; both devices end with A under B and B at the root | No tree type |
+| Counters | Summed (Counter) | No counter type |
+| Two devices create a child container at the same key | One child wins and the content of the other is lost from the state (Loro docs); a "mergeable" child container avoids it | Similar |
+
+For the chosen policy ("Conflict handling"), a delete must be a field (for
+example `deleted_at`), not a removed key. Then a delete and an edit are two
+fields, and "recently deleted" can restore the quest. "The newer by HLC wins"
+for the same field needs an HLC stored with the value, because both libraries
+order concurrent writes by logical time, not by wall-clock time.
+
+### Integration
+
+| | The CRDT document is the only store | CRDT document + an SQLite view | CRDT for text fields only |
+|---|---|---|---|
+| **Persistence** | A snapshot file and an append-only log of updates. Each update is appended with its length and a checksum, then synced to disk; a torn last record is dropped. Compaction writes a new snapshot to a temporary file, renames it, then empties the log. Measured start: 2–8 ms for 1 000 logged updates | As the first, plus the SQLite file | SQLite, with the CRDT bytes of each text field in a column |
+| **Queries** | An in-memory index built at load (45 ms for 10 000 quests) and kept up to date from the document events. Measured queries: 2 ms or less | SQL, on the view | SQL |
+| **Schema evolution** | A new field is a new key; an old app version keeps the keys that it does not know. A rename writes the new key and reads the old key too. A migration that two devices run at the same time must not create child containers at the same key | The view is built again | SQL migrations |
+| **Backup and import** | Export a snapshot; import merges it or replaces the store | The same | As today |
+| **Desktop app and CLI** | One owner process (the background service) holds the document, and the CLI sends its commands to it; or a file lock, where each process has its own writer id, appends to the log, and imports the records of the other | The CLI must write through the document owner, not into SQLite | As today |
+| **Memory and start, 10 000 quests** | Loro +28 MB, 62 ms on Linux; on a phone 120–250 ms (estimate) | As the first, plus SQLite | Small |
+| **Risk** | All storage and queries are written again | Two stores to keep in step, and a rebuild when they differ | Sync of the other fields still needs (b′) |
+
+### Maturity
+
+| | Loro | yrs |
+|---|---|---|
+| Licence | MIT | MIT |
+| Releases | 1.x, several each month | 0.x, a release that can break the interface every one to three months |
+| Main authors | One main author and one second | One main author |
+| Builds with the Rust of Fini's build images | Yes | The newest release needs a newer Rust |
+| Size added to the Android binary | +3.8 MB | +0.6 MB |
+
+### Verdict (a candidate, not a decision)
+
+- **Loro for everything** is the strongest CRDT candidate. It merges field by
+  field, keeps a history that a shallow snapshot bounds, has a counter and a
+  movable tree with a cycle rule (ADR-0015), and its updates are small on slow
+  links (98 B for one edit). The costs: storage and queries written again (the
+  measured query times are small), 3.8 MB in the APK, random writer ids that
+  show that a third writer exists (R5 in part), logical time instead of the
+  HLC for the same field, and offline edits from before a trim point that the
+  app must apply again.
+- **yrs for text only** is not recommended. Each update carries the whole
+  delete set (15.3 KB here), which is expensive on slow links. It has no
+  history, no tree and no counter, and its interface is 0.x. If long
+  descriptions get a text merge, Loro Text does that too.
+- The choice between Loro and (b′) with its own history table stays open.
 
 ## Trust and integrity
 
@@ -358,8 +526,9 @@ Candidate (not decided):
 | CouchDB-style (j) | Under discussion | Mature model; revision trees and tombstones grow; no SQLite-backed Rust implementation |
 | Couchbase Lite (k) | Under discussion | Peer-to-peer only in the commercial edition; unofficial Rust binding |
 | Ditto (l) | Under discussion | A finished mesh product; closed source, paid tiers, conflicts with AGPL |
-| Loro | Under discussion | Rust CRDT with a movable tree (the parent tree of ADR-0015) and text; history grows unless trimmed by shallow snapshots |
-| yrs | Under discussion | Rust CRDT for text fields such as descriptions and checklists; not for relational rows |
+| Loro | Under discussion: the strongest CRDT candidate | Measured: 98 B for one edit, +28 MB and 62 ms for 10 000 quests; history, counter and movable tree; history bounded by shallow snapshots |
+| yrs | Not recommended | Measured: each update carries the whole delete set (15.3 KB here); no history, tree or counter; 0.x interface |
+| Fini tied to SQLite | Rejected | The criterion is the fit with Fini's storage and queries; a sync store can be the only store |
 | p2panda | Under discussion | Rust, on iroh; but its APIs are not stable, and author keys are in the data (R5) |
 | Rateless IBLT | Under discussion | One message for a small difference, which suits a slow link |
 | A stored Merkle tree (Merkle Search Tree, prolly tree) | Under discussion | The "hashes of hashes" in a stored form |
@@ -391,3 +560,11 @@ Candidate (not decided):
     NoSQL store (iroh-docs or Willow) as the sync store in a spike first?
 11. If iroh-docs is a candidate: one author key for all devices of the person
     (hides C, R5), or one author for each device (shows who wrote)?
+12. Loro or (b′) with its own history table? If Loro: as the only store, or
+    with an SQLite view?
+13. If Loro: one writer id for each device, or a new id for each session
+    (hides more, costs about 10 B for each session in the version vector)?
+14. If Loro: store an HLC with each value so that "the newer wins" follows the
+    HLC, or accept Loro's logical order for concurrent writes?
+15. Desktop app and CLI on one store: one owner process, or a file lock with
+    a writer id for each process?
