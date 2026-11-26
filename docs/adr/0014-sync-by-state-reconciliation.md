@@ -293,7 +293,7 @@ SpaceSync syncs space docs, and the outbox goes (R4). There is no SQLite: the
 data of each space is a snapshot and update files (see "Data model"). (b′) is
 not chosen because Fini would write the reconciliation, the field versions,
 the history and the rules itself; yrs is not chosen because it needs Fini's
-own delete-set protocol and has no history, tree or counter.
+own delete-set protocol and keeps no history.
 
 ### D2 — One space doc for each space
 
@@ -318,13 +318,15 @@ space docs, and the result is the same on all devices.
 
 A delete is a soft delete: it sets `deleted_at` and keeps the map key.
 "Recently deleted" lists these quests, and a restore clears `deleted_at`. A
-soft delete and a concurrent edit both stay, because they are two fields.
+soft delete and a concurrent edit both stay, because they are two fields: the
+quest is in "recently deleted" with the edit in it, and a restore brings the
+edit back.
 
 ### D5 — Concurrent writes of one field
 
-Loro's own order: the higher Lamport time wins, then the higher peer id. An
-edit made after a device saw another edit wins over it; for concurrent edits
-the order is deterministic, and all devices converge. There is no HLC.
+One change wins by Loro's order: an edit made after seeing the other's always
+wins; for truly simultaneous edits Loro picks the same winner on every device
+(the higher Lamport time, then the higher peer id). There is no HLC.
 
 ### D6 — The conflict history comes from Loro's history
 
@@ -386,7 +388,8 @@ device, and the data that the unpaired device wrote stays.
 
 ### D13 — Local to each device
 
-Reminders, snoozes, notifications, settings and focus history do not sync.
+Reminders, snoozes, notifications, settings, focus history and the focus
+enter count of each quest (a value of the device) do not sync.
 Each device derives its reminders from the synced quest, rule and marks, and
 after each import computes them again and schedules or cancels its own
 notifications. This removes the alarm defect ("Defects").
@@ -415,15 +418,13 @@ silently; history replaces prompts.**
 | Situation | Example | Handling |
 |---|---|---|
 | Different fields of one quest | The phone renames "Gym"; the PC moves its due date | Both are kept |
-| The same simple field (status, due date, priority, energy, rank) | Both devices change the priority | One change wins, the same on all devices (D5). The losing value is in the history (D6). No prompt |
-| The same text field | Both devices edit the description | Edits on different lines both stay (D8). A title is a short field: one change wins, and the other is in the history |
-| Delete against edit | The phone deletes the quest; the PC edits it | The newer action wins. A delete that wins moves the quest to "recently deleted", where the person can restore it |
+| The same simple field (status, due date, priority, energy, rank) | Both devices change the priority | One change wins by Loro's order: an edit made after seeing the other's always wins; for truly simultaneous edits Loro picks the same winner on every device (D5). The losing value is in the history (D6). No prompt |
+| The same text field | Both devices edit the description | Edits on different lines both stay (D8). A title is a short field: one change wins by Loro's order, as for a simple field, and the other is in the history |
+| Delete against edit | The phone deletes the quest; the PC edits it | Both are kept: `deleted_at` and the edited field are different fields (D4). The quest goes to "recently deleted" with the edit in it, and a restore brings the edit back |
 | Complete against edit | The phone completes the quest; the PC moves its date | Both are kept: they are different fields |
 | Both add checklist items | One adds "eggs", the other adds "milk" | Both lines stay (D8) |
-| Both reorder | Both devices move the same quest in the list | The rank of the quest: one change wins (D5) |
-| Tree moves that make a cycle | One device moves A under B; the other moves B under A | A deterministic rule removes the cycle, the same on all devices (relations: ADR-0015) |
+| Both reorder | Both devices move the same quest in the list | The rank of the quest: one change wins by Loro's order (D5) |
 | The same repeating day completed twice | The phone and the PC both complete Monday of "Gym" | One completed mark (D9) |
-| Counters | Both devices add 25 focus minutes | Sum: 50 minutes |
 
 The history keeps the last 10 losing values of each field.
 
@@ -439,10 +440,11 @@ The history keeps the last 10 losing values of each field.
    └─ ...
 <data dir>/local/            data of this device only (settings, pairs,
                              channels, mappings, reminders, snoozes,
-                             focus history); it never syncs
+                             focus history, focus enter counts); it never
+                             syncs
 ```
 
-The data is a tree of containers: maps, texts and counters. Relations are by
+The data is a tree of containers: maps and texts. Relations are by
 id, as in a NoSQL store, with no foreign keys and no joins. The app code
 checks integrity: a dangling reference is ignored when it is read. In-memory
 indexes are built at load (measured: 45 ms for 10 000 quests) and kept up to
@@ -458,9 +460,7 @@ space doc "<space-id>"
 │   │  order_rank, created_at, updated_at, deleted_at, space_id
 │   ├─ repeat_rule: one value   { preset, interval, unit, days_of_week,
 │   │                             end, end_date, end_after }
-│   ├─ description: Text  (a plain child text; checklist lines are in it)
-│   ├─ focus_enter_count  (the migrated count, a plain field)
-│   └─ focus_enters: Counter   (new enters only)
+│   └─ description: Text  (a plain child text; checklist lines are in it)
 ├─ occurrences: Map       "<quest_id>/<YYYY-MM-DD>" → Map (mergeable container)
 │                         status, closed_at, title?, description? (Text),
 │                         energy?, priority?, due_time?, created_at,
@@ -484,7 +484,7 @@ days" edits (`:845-899`) and `stop_repeat` (`:1024-1082`).
 | | `space_id`, `title`, `status`, `energy`, `priority`, `due`, `due_time`, `completed_at`, `order_rank`, `created_at`, `updated_at` | ✓ fields | | | |
 | | `description` | ✓ a Text | | | |
 | | `repeat_rule` | ✓ one value | | | |
-| | `focus_enter_count` | ✓ the migrated count; new enters in a Counter | | | |
+| | `focus_enter_count` | | | ✓ (a value of this device) | |
 | | `is_checklist` | | from the text | | |
 | | `checklist_base` | | | | ✓ |
 | | (new) `deleted_at` | ✓ | | | |
@@ -533,12 +533,11 @@ trim for years; archiving old closed marks is deferred.
      devices that migrate the same rows merge with no duplicates;
    - the repeat rule as one value;
    - the description as a plain child text, with today's checklist items as
-     `- [ ]` and `- [x]` lines;
-   - `focus_enter_count` as a plain field (a counter would double).
+     `- [ ]` and `- [x]` lines.
 3. **Sync.** `fini/sync/7` replaces `fini/sync/6`. Devices on the two versions
    do not connect, and the Device page shows a notice.
-4. **Local data.** Reminders, snoozes, settings and focus history move to
-   `<data dir>/local/`.
+4. **Local data.** Reminders, snoozes, settings, focus history and the focus
+   enter counts move to `<data dir>/local/`.
 5. **Removal.** The SQLite file, with the outbox tables, stays unused for one
    release; then the app removes it.
 
@@ -550,7 +549,7 @@ each device edits; then the merge):
 | 1 000 quests | `insert_container` | The edits of one device are lost; the snapshot doubles (208 KB → 403 KB) |
 | 1 000 quests | mergeable containers | Both edits kept (250 KB → 344 KB) |
 | Checklist items | a mergeable list | 10 items in place of 5: rejected; the checklist is text |
-| Counters | a mergeable counter | 50 in place of 25: rejected; the migrated count is a plain field |
+| Counters | a mergeable counter | 50 in place of 25 (no counter syncs now: the focus enter count is local) |
 | Descriptions | a mergeable text | The text two times: rejected |
 | Descriptions | a plain child text (chosen) | The text once; an edit made before the first merge stays readable in the losing child, and the history shows it |
 | 50 repeat rules, 1 500 marks | the rule as one value; marks as mergeable containers | No duplicates; the same space doc on both |
@@ -609,6 +608,8 @@ each device edits; then the merge):
 | CLI write lock | Chosen (D11) | Only writes get it; reads get none |
 | Live push | Rejected | Comparisons only (D3) |
 | Reminders, snoozes, notifications | Chosen: local (D13) | Derived again after each import |
+| Delete against edit | Chosen: both kept (D4) | `deleted_at` and the edited field are two fields; a restore brings the edit back |
+| Focus enter count | Chosen: local (D13) | A value of the device, not quest data; no counter syncs |
 | Focus history | Chosen: local (D13) | Each device has its own focus, because the spaces differ for each device |
 | Sync scope | Chosen (D14) | Space names and imported backups sync; settings stay local |
 | Unpair | Chosen: local (D12) | The data of the unpaired device stays |
