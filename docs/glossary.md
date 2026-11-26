@@ -304,6 +304,62 @@ fragments. Unrelated to `PeerFrame` despite the shared spelling, and the
 distance between them is not academic — one ~400-byte `SyncEvent`, a single
 `PeerFrame`, once landed on BLE as 238 fragments taking 20+ seconds.
 
+## Sync words
+
+The words of [ADR-0014](adr/0014-sync-by-state-reconciliation.md).
+
+### Space doc
+
+The Loro document that holds the synced data of one space.
+
+*Elsewhere:* a Yjs `Y.Doc`; an Automerge document.
+
+### Peer id
+
+The 64-bit id that one writer (an app or CLI installation) puts on its edits.
+
+*Elsewhere:* a Yjs client id; an Automerge actor id.
+
+### Version vector
+
+The count of edits a device has from each peer id. Devices compare them to
+find what the other is missing.
+
+*Elsewhere:* a Yjs state vector; the vector clocks of Dynamo and Riak.
+
+### Update file
+
+An append-only file with one writer's edits to a space doc.
+
+*Elsewhere:* the append-only file (AOF) of Redis; a SQLite WAL file.
+
+### Snapshot
+
+A file with the full state of a space doc.
+
+*Elsewhere:* a Redis RDB snapshot; a saved Automerge document.
+
+### Shallow snapshot
+
+A snapshot without the history before a given point.
+
+*Elsewhere:* a Git shallow clone.
+
+### Mergeable container
+
+A part of a space doc that two devices created on their own but that Loro
+merges into one.
+
+*Elsewhere:* a Yjs shared type fetched by name (`doc.getMap("quests")`),
+which every client resolves to the same object.
+
+### Soft delete
+
+Marking a quest as deleted with `deleted_at` instead of removing it, so it can
+be restored.
+
+*Elsewhere:* Laravel's `SoftDeletes`; the trash of a file manager.
+
 ## Other words
 
 ### Backend
